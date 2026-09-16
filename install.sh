@@ -2,14 +2,17 @@
 # brain-kit installer（対話式。引数で与えた項目は聞かない。--yes で全部既定）
 #
 #   ./install.sh [--mode local|base] [--partner <相棒名>] [--dev <開発担当名>] [--user <持ち主の呼び名>]
-#                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--yes]
+#                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--brain-merge] [--yes]
+#
+#   --brain-merge : ~/brain が既にあるとき、無いディレクトリ・無いファイルだけを足す（既存は一切上書きしない。
+#                   同名の .md があれば <名前>.brain-kit.md として横に置く）。対話ならその場で聞く
 #
 #   --mode local : この機で Claude Code + brain を動かす（既定）
 #   --mode base  : この機を常時稼働の母艦にする。上に加えて、最後に ./setup-base.sh を続けて実行する
 #                  （Orca serve を systemd で常駐、Tailscale で手元 PC・スマホから繋ぐ。この機で走らせる前提）
 #
 # やること:
-#   1. $BRAIN（既定 $HOME/brain）を作り、brain-template/ の骨格を置く。既にあれば止まる
+#   1. $BRAIN（既定 $HOME/brain）を作り、brain-template/ の骨格を置く。既にあれば --brain-merge で上乗せ、無ければ止まる
 #      <相棒名> <開発担当名> <持ち主名> を置換し、projects/<名前>.md と dev/状況/<repo>.md を作る
 #   2. $HOME/.claude/CLAUDE.md, skills/{<相棒名>,<開発担当名>,setup,grilling}, hooks/* を置く
 #      （既存があれば backup ディレクトリへ退避してから上書きの確認）
@@ -21,7 +24,7 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""
+PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""; BRAIN_MERGE=0
 BRAIN="${BRAIN_DIR:-$HOME/brain}"
 YES=0
 
@@ -34,8 +37,9 @@ while [ $# -gt 0 ]; do
     --projects) PROJECTS="$2"; shift 2 ;;
     --repos)    REPOS="$2"; shift 2 ;;
     --brain)    BRAIN="$2"; shift 2 ;;
+    --brain-merge) BRAIN_MERGE=1; shift ;;
     --yes|-y)   YES=1; shift ;;
-    -h|--help)  sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -110,12 +114,53 @@ place() { # place <src> <dst>
 # ---------------------------------------------------------------- 1. brain
 say "[1/5] brain: $BRAIN"
 if [ -e "$BRAIN" ]; then
-  echo "error: $BRAIN が既にある。別の場所にするなら --brain <dir>。会社が違えば別 brain にする。" >&2
-  exit 1
+  if [ "$BRAIN_MERGE" != 1 ]; then
+    echo "  $BRAIN が既にある。"
+    if [ "$YES" = 1 ] || [ ! -t 0 ]; then
+      echo "error: 上乗せするなら --brain-merge、別の場所にするなら --brain <dir>。会社が違えば別 brain にする。" >&2
+      exit 1
+    fi
+    confirm "  既存の brain に骨格を足す？（無いものだけ足す。既存ファイルは触らない）" || exit 1
+    BRAIN_MERGE=1
+  fi
+  echo "  上乗せモード: 無いディレクトリ・ファイルだけ足す。同名の .md は <名前>.brain-kit.md として横に置く"
 fi
-cp -a "$KIT/brain-template" "$BRAIN"
-mv "$BRAIN/partner" "$BRAIN/$PARTNER"
-fill $(find "$BRAIN" -type f -name '*.md')
+# 骨格を置く（新規でも上乗せでも同じ手順。既存ファイルは絶対に上書きしない）
+python3 - "$KIT/brain-template" "$BRAIN" "$PARTNER" "$DEV" "$OWNER" <<'PY'
+import sys, os, io, shutil
+src, dst, partner, dev, owner = sys.argv[1:6]
+added, beside, kept = [], [], []
+for root, dirs, files in os.walk(src):
+    rel = os.path.relpath(root, src)
+    rel = "" if rel == "." else rel
+    parts = rel.split(os.sep) if rel else []
+    if parts and parts[0] == "partner": parts[0] = partner
+    out_dir = os.path.join(dst, *parts) if parts else dst
+    os.makedirs(out_dir, exist_ok=True)
+    for name in files:
+        s = os.path.join(root, name)
+        d = os.path.join(out_dir, name)
+        relname = os.path.join(*parts, name) if parts else name
+        if os.path.exists(d):
+            if name.endswith(".md"):
+                alt = d[:-3] + ".brain-kit.md"
+                if os.path.exists(alt):
+                    kept.append(relname); continue
+                d = alt; beside.append(relname)
+            else:
+                kept.append(relname); continue
+        else:
+            added.append(relname)
+        if name.endswith(".md"):
+            t = io.open(s, encoding="utf-8").read()
+            t = t.replace("<相棒名>", partner).replace("<開発担当名>", dev).replace("<持ち主名>", owner)
+            io.open(d, "w", encoding="utf-8").write(t)
+        else:
+            shutil.copy2(s, d)
+print(f"  足した: {len(added)} 件")
+for x in beside: print(f"  横に置いた（既存あり）: {x} -> {x[:-3]}.brain-kit.md")
+for x in kept:   print(f"  既存のまま: {x}")
+PY
 echo "  相棒: $BRAIN/$PARTNER/   開発担当: $DEV（$BRAIN/dev/）"
 
 # projects/<名前>.md
@@ -263,11 +308,21 @@ else
 fi
 
 # ---------------------------------------------------------------- 5. git init
-say "[5/5] git init: $BRAIN"
-git -C "$BRAIN" init -q
+say "[5/5] git: $BRAIN"
+if git -C "$BRAIN" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  msg="brain: brain-kit の骨格を追加（相棒=$PARTNER、開発担当=$DEV）"
+  echo "  既存のリポジトリ。足した分だけコミットする"
+else
+  git -C "$BRAIN" init -q
+  msg="brain: 初期化（brain-kit、相棒=$PARTNER、開発担当=$DEV）"
+fi
 git -C "$BRAIN" add -A
-git -C "$BRAIN" commit -q -m "brain: 初期化（brain-kit、相棒=$PARTNER、開発担当=$DEV）" \
-  || echo "warn: 初回コミットに失敗（git の user.name / user.email を設定してから再実行）"
+if git -C "$BRAIN" diff --cached --quiet; then
+  echo "  コミットするものなし"
+else
+  git -C "$BRAIN" commit -q -m "$msg" \
+    || echo "warn: コミットに失敗（git の user.name / user.email を設定してから再実行）"
+fi
 
 cat <<MSG
 

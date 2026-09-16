@@ -56,11 +56,12 @@ git clone <このリポジトリ> && cd brain-kit
 ./install.sh --mode local --partner <相棒名> --dev <開発担当名> --user <あなたの呼び名> \
              --projects "app-a,app-b" --repos "owner/app-a,owner/app-b"
 ./install.sh --mode base  ...同じ引数...          # 最後に ./setup-base.sh が続く
+./install.sh --brain-merge ...                   # ~/brain が既にある機に上乗せ（下の「既に入っている環境へ」）
 ```
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
 
-1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain <dir>` で別の場所も可）。
+1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain-merge` で無いものだけ上乗せ、`--brain <dir>` で別の場所）。
    `<相棒名>` `<開発担当名>` `<持ち主名>` を置換し、`projects/<名前>.md`（目的／現在地／権限／関連）と
    `dev/状況/<repo>.md`（`_テンプレート.md` から）を作る
 2. `~/.claude/CLAUDE.md`、`~/.claude/skills/{<相棒名>,<開発担当名>,setup,grilling}`、`~/.claude/hooks/*` を置く。
@@ -129,6 +130,29 @@ git clone <このリポジトリ> && cd brain-kit
 1. `~/.claude/skills/chat2issue/SKILL.md` に、対象リポジトリ名と「貼られたテキストを話題ごとに割る → 原文を引用で残す → 仕様書と照らして『仕様どおりかも』も書く → `gh issue create --label from-chat,needs-triage`」の手順を書く
 2. **`agent-ready` は絶対に skill 自身に付けさせない。**起票後に一覧を出して、どれをエージェントに回すか人に聞く
 3. コードは直さない、指摘の妥当性を勝手に判定して捨てない、報告者を推測して書かない、の3つを「やらないこと」に置く
+
+## 既に入っている環境へ
+
+まっさらな機でなくてよい。あるものはそのまま使い、無いものだけ足す。
+
+| 既にあるもの | 何が起きるか |
+|---|---|
+| `~/brain` | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があれば `<名前>.brain-kit.md` として横に置く。git リポジトリなら足した分だけコミット |
+| `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
+| `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例 |
+| Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |
+| Tailscale / Claude Code / gh / node | あればバージョンを表示してスキップ、無ければ入れる |
+
+`setup-base.sh` の最後に「項目／状態（あった・足した・手動）／補足」の表が出る。
+
+### Orca の serve 設定を変えたい人へ
+
+`~/.orca/` `~/.config/orca/` の中身は brain-kit は読まない・書かない。自分で編集するならこのファイル（値はここに書かない）:
+
+- `~/.config/systemd/user/orca-serve.service` — `ExecStart` の `orca-ide serve ...`（`--pairing-address`、ポートや bind 先のフラグは `orca-ide serve --help` で確認）。編集後 `systemctl --user daemon-reload && systemctl --user restart orca-serve.service`
+- `~/.config/orca/orca-runtime.json` — runtime の設定（Orca が書く。触るなら Orca を止めてから）
+- `~/.config/orca/agent-hooks/endpoint.env` — Claude Code の中継フックが繋ぐ先
+- `~/.orca/agent-hooks/claude-hook.sh` `claude-statusline.sh` — Orca が生成する中継スクリプト。手で直しても Orca が書き戻すことがある
 
 ## プラグイン
 

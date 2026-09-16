@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup-base.sh — base（常時稼働の Ubuntu / WSL 機）を組む。冪等。各段で「済み」ならスキップ。
 #
-#   ./setup-base.sh [--yes] [--dry-run] [--orca-version vX.Y.Z]
+#   ./setup-base.sh [--yes] [--dry-run] [--orca-version vX.Y.Z] [--replace-units]
 #   ./setup-base.sh --pair mobile      # スマホをペアリング（フォアグラウンドで QR を出す）
 #   ./setup-base.sh --pair runtime     # 別 PC の Orca を runtime-environment として繋ぐ
 #
@@ -11,12 +11,18 @@
 # ネットから取るものは、コマンドを表示して確認してから実行する（--yes で無確認）。
 # --dry-run は何も実行せず、実行するはずのコマンドだけ印字する。
 # 秘密・認証情報・IP はこのファイルに書かない。実行時に tailscale から読む。
+# 既に入っているもの（Orca / Tailscale / Claude Code / gh / node / systemd unit）はそのまま使い、無いものだけ足す。
+# 既存の unit と内容が違うときは、表示して置き換えるか聞く（--yes では置き換えない。--replace-units で置き換える）。
+# テスト用: ORCA_BIN=<path> で Orca の場所を差し替えられる（--dry-run で「あり／なし」を模擬する）。
 set -euo pipefail
 
-YES=0; DRY=0; PAIR=""; ORCA_VERSION=""
+YES=0; DRY=0; PAIR=""; ORCA_VERSION=""; REPLACE_UNITS=0
 NVM_VERSION="v0.40.3"
 ORCA_REPO="stablyai/orca"
-ORCA_BIN="/opt/Orca/orca-ide"
+if [ -z "${ORCA_BIN:-}" ]; then   # 明示されていなければ /opt → PATH の順に探す
+  ORCA_BIN="/opt/Orca/orca-ide"
+  [ -x "$ORCA_BIN" ] || { p="$(command -v orca-ide 2>/dev/null || true)"; [ -n "$p" ] && ORCA_BIN="$p"; }
+fi
 ORCA_PORT=6768
 DISPLAY_NO=":99"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -27,6 +33,7 @@ while [ $# -gt 0 ]; do
     --dry-run)      DRY=1; shift ;;
     --pair)         PAIR="$2"; shift 2 ;;
     --orca-version) ORCA_VERSION="$2"; shift 2 ;;
+    --replace-units) REPLACE_UNITS=1; shift ;;
     -h|--help)      sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -48,6 +55,9 @@ fetch() {
 }
 confirm() { [ "$YES" = 1 ] && return 0; read -r -p "$1 [y/N] " a; [[ "${a:-}" =~ ^[yY] ]]; }
 have()    { command -v "$1" >/dev/null 2>&1; }
+SUMMARY=""
+mark() { SUMMARY="$SUMMARY$(printf '  %s\t%s\t%s' "$1" "$2" "${3:-}")
+"; }   # mark <項目> <あった|足した|手動|skip> [補足]
 is_wsl()  { grep -qi microsoft /proc/version 2>/dev/null; }
 
 # ---------------------------------------------------------------- --pair
@@ -89,34 +99,37 @@ fi
 # ---------------------------------------------------------------- (b) 基本ツール
 say "(b) 基本ツール: git curl jq python3 gh node"
 missing=""
-for t in git curl jq python3 gh; do have "$t" && note "済み: $t" || missing="$missing $t"; done
+for t in git curl jq python3 gh; do
+  if have "$t"; then note "済み: $t"; mark "$t" あった; else missing="$missing $t"; mark "$t" 足した apt; fi
+done
 if [ -n "$missing" ]; then
   fetch "apt:$missing" "sudo apt-get update -qq && sudo apt-get install -y$missing" || true
 fi
 if have node; then
-  note "済み: node $(node --version 2>/dev/null)"
+  note "済み: node $(node --version 2>/dev/null)"; mark node あった "$(node --version 2>/dev/null)"
 else
   note "node が無い。nvm で LTS を入れる（apt の node は古い）"
   if fetch "nvm $NVM_VERSION" "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash"; then
     run 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm install --lts && nvm alias default lts/*'
-  fi
+    mark node 足した nvm
+  else mark node 手動 "nvm を入れる"; fi
 fi
 
 # ---------------------------------------------------------------- (c) Claude Code
 say "(c) Claude Code CLI"
 if have claude; then
-  note "済み: claude $(claude --version 2>/dev/null | head -1)"
+  note "済み: claude $(claude --version 2>/dev/null | head -1)"; mark claude あった "$(claude --version 2>/dev/null | head -1)"
 else
-  fetch "Claude Code（公式インストーラ）" "curl -fsSL https://claude.ai/install.sh | bash" || true
+  fetch "Claude Code（公式インストーラ）" "curl -fsSL https://claude.ai/install.sh | bash" && mark claude 足した || mark claude 手動 "公式インストーラ"
   note "入ったら一度 'claude' を起動してログインする（ブラウザ認証）"
 fi
 
 # ---------------------------------------------------------------- (d) Tailscale
 say "(d) Tailscale"
 if have tailscale; then
-  note "済み: tailscale $(tailscale version 2>/dev/null | head -1)"
+  note "済み: tailscale $(tailscale version 2>/dev/null | head -1)"; mark tailscale あった "$(tailscale version 2>/dev/null | head -1)"
 else
-  fetch "Tailscale（公式インストーラ）" "curl -fsSL https://tailscale.com/install.sh | sh" || true
+  fetch "Tailscale（公式インストーラ）" "curl -fsSL https://tailscale.com/install.sh | sh" && mark tailscale 足した || mark tailscale 手動 "公式インストーラ"
 fi
 if [ "$DRY" != 1 ] && have tailscale && tailscale status >/dev/null 2>&1; then
   note "済み: tailnet に参加している"
@@ -133,7 +146,9 @@ fi
 # ---------------------------------------------------------------- (e) Orca
 say "(e) Orca"
 if [ -x "$ORCA_BIN" ]; then
-  note "済み: $ORCA_BIN"
+  orca_ver="$(dpkg-query -W -f='${Version}' orca-ide 2>/dev/null || "$ORCA_BIN" --version 2>/dev/null | head -1 || true)"
+  note "済み: $ORCA_BIN ${orca_ver:+(v$orca_ver)}  ダウンロードと apt は飛ばす"
+  mark orca あった "${orca_ver:-$ORCA_BIN}"
 else
   if [ -z "$ORCA_VERSION" ]; then
     if [ "$DRY" = 1 ]; then
@@ -156,6 +171,7 @@ else
     fetch "Orca $ORCA_VERSION (.deb)" "curl -fsSL -o \"\$HOME/opt/$deb\" \"$url\"" || exit 1
   fi
   run "sudo apt-get install -y \"\$HOME/opt/$deb\""
+  mark orca 足した "$ORCA_VERSION"
 fi
 
 note "不足ライブラリの実測（.deb は依存関係を宣言していない）"
@@ -193,7 +209,7 @@ else
   done
 fi
 
-if have Xvfb; then note "済み: Xvfb"; else run "sudo apt-get install -y xvfb"; fi
+if have Xvfb; then note "済み: Xvfb"; mark xvfb あった; else run "sudo apt-get install -y xvfb"; mark xvfb 足した apt; fi
 
 # ---------------------------------------------------------------- (f) systemd
 say "(f) 常駐（systemd user service）"
@@ -240,8 +256,23 @@ RestartPreventExitStatus=3
 RestartSec=5
 [Install]
 WantedBy=default.target"
-  write_unit() { # write_unit <path> <content>
-    if [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; then note "済み: $1"; return 0; fi
+  write_unit() { # write_unit <path> <content>   無ければ作る。あって違えば表示して置き換えるか聞く
+    local name; name="$(basename "$1")"
+    if [ -f "$1" ]; then
+      if [ "$(cat "$1")" = "$2" ]; then note "済み: $1"; mark "$name" あった 同一; return 0; fi
+      note "既存の $1 と内容が違う。現在の中身:"
+      sed 's/^/      | /' "$1"
+      note "置き換え候補との差分:"
+      diff <(cat "$1") <(printf '%s\n' "$2") | sed 's/^/      /' || true
+      if [ "$REPLACE_UNITS" = 1 ]; then :
+      elif [ "$YES" = 1 ] || [ "$DRY" = 1 ]; then note "既存を残す（置き換えるなら --replace-units）"; mark "$name" あった "既存を維持"; return 0
+      elif ! confirm "  置き換える？（既存は $1.bak に退避）"; then mark "$name" あった "既存を維持"; return 0
+      fi
+      run "cp -a \"$1\" \"$1.bak\""
+      mark "$name" 足した "置き換え（.bak あり）"
+    else
+      mark "$name" 足した
+    fi
     note "書く: $1"
     [ "$DRY" = 1 ] && return 0
     printf '%s\n' "$2" > "$1"
@@ -251,9 +282,9 @@ WantedBy=default.target"
   run "systemctl --user daemon-reload"
   run "systemctl --user enable --now xvfb.service orca-serve.service"
   if [ "$DRY" != 1 ] && loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
-    note "済み: linger"
+    note "済み: linger"; mark linger あった
   else
-    run "sudo loginctl enable-linger \"$USER\""
+    run "sudo loginctl enable-linger \"$USER\""; mark linger 足した
   fi
   [ "$DRY" = 1 ] || { sleep 3; systemctl --user --no-pager status orca-serve.service 2>/dev/null | head -5 || true; }
 fi
@@ -277,3 +308,8 @@ cat <<MSG
 
 brain と Claude Code はこの機で動く。cd ~/brain && claude で /setup から。
 MSG
+
+say "何があって、何を足したか"
+{ printf '  項目\t状態\t補足\n'; printf '%s' "$SUMMARY"; } | column -t -s "$(printf '\t')" 2>/dev/null || printf '%s' "$SUMMARY"
+[ "$DRY" = 1 ] && note "（dry-run: 「足した」は実行していない。実行するはずだったもの）"
+exit 0
