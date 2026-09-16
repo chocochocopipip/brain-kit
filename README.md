@@ -108,6 +108,8 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 **Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ。
 
+入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、brain の骨格・`~/.claude` の skill と hook・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+
 ## 自分で決めること
 
 | 決めること | どこに書くか |

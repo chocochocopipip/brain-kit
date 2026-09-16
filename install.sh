@@ -3,6 +3,7 @@
 #
 #   ./install.sh [--mode local|base] [--partner <相棒名>] [--dev <開発担当名>] [--user <持ち主の呼び名>]
 #                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--brain-merge] [--codex] [--yes]
+#   ./install.sh --doctor        何も変えず、入っているものを表で印字する（brain / ~/.claude / CLI / git）
 #
 #   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
 #             codex login は案内のみ、settings.json に Codex plugin の marketplace と plugin キーを足す
@@ -27,7 +28,7 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""; BRAIN_MERGE=0; CODEX=""
+PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""; BRAIN_MERGE=0; CODEX=""; DOCTOR=0
 BRAIN="${BRAIN_DIR:-$HOME/brain}"
 YES=0
 
@@ -41,15 +42,137 @@ while [ $# -gt 0 ]; do
     --repos)    REPOS="$2"; shift 2 ;;
     --brain)    BRAIN="$2"; shift 2 ;;
     --brain-merge) BRAIN_MERGE=1; shift ;;
+    --doctor)   DOCTOR=1; shift ;;
     --codex)    CODEX=yes; shift ;;
     --no-codex) CODEX=no; shift ;;
     --yes|-y)   YES=1; shift ;;
-    -h|--help)  sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 say()     { printf '\033[1m%s\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------- --doctor（読むだけ。何も変えない）
+if [ "$DOCTOR" = 1 ]; then
+  command -v python3 >/dev/null 2>&1 || { echo "error: python3 が要る" >&2; exit 1; }
+  python3 - "$BRAIN" "$HOME/.claude" <<'PY' | { column -t -s "$(printf '\t')" 2>/dev/null || cat; }
+import sys, os, io, json, re, shutil, subprocess
+brain, cdir = sys.argv[1], sys.argv[2]
+rows, todo = [], []
+def row(item, ok, detail="", status=None):
+    rows.append((item, status or ("OK" if ok else "無い"), detail))
+def sh(*cmd, timeout=8):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout or r.stderr).strip().splitlines()[0] if (r.stdout or r.stderr).strip() else ""
+    except Exception:
+        return 1, ""
+def is_empty_note(p):  # frontmatter・見出し・コメントだけなら「空」
+    try: t = io.open(p, encoding="utf-8").read()
+    except Exception: return True
+    t = re.sub(r"^---.*?---", "", t, count=1, flags=re.S)
+    t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
+    return not any(l.strip() and not l.lstrip().startswith("#") for l in t.splitlines())
+
+# ---- brain
+rows.append(("[brain]", "", brain))
+if os.path.isdir(brain):
+    for d in ["daily", "projects", "decisions", "knowledge", "archive", "dev", "dev/状況", "dev/報告"]:
+        row(f"  {d}/", os.path.isdir(os.path.join(brain, d)))
+    row("  inbox.md", os.path.isfile(os.path.join(brain, "inbox.md")))
+    partners = [d for d in os.listdir(brain) if d != "dev" and not d.startswith(".")
+                and os.path.isfile(os.path.join(brain, d, "00_核.md"))]
+    if partners:
+        for p in partners:
+            core = os.path.join(brain, p, "00_核.md")
+            empty = is_empty_note(core)
+            row(f"  {p}/（相棒）", True, "00_核.md が空。/setup で埋める" if empty else "00_核.md あり", "要対応" if empty else "OK")
+            if empty: todo.append("cd " + brain + " && claude → /setup（相棒の憲法・声・プロジェクトを埋める）")
+    else:
+        row("  <相棒名>/", False, "00_核.md を持つディレクトリが無い")
+    rc, n = sh("git", "-C", brain, "rev-list", "--count", "HEAD")
+    if rc == 0:
+        rc2, remotes = sh("git", "-C", brain, "remote")
+        row("  git", True, f"コミット {n}、remote {'あり' if remotes else '無し'}", "OK" if remotes else "要対応")
+        if not remotes: todo.append(f"git -C {brain} remote add origin <private リポジトリ>（フックの自動コミットを退避先へ）")
+    else:
+        row("  git", False, "リポジトリではない", "要対応"); todo.append(f"git -C {brain} init")
+else:
+    row("  骨格", False, "brain が無い。./install.sh で作る", "要対応"); todo.append("./install.sh --partner <名前>")
+
+# ---- ~/.claude
+rows.append(("[~/.claude]", "", cdir))
+row("  CLAUDE.md", os.path.isfile(os.path.join(cdir, "CLAUDE.md")))
+skills = {}
+sdir = os.path.join(cdir, "skills")
+if os.path.isdir(sdir):
+    for d in sorted(os.listdir(sdir)):
+        f = os.path.join(sdir, d, "SKILL.md")
+        if not os.path.isfile(f): continue
+        t = io.open(f, encoding="utf-8").read()
+        m = re.search(r"^name:\s*(.+)$", t, re.M)
+        name = m.group(1).strip() if m else d
+        kind = "setup" if name == "setup" else "grilling" if name == "grilling" else \
+               "partner" if "憲法は" in t else "dev" if "状況カード" in t else None
+        if kind: skills[kind] = name
+for kind, label in [("partner", "skill 相棒"), ("dev", "skill 開発担当"), ("setup", "skill setup"), ("grilling", "skill grilling")]:
+    row(f"  {label}", kind in skills, skills.get(kind, ""))
+for h in ["session-end-brain.sh", "brain-digest.js"]:
+    p = os.path.join(cdir, "hooks", h)
+    row(f"  hooks/{h}", os.path.isfile(p), "" if os.access(p, os.X_OK) or not os.path.isfile(p) else "実行権限なし")
+sp = os.path.join(cdir, "settings.json")
+if os.path.isfile(sp):
+    try: st = json.load(io.open(sp, encoding="utf-8"))
+    except Exception: st = None
+    if st is None:
+        row("  settings.json", False, "JSON として読めない", "要対応")
+    else:
+        se = any("session-end-brain.sh" in (h.get("command") or "") for g in st.get("hooks", {}).get("SessionEnd", []) for h in g.get("hooks", []))
+        row("  settings: SessionEnd フック", se, "daily/ への自動追記")
+        row("  settings: statusLine", "statusLine" in st)
+        ep = st.get("enabledPlugins", {})
+        row("  settings: plugin pr-review-toolkit", any(k.startswith("pr-review-toolkit") for k in ep))
+        row("  settings: plugin codex", any(k.startswith("codex") for k in ep), "任意（--codex）")
+else:
+    row("  settings.json", False, "", "要対応")
+
+# ---- CLI
+rows.append(("[CLI]", "", ""))
+def cli(name, *vercmd, optional=False):
+    p = shutil.which(name)
+    if not p:
+        row(f"  {name}", False, "任意" if optional else "", "無い" if optional else "要対応"); return False
+    rc, v = sh(*vercmd) if vercmd else (0, "")
+    row(f"  {name}", True, v[:40]); return True
+if not cli("claude", "claude", "--version"): todo.append("Claude Code CLI を入れる（setup-base.sh が公式インストーラを呼ぶ）")
+cli("node", "node", "--version")
+if cli("gh", "gh", "--version"):
+    rc, _ = sh("gh", "auth", "status")
+    row("  gh auth", rc == 0, "認証済み" if rc == 0 else "未認証", "OK" if rc == 0 else "要対応")
+    if rc != 0: todo.append("gh auth login（issue ラベル作成・PR 作成に要る）")
+if cli("codex", "codex", "--version", optional=True):
+    rc, _ = sh("codex", "login", "status")
+    row("  codex login", rc == 0, "" if rc == 0 else "未ログインか確認不可", "OK" if rc == 0 else "要対応")
+    if rc != 0: todo.append("codex login（ブラウザ認証）")
+cli("tailscale", "tailscale", "version", optional=True)
+orca = shutil.which("orca-ide") or ("/opt/Orca/orca-ide" if os.access("/opt/Orca/orca-ide", os.X_OK) else None)
+if orca:
+    rc, v = sh("dpkg-query", "-W", "-f=${Version}", "orca-ide"); row("  orca-ide", True, v or orca)
+else:
+    row("  orca-ide", False, "任意（base のみ。setup-base.sh）", "無い")
+
+print("項目\t状態\t補足")
+for item, status, detail in rows: print(f"{item}\t{status}\t{detail}")
+print()
+if todo:
+    print("次にやること（未実施のものだけ）")
+    for i, t in enumerate(todo, 1): print(f"  {i}. {t}")
+else:
+    print("次にやること: なし。cd " + brain + " && claude で相棒を呼ぶ")
+PY
+  exit 0
+fi
 confirm() { [ "$YES" = 1 ] && return 0; read -r -p "$1 [y/N] " a; [[ "${a:-}" =~ ^[yY] ]]; }
 need()    { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 が要る" >&2; exit 1; }; }
 # ask <変数名> <質問> <既定>   引数で与えられていれば聞かない。--yes か非対話なら既定
