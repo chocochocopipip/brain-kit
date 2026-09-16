@@ -1,0 +1,14 @@
+{
+  "name": "brain-kit",
+  "version": "0.1.0",
+  "description": "Claude Code + brain (Obsidian vault) + Orca: a structure-only template for a memory-keeping partner and a dev agent",
+  "license": "MIT",
+  "private": false,
+  "bin": {
+    "brain-kit": "./bin/brain-kit.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["linux", "darwin"]
+}

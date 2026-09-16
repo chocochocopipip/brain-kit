@@ -1,5 +1,16 @@
 # brain-kit
 
+> **EN** — A structure-only template for running Claude Code with two personas: a *partner* that keeps memory in an Obsidian vault (`~/brain`) and a *dev* agent that turns issues into PRs, plus an optional always-on *base* machine (Orca + Tailscale). No personal data included; you fill it in.
+>
+> **Quick start** (Linux / macOS / WSL — Windows itself is not supported, use WSL):
+> ```
+> git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
+> npx github:chocochocopipip/brain-kit --partner <name>
+> ```
+> Then `cd ~/brain && claude` and run `/setup`.
+>
+> **Requirements**: git, python3, node >= 18, Claude Code CLI. Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
+
 Claude Code を「記憶を持つ相棒」と「開発を回す手」の二人格で運用するための、**仕組みだけ**のテンプレート。
 記憶・個人データ・人名・店名・リポジトリ名・認証情報は入っていない。中身はあなたが書く。
 
@@ -46,8 +57,9 @@ base の絵:
 ### 2. install.sh（1コマンド＋対話）
 
 ```bash
-git clone <このリポジトリ> && cd brain-kit
+git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 ./install.sh
+# clone せずに: npx github:chocochocopipip/brain-kit --partner <相棒名>   （同じ install.sh に引数がそのまま渡る）
 ```
 
 聞かれるのは 6 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定:
@@ -82,7 +94,8 @@ git clone <このリポジトリ> && cd brain-kit
 あなたのこと → 相棒の声 → プロジェクト → 開発担当の分担、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
 既に書いてある節は飛ばす。
 
-必要なもの: `git` `python3` `node`（フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
+必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
+**Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ。
 
 ## 自分で決めること
 
@@ -168,6 +181,7 @@ Claude Code の `/plugin` から入れる:
 brain-kit/
 ├── README.md                 ← これ
 ├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
+├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。package.json / LICENSE(MIT)
 ├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
@@ -190,7 +204,7 @@ Orca デスクトップが自分でフックを書き込むと、同じイベン
 - `./check.sh <元の持ち主の固有名詞 10 語>`（ユーザー名・プロジェクト名 3 つ・相棒名と dev 名の漢字/かな・組織名・GitHub オーナー名）
   ＋ 組み込み 5 パターン（メール／秘密鍵／認証情報の英単語／ホームの絶対パス／IP アドレス）→ **0 件**
 - 同じ 10 語に「アットマーク」と認証情報の英単語 2 つを足した `grep -rniE` を `brain-kit/` 直下で実行 → **0 件**
-  （語そのものをここに書くと、それ自体が漏れになるので書かない）
+  （語そのものをここに書くと、それ自体が漏れになるので書かない。例外は Quick start に載せた公開リポジトリの URL に含まれる owner 名だけ）
 - `~/.orca/` `~/.config/orca/` の中身は読んでおらず、同梱もしていない。ファイル名の一覧だけ `ORCA.md` にある
 
 あなたが次の人に渡すときも、自分の固有名詞で同じことをする。
