@@ -56,7 +56,11 @@ say()     { printf '\033[1m%s\033[0m\n' "$*"; }
 # ---------------------------------------------------------------- --doctor（読むだけ。何も変えない）
 if [ "$DOCTOR" = 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "error: python3 が要る" >&2; exit 1; }
-  python3 - "$BRAIN" "$HOME/.claude" <<'PY' | { column -t -s "$(printf '\t')" 2>/dev/null || cat; }
+  python3 - "$BRAIN" "$HOME/.claude" <<'PY' | awk -v tab="$(printf '\t')" '
+    /^==TODO==$/ { intodo=1; next }
+    intodo { todo[++n]=$0; next }
+    { print | "column -t -s \"" tab "\"" }
+    END { close("column -t -s \"" tab "\""); for (i=1;i<=n;i++) print todo[i] }'
 import sys, os, io, json, re, shutil, subprocess
 brain, cdir = sys.argv[1], sys.argv[2]
 rows, todo = [], []
@@ -73,7 +77,7 @@ def is_empty_note(p):  # frontmatter・見出し・コメントだけなら「�
     except Exception: return True
     t = re.sub(r"^---.*?---", "", t, count=1, flags=re.S)
     t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-    return not any(l.strip() and not l.lstrip().startswith("#") for l in t.splitlines())
+    return not any(l.strip() and not l.lstrip().startswith("#") and not l.startswith("持ち主:") for l in t.splitlines())
 
 # ---- brain
 rows.append(("[brain]", "", brain))
@@ -164,6 +168,7 @@ else:
 
 print("項目\t状態\t補足")
 for item, status, detail in rows: print(f"{item}\t{status}\t{detail}")
+print("==TODO==")
 print()
 if todo:
     print("次にやること（未実施のものだけ）")
