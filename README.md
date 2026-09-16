@@ -21,18 +21,41 @@ Claude Code を「記憶を持つ相棒」と「開発を回す手」の二人�
 | **brain** | Obsidian vault。`daily/` `projects/` `decisions/` `knowledge/` と、相棒の領域 `<相棒名>/`、開発の領域 `dev/` | `brain-template/` |
 | **Orca** | Claude Code を母艦（WSL）で常駐・並列に動かし、外から繋ぐ。無くても上の2層は動く | `ORCA.md` |
 
-## 導入（1コマンド＋対話）
+## 導入
+
+### 1. どこで動かすかを選ぶ（local ／ base）
+
+| | local | base |
+|---|---|---|
+| 何 | 手元の 1 台で Claude Code + brain を動かす | 常時稼働の Linux/WSL 機を**母艦**にし、手元 PC・スマホから Tailscale で繋ぐ |
+| 向く人 | まず試す。1 台で完結 | 家に置きっぱなしの機がある。外からもエージェントを見たい・動かしたい |
+| 追加でやること | 無し | `setup-base.sh`（Tailscale・Orca・systemd 常駐。`install.sh --mode base` が続けて呼ぶ） |
+
+base の絵:
+
+```
+ 手元 PC（Orca デスクトップ）─┐
+                              ├─ Tailscale ──▶ base（常時稼働の Ubuntu / WSL）
+ スマホ（Orca モバイル）──────┘                 ├─ orca-ide serve（systemd user service, :6768）
+                                                 ├─ Claude Code（相棒 / 開発担当）
+                                                 └─ ~/brain（Obsidian vault, git）
+```
+
+**`install.sh` は動かす機で走らせる。**base を選ぶなら base 機の上で。手元の別 PC から遠隔で組む形は作っていない。
+
+### 2. install.sh（1コマンド＋対話）
 
 ```bash
 git clone <このリポジトリ> && cd brain-kit
 ./install.sh
 ```
 
-聞かれるのは 5 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定:
+聞かれるのは 6 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定:
 
 ```bash
-./install.sh --partner <相棒名> --dev <開発担当名> --user <あなたの呼び名> \
+./install.sh --mode local --partner <相棒名> --dev <開発担当名> --user <あなたの呼び名> \
              --projects "app-a,app-b" --repos "owner/app-a,owner/app-b"
+./install.sh --mode base  ...同じ引数...          # 最後に ./setup-base.sh が続く
 ```
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
@@ -47,12 +70,18 @@ git clone <このリポジトリ> && cd brain-kit
 4. `gh` があり認証済みなら、`--repos` の各リポジトリに issue ラベル
    `from-chat` `needs-triage` `agent-ready` `agent-working` `<開発担当名>` `question` を作る（無ければ案内してスキップ）
 5. `~/brain` を `git init` して初回コミット
+6. `--mode base` なら続けて `./setup-base.sh`（冪等。各段で済みならスキップ。ネット取得は確認してから。`--dry-run` で印字だけ）:
+   前提確認 → git/curl/jq/python3/gh/node → Claude Code CLI → Tailscale（`sudo tailscale up` は手で）→
+   Orca の `.deb` と不足ライブラリと Xvfb → systemd user service で `orca-ide serve` を常駐（WSL は `/etc/wsl.conf` の `[boot] systemd=true` を案内）→
+   接続先（Tailscale IP / MagicDNS / ポート）を印字。スマホや別 PC のペアリングは `./setup-base.sh --pair mobile|runtime`。詳細と手動手順は `ORCA.md`
 
-**起動後に `/setup` で残りを埋める。**`cd ~/brain && claude` で起動して `/setup` と打つと、
+### 3. /setup で残りを埋める
+
+`cd ~/brain && claude` で起動して `/setup` と打つと、
 あなたのこと → 相棒の声 → プロジェクト → 開発担当の分担、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
 既に書いてある節は飛ばす。
 
-必要なもの: `git` `python3` `node`（フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。
+必要なもの: `git` `python3` `node`（フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 
 ## 自分で決めること
 
@@ -114,7 +143,8 @@ Claude Code の `/plugin` から入れる:
 ```
 brain-kit/
 ├── README.md                 ← これ
-├── install.sh                ← 導入スクリプト（対話式）
+├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
+├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
 ├── claude/

@@ -1,5 +1,10 @@
 # Orca を母艦（WSL）に常駐させ、スマホから直接つなぐ
 
+> **`./setup-base.sh` が以下を一括でやる**（`install.sh --mode base` の最後に呼ばれる。`--dry-run` で中身だけ印字）。
+> 段: 前提確認 → 基本ツール → Claude Code → Tailscale → Orca（.deb・不足ライブラリ・Xvfb）→ systemd user service → 接続先の印字。
+> ペアリングは `./setup-base.sh --pair mobile|runtime`。
+> ここから下は**同じことを手でやる手順**と、その理由・失敗の記録。スクリプトが止まったときに読む。
+
 Orca（stablyai/orca）は Claude Code などのエージェントをワークツリー単位で並べて動かす IDE。
 デスクトップ版をノートで開いていないと母艦に届かない構成をやめ、**母艦の WSL に Orca 本体を入れて
 `orca-ide serve` を常駐させ、Tailscale で直接つなぐ。**

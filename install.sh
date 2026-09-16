@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # brain-kit installer（対話式。引数で与えた項目は聞かない。--yes で全部既定）
 #
-#   ./install.sh [--partner <相棒名>] [--dev <開発担当名>] [--user <持ち主の呼び名>]
+#   ./install.sh [--mode local|base] [--partner <相棒名>] [--dev <開発担当名>] [--user <持ち主の呼び名>]
 #                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--yes]
+#
+#   --mode local : この機で Claude Code + brain を動かす（既定）
+#   --mode base  : この機を常時稼働の母艦にする。上に加えて、最後に ./setup-base.sh を続けて実行する
+#                  （Orca serve を systemd で常駐、Tailscale で手元 PC・スマホから繋ぐ。この機で走らせる前提）
 #
 # やること:
 #   1. $BRAIN（既定 $HOME/brain）を作り、brain-template/ の骨格を置く。既にあれば止まる
@@ -17,12 +21,13 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""
+PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""
 BRAIN="${BRAIN_DIR:-$HOME/brain}"
 YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --mode)     MODE="$2"; shift 2 ;;
     --partner)  PARTNER="$2"; shift 2 ;;
     --dev)      DEV="$2"; shift 2 ;;
     --user)     OWNER="$2"; shift 2 ;;
@@ -30,7 +35,7 @@ while [ $# -gt 0 ]; do
     --repos)    REPOS="$2"; shift 2 ;;
     --brain)    BRAIN="$2"; shift 2 ;;
     --yes|-y)   YES=1; shift ;;
-    -h|--help)  sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -55,6 +60,8 @@ command -v claude >/dev/null 2>&1 || echo "warn: claude CLI が無い。フッ�
 
 # ---------------------------------------------------------------- 0. 決めること
 say "[0/5] 決めること（空 Enter で既定。あとから brain の中で変えられる）"
+ask MODE     "どこで動かす？ local=この機だけ / base=この機を母艦にして外から繋ぐ" "local"
+case "$MODE" in local|base) ;; *) echo "error: --mode は local か base" >&2; exit 2 ;; esac
 ask PARTNER  "相棒の名前（必須）" ""
 valid_name "$PARTNER" || { echo "error: 相棒の名前が空か、使えない文字（/ 空白 < >）を含む。--partner <名前> で指定" >&2; exit 2; }
 ask DEV      "開発担当の名前（コーディングを任せる人格）" "dev"
@@ -62,7 +69,7 @@ valid_name "$DEV" || { echo "error: --dev の名前が不正" >&2; exit 2; }
 ask OWNER    "あなたの呼び名（相棒があなたをどう呼ぶか）" "持ち主"
 ask PROJECTS "プロジェクト名（カンマ区切り。無ければ空）" ""
 ask REPOS    "GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）" ""
-echo "  相棒=$PARTNER  開発担当=$DEV  呼び名=$OWNER  projects=${PROJECTS:-なし}  repos=${REPOS:-なし}  brain=$BRAIN"
+echo "  mode=$MODE  相棒=$PARTNER  開発担当=$DEV  呼び名=$OWNER  projects=${PROJECTS:-なし}  repos=${REPOS:-なし}  brain=$BRAIN"
 
 CLAUDE_DIR="$HOME/.claude"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -264,7 +271,7 @@ git -C "$BRAIN" commit -q -m "brain: 初期化（brain-kit、相棒=$PARTNER、�
 
 cat <<MSG
 
-完了。
+完了（mode=$MODE）。
   brain     : $BRAIN
   相棒      : $BRAIN/$PARTNER/00_核.md（憲法）  02_関係.md（声・持ち主）
   開発担当  : $BRAIN/dev/00_核.md（$DEV の原則）  dev/状況/（リポジトリごとの現在地）
@@ -278,3 +285,17 @@ cat <<MSG
   2. 終わったら /$PARTNER で相棒として灯る。開発は /$DEV
   3. Orca を使うなら ORCA.md。プラグインは README の「プラグイン」
 MSG
+
+# ---------------------------------------------------------------- base
+if [ "$MODE" = base ]; then
+  say "[base] この機を母艦にする"
+  if [ ! -x "$KIT/setup-base.sh" ]; then
+    echo "  setup-base.sh が見つからない。base 機でこのリポジトリを clone して ./setup-base.sh を実行する"
+  elif [ "$YES" = 1 ]; then
+    exec "$KIT/setup-base.sh" --yes
+  elif confirm "  続けて ./setup-base.sh を実行する？（sudo / apt / ネット取得あり）"; then
+    exec "$KIT/setup-base.sh"
+  else
+    echo "  あとで: cd $KIT && ./setup-base.sh   （--dry-run で中身だけ見られる）"
+  fi
+fi
