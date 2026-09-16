@@ -179,7 +179,7 @@ if [ "$DRY" = 1 ] && [ ! -x "$ORCA_BIN" ]; then
   note "\$ ldd $ORCA_BIN | grep 'not found'   → 出たものを apt で入れる"
 else
   for _pass in 1 2; do
-    missing_libs="$(ldd "$ORCA_BIN" 2>/dev/null | grep 'not found' | awk '{print $1}' || true)"
+    missing_libs="$(ldd "$ORCA_BIN" 2>/dev/null | grep 'not found' | sed 's/^[[:space:]]*//; s/[[:space:]].*//' || true)"
     [ -n "$missing_libs" ] || { note "済み: 不足なし"; break; }
     pkgs=""; unknown=""
     for lib in $missing_libs; do
@@ -310,6 +310,16 @@ brain と Claude Code はこの機で動く。cd ~/brain && claude で /setup �
 MSG
 
 say "何があって、何を足したか"
-{ printf '  項目\t状態\t補足\n'; printf '%s' "$SUMMARY"; } | column -t -s "$(printf '\t')" 2>/dev/null || printf '%s' "$SUMMARY"
+if command -v python3 >/dev/null 2>&1; then
+  { printf '  項目\t状態\t補足\n'; printf '%s' "$SUMMARY"; } | python3 -c '
+import sys, unicodedata
+rows=[l.rstrip("\n").split("\t") for l in sys.stdin if l.strip()]
+w=lambda s: sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+n=max(len(r) for r in rows); rows=[r+[""]*(n-len(r)) for r in rows]
+cw=[max(w(r[i]) for r in rows) for i in range(n)]
+for r in rows: print("  ".join(r[i]+" "*(cw[i]-w(r[i])) for i in range(n)).rstrip())'
+else
+  { printf '  項目\t状態\t補足\n'; printf '%s' "$SUMMARY"; }
+fi
 [ "$DRY" = 1 ] && note "（dry-run: 「足した」は実行していない。実行するはずだったもの）"
 exit 0

@@ -106,7 +106,7 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
 既に書いてある節は飛ばす。
 
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
-**Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ。
+**Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` と `--doctor` は macOS 標準の bash 3.2 でも動く。bash 4 以降の機能・GNU 拡張・awk・column は使っていない）。
 
 入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、brain の骨格・`~/.claude` の skill と hook・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
 
@@ -163,7 +163,7 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
 
 | 既にあるもの | 何が起きるか |
 |---|---|
-| `~/brain` | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があれば `<名前>.brain-kit.md` として横に置く。git リポジトリなら足した分だけコミット |
+| `~/brain` | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があり**中身が違うとき**だけ `<名前>.brain-kit.md` として横に置く（同一なら何もしない）。git リポジトリなら足した分だけコミット。途中で落ちても同じコマンドで再実行すれば続きから進む |
 | `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
 | `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例。`enabledPlugins` / `extraKnownMarketplaces` は無いキーだけ |
 | Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |

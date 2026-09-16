@@ -16,7 +16,7 @@
 #                  （Orca serve を systemd で常駐、Tailscale で手元 PC・スマホから繋ぐ。この機で走らせる前提）
 #
 # やること:
-#   1. $BRAIN（既定 $HOME/brain）を作り、brain-template/ の骨格を置く。既にあれば --brain-merge で上乗せ、無ければ止まる
+#   1. ${BRAIN}（既定 $HOME/brain）を作り、brain-template/ の骨格を置く。既にあれば --brain-merge で上乗せ、無ければ止まる
 #      <相棒名> <開発担当名> <持ち主名> を置換し、projects/<名前>.md と dev/状況/<repo>.md を作る
 #   2. $HOME/.claude/CLAUDE.md, skills/{<相棒名>,<開発担当名>,setup,grilling}, hooks/* を置く
 #      （既存があれば backup ディレクトリへ退避してから上書きの確認）
@@ -56,11 +56,7 @@ say()     { printf '\033[1m%s\033[0m\n' "$*"; }
 # ---------------------------------------------------------------- --doctor（読むだけ。何も変えない）
 if [ "$DOCTOR" = 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "error: python3 が要る" >&2; exit 1; }
-  python3 - "$BRAIN" "$HOME/.claude" <<'PY' | awk -v tab="$(printf '\t')" '
-    /^==TODO==$/ { intodo=1; next }
-    intodo { todo[++n]=$0; next }
-    { print | "column -t -s \"" tab "\"" }
-    END { close("column -t -s \"" tab "\""); for (i=1;i<=n;i++) print todo[i] }'
+  python3 - "$BRAIN" "$HOME/.claude" <<'PY'
 import sys, os, io, json, re, shutil, subprocess
 brain, cdir = sys.argv[1], sys.argv[2]
 rows, todo = [], []
@@ -166,9 +162,13 @@ if orca:
 else:
     row("  orca-ide", False, "任意（base のみ。setup-base.sh）", "無い")
 
-print("項目\t状態\t補足")
-for item, status, detail in rows: print(f"{item}\t{status}\t{detail}")
-print("==TODO==")
+import unicodedata
+def w(s): return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+def pad(s, n): return s + " " * max(0, n - w(s))
+table = [("項目", "状態", "補足")] + rows
+c0 = max(w(r[0]) for r in table); c1 = max(w(r[1]) for r in table)
+for item, status, detail in table:
+    print((pad(item, c0) + "  " + pad(status, c1) + "  " + detail).rstrip())
 print()
 if todo:
     print("次にやること（未実施のものだけ）")
@@ -263,7 +263,7 @@ if [ -e "$BRAIN" ]; then
     confirm "  既存の brain に骨格を足す？（無いものだけ足す。既存ファイルは触らない）" || exit 1
     BRAIN_MERGE=1
   fi
-  echo "  上乗せモード: 無いディレクトリ・ファイルだけ足す。同名の .md は <名前>.brain-kit.md として横に置く"
+  echo "  上乗せモード: 無いディレクトリ・ファイルだけ足す。同名の .md は中身が違うときだけ <名前>.brain-kit.md として横に置く"
 fi
 # 骨格を置く（新規でも上乗せでも同じ手順。既存ファイルは絶対に上書きしない）
 python3 - "$KIT/brain-template" "$BRAIN" "$PARTNER" "$DEV" "$OWNER" <<'PY'
@@ -281,7 +281,15 @@ for root, dirs, files in os.walk(src):
         s = os.path.join(root, name)
         d = os.path.join(out_dir, name)
         relname = os.path.join(*parts, name) if parts else name
+        content = None
+        if name.endswith(".md"):
+            content = io.open(s, encoding="utf-8").read()
+            content = content.replace("<相棒名>", partner).replace("<開発担当名>", dev).replace("<持ち主名>", owner)
         if os.path.exists(d):
+            same = (io.open(d, encoding="utf-8").read() == content) if content is not None \
+                   else (open(d, "rb").read() == open(s, "rb").read())
+            if same:
+                kept.append(relname + "（同一）"); continue
             if name.endswith(".md"):
                 alt = d[:-3] + ".brain-kit.md"
                 if os.path.exists(alt):
@@ -291,17 +299,14 @@ for root, dirs, files in os.walk(src):
                 kept.append(relname); continue
         else:
             added.append(relname)
-        if name.endswith(".md"):
-            t = io.open(s, encoding="utf-8").read()
-            t = t.replace("<相棒名>", partner).replace("<開発担当名>", dev).replace("<持ち主名>", owner)
-            io.open(d, "w", encoding="utf-8").write(t)
+        if content is not None:
+            io.open(d, "w", encoding="utf-8").write(content)
         else:
             shutil.copy2(s, d)
-print(f"  足した: {len(added)} 件")
-for x in beside: print(f"  横に置いた（既存あり）: {x} -> {x[:-3]}.brain-kit.md")
-for x in kept:   print(f"  既存のまま: {x}")
+print(f"  足した: {len(added)} 件、既存のまま: {len(kept)} 件")
+for x in beside: print(f"  横に置いた（既存と中身が違う）: {x} -> {x[:-3]}.brain-kit.md")
 PY
-echo "  相棒: $BRAIN/$PARTNER/   開発担当: $DEV（$BRAIN/dev/）"
+echo "  相棒: $BRAIN/$PARTNER/   開発担当: ${DEV}（$BRAIN/dev/）"
 
 # projects/<名前>.md
 while IFS= read -r p; do
@@ -345,7 +350,7 @@ s = s.replace("<repo>", short).replace("2026-01-01", today)
 s = s.replace(f"# {short}\n", f"# {short}\n\nリポジトリ: `{full}`\n", 1)
 io.open(dst, "w", encoding="utf-8").write(s)
 PY
-  echo "  dev/状況/$short.md（$r）"
+  echo "  dev/状況/$short.md（${r}）"
 done < <(split_csv "$REPOS")
 
 # ---------------------------------------------------------------- 2. ~/.claude
@@ -443,7 +448,7 @@ if [ "$CODEX" = yes ]; then
     echo "  codex CLI が無い。npm で入れる:"
     echo "  \$ npm i -g $CODEX_PKG"
     if command -v npm >/dev/null 2>&1; then
-      if confirm "  実行する？"; then npm i -g "$CODEX_PKG" || echo "  warn: npm i -g に失敗。手で入れる"; else echo "  skip（あとで: npm i -g $CODEX_PKG）"; fi
+      if confirm "  実行する？"; then npm i -g "$CODEX_PKG" || echo "  warn: npm i -g に失敗。手で入れる"; else echo "  skip（あとで: npm i -g ${CODEX_PKG}）"; fi
     else
       echo "  npm が無い。node/npm を入れてから: npm i -g $CODEX_PKG"
     fi
@@ -475,11 +480,11 @@ fi
 # ---------------------------------------------------------------- 5. git init
 say "[5/5] git: $BRAIN"
 if git -C "$BRAIN" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  msg="brain: brain-kit の骨格を追加（相棒=$PARTNER、開発担当=$DEV）"
+  msg="brain: brain-kit の骨格を追加（相棒=${PARTNER}、開発担当=${DEV}）"
   echo "  既存のリポジトリ。足した分だけコミットする"
 else
   git -C "$BRAIN" init -q
-  msg="brain: 初期化（brain-kit、相棒=$PARTNER、開発担当=$DEV）"
+  msg="brain: 初期化（brain-kit、相棒=${PARTNER}、開発担当=${DEV}）"
 fi
 git -C "$BRAIN" add -A
 if git -C "$BRAIN" diff --cached --quiet; then
@@ -491,13 +496,13 @@ fi
 
 cat <<MSG
 
-完了（mode=$MODE）。
+完了（mode=${MODE}）。
   brain     : $BRAIN
   相棒      : $BRAIN/$PARTNER/00_核.md（憲法）  02_関係.md（声・持ち主）
   開発担当  : $BRAIN/dev/00_核.md（$DEV の原則）  dev/状況/（リポジトリごとの現在地）
   skills    : $CLAUDE_DIR/skills/{$PARTNER,$DEV,setup,grilling}
   hooks     : $CLAUDE_DIR/hooks/session-end-brain.sh（SessionEnd で daily/ に追記）
-  設定退避  : $BACKUP（退避したものがあれば）
+  設定退避  : ${BACKUP}（退避したものがあれば）
 
 次にやること:
   1. cd $BRAIN && claude を起動して /setup と打つ
