@@ -2,7 +2,10 @@
 # brain-kit installer（対話式。引数で与えた項目は聞かない。--yes で全部既定）
 #
 #   ./install.sh [--mode local|base] [--partner <相棒名>] [--dev <開発担当名>] [--user <持ち主の呼び名>]
-#                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--brain-merge] [--yes]
+#                [--projects "a,b,c"] [--repos "owner/repo,..."] [--brain <dir>] [--brain-merge] [--codex] [--yes]
+#
+#   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
+#             codex login は案内のみ、settings.json に Codex plugin の marketplace と plugin キーを足す
 #
 #   --brain-merge : ~/brain が既にあるとき、無いディレクトリ・無いファイルだけを足す（既存は一切上書きしない。
 #                   同名の .md があれば <名前>.brain-kit.md として横に置く）。対話ならその場で聞く
@@ -24,7 +27,7 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""; BRAIN_MERGE=0
+PARTNER=""; DEV=""; OWNER=""; PROJECTS=""; REPOS=""; MODE=""; BRAIN_MERGE=0; CODEX=""
 BRAIN="${BRAIN_DIR:-$HOME/brain}"
 YES=0
 
@@ -38,8 +41,10 @@ while [ $# -gt 0 ]; do
     --repos)    REPOS="$2"; shift 2 ;;
     --brain)    BRAIN="$2"; shift 2 ;;
     --brain-merge) BRAIN_MERGE=1; shift ;;
+    --codex)    CODEX=yes; shift ;;
+    --no-codex) CODEX=no; shift ;;
     --yes|-y)   YES=1; shift ;;
-    -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,6 +71,11 @@ command -v claude >/dev/null 2>&1 || echo "warn: claude CLI が無い。フッ�
 say "[0/5] 決めること（空 Enter で既定。あとから brain の中で変えられる）"
 ask MODE     "どこで動かす？ local=この機だけ / base=この機を母艦にして外から繋ぐ" "local"
 case "$MODE" in local|base) ;; *) echo "error: --mode は local か base" >&2; exit 2 ;; esac
+if [ "$MODE" = base ]; then
+  echo "  base: この機（$(hostname 2>/dev/null || echo '?')）を母艦にする。brain も Claude Code もここに置く。"
+  echo "        手元の PC からではなく、母艦の上（SSH か WSL のターミナル）で実行していること。"
+  confirm "  いま母艦の上にいる？" || { echo "  母艦に入ってから実行する。手元の PC なら --mode local"; exit 1; }
+fi
 ask PARTNER  "相棒の名前（必須）" ""
 valid_name "$PARTNER" || { echo "error: 相棒の名前が空か、使えない文字（/ 空白 < >）を含む。--partner <名前> で指定" >&2; exit 2; }
 ask DEV      "開発担当の名前（コーディングを任せる人格）" "dev"
@@ -73,7 +83,9 @@ valid_name "$DEV" || { echo "error: --dev の名前が不正" >&2; exit 2; }
 ask OWNER    "あなたの呼び名（相棒があなたをどう呼ぶか）" "持ち主"
 ask PROJECTS "プロジェクト名（カンマ区切り。無ければ空）" ""
 ask REPOS    "GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）" ""
-echo "  mode=$MODE  相棒=$PARTNER  開発担当=$DEV  呼び名=$OWNER  projects=${PROJECTS:-なし}  repos=${REPOS:-なし}  brain=$BRAIN"
+ask CODEX    "ChatGPT／Codex の契約がある？ 連携する？ (yes/no)" "no"
+case "$CODEX" in y|Y|yes|YES) CODEX=yes ;; *) CODEX=no ;; esac
+echo "  mode=$MODE  codex=$CODEX  相棒=$PARTNER  開発担当=$DEV  呼び名=$OWNER  projects=${PROJECTS:-なし}  repos=${REPOS:-なし}  brain=$BRAIN"
 
 CLAUDE_DIR="$HOME/.claude"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -245,7 +257,8 @@ if [ -f "$SETTINGS" ]; then
   mkdir -p "$BACKUP"; cp -a "$SETTINGS" "$BACKUP/settings.json"
   echo "  既存を退避: $SETTINGS -> $BACKUP/settings.json"
 fi
-python3 - "$KIT/claude/settings.snippet.json" "$SETTINGS" <<'PY'
+# merge_settings <snippet.json> : 無いものだけ足す。丸ごと上書きしない
+merge_settings() { python3 - "$1" "$SETTINGS" <<'PY'
 import json, sys, os, io
 snip_path, settings_path = sys.argv[1], sys.argv[2]
 snip = json.load(io.open(snip_path, encoding="utf-8"))
@@ -258,7 +271,7 @@ if os.path.exists(settings_path):
         sys.exit(f"error: {settings_path} が JSON として読めない: {e}")
 added = []
 
-# hooks: イベントごとに、同じ command が無いグループだけ追加
+# hooks: イベントごとに、同じ command が無いグループだけ追加（既存の Orca 中継フックや自前フックはそのまま）
 hooks = cur.setdefault("hooks", {})
 for ev, groups in snip.get("hooks", {}).items():
     have = hooks.setdefault(ev, [])
@@ -273,11 +286,13 @@ for ev, groups in snip.get("hooks", {}).items():
 if "statusLine" not in cur and "statusLine" in snip:
     cur["statusLine"] = snip["statusLine"]; added.append("statusLine")
 
-# enabledPlugins: 無いキーだけ
-ep = cur.setdefault("enabledPlugins", {})
-for k, v in snip.get("enabledPlugins", {}).items():
-    if k not in ep:
-        ep[k] = v; added.append(f"enabledPlugins.{k}")
+# extraKnownMarketplaces / enabledPlugins: 無いキーだけ
+for key in ("extraKnownMarketplaces", "enabledPlugins"):
+    if key not in snip: continue
+    dst = cur.setdefault(key, {})
+    for k, v in snip[key].items():
+        if k not in dst:
+            dst[k] = v; added.append(f"{key}.{k}")
 
 # permissions: 既存に permissions が無いときだけ最小例を置く（既存の allow には触らない）
 if "permissions" not in cur and "permissions" in snip:
@@ -287,6 +302,28 @@ os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 io.open(settings_path, "w", encoding="utf-8").write(json.dumps(cur, ensure_ascii=False, indent=2) + "\n")
 print("  追加:", ", ".join(added) if added else "なし（すべて既にあった）")
 PY
+}
+merge_settings "$KIT/claude/settings.snippet.json"
+
+# ---------------------------------------------------------------- 3.5 Codex（任意）
+if [ "$CODEX" = yes ]; then
+  say "[3.5/5] Codex 連携"
+  if command -v codex >/dev/null 2>&1; then
+    echo "  済み: codex $(codex --version 2>/dev/null | head -1)"
+  else
+    CODEX_PKG="@openai/codex"
+    echo "  codex CLI が無い。npm で入れる:"
+    echo "  \$ npm i -g $CODEX_PKG"
+    if command -v npm >/dev/null 2>&1; then
+      if confirm "  実行する？"; then npm i -g "$CODEX_PKG" || echo "  warn: npm i -g に失敗。手で入れる"; else echo "  skip（あとで: npm i -g $CODEX_PKG）"; fi
+    else
+      echo "  npm が無い。node/npm を入れてから: npm i -g $CODEX_PKG"
+    fi
+  fi
+  echo "  ログインは手で（ブラウザ認証）: codex login"
+  merge_settings "$KIT/claude/settings.codex.json"
+  echo "  claude を起動して /plugin で codex が有効になっているか見る（marketplace の取得に少し時間がかかる）"
+fi
 
 # ---------------------------------------------------------------- 4. issue ラベル
 say "[4/5] issue ラベル"
@@ -339,6 +376,7 @@ cat <<MSG
      → 相棒が順にインタビューして、あなたのこと・声・プロジェクト・開発担当の分担を brain に書く
   2. 終わったら /$PARTNER で相棒として灯る。開発は /$DEV
   3. Orca を使うなら ORCA.md。プラグインは README の「プラグイン」
+$( [ "$CODEX" = yes ] && printf '  4. codex login を済ませ、claude の /plugin で codex を確認。レビューの二重化は開発担当 skill §7\n' )
 MSG
 
 # ---------------------------------------------------------------- base

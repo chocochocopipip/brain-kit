@@ -5,7 +5,8 @@
     "Orca 用フックは ~/.orca/agent-hooks/claude-hook.sh が無ければ '{}' を返して何もしない。Orca を使わないなら消してよい。",
     "Orca デスクトップが自分でフックを書き込むと、同じイベントに Windows 対応の長い版が並ぶことがある。重複しても害はない。",
     "permissions.allow は各自の環境依存。ここには最小の例だけ置く。",
-    "enabledPlugins は /plugin で入れる（README 参照）。"
+    "enabledPlugins: pr-review-toolkit（公式マーケットプレイス）は開発担当 skill の /review-pr が使うので既定で有効にする。",
+    "Codex 連携は settings.codex.json（install.sh --codex のときだけマージ）。"
   ],
   "permissions": {
     "allow": [
@@ -167,5 +168,7 @@
     "type": "command",
     "command": "if [ -x \"$HOME/.orca/agent-hooks/claude-statusline.sh\" ]; then /bin/sh \"$HOME/.orca/agent-hooks/claude-statusline.sh\"; else cat >/dev/null 2>&1; fi"
   },
-  "enabledPlugins": {}
+  "enabledPlugins": {
+    "pr-review-toolkit@claude-plugins-official": true
+  }
 }

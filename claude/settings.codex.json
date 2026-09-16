@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "install.sh --codex のときだけ ~/.claude/settings.json にマージする（無いキーだけ足す）。",
+    "Codex plugin（openai/codex-plugin-cc）を Claude Code の plugin として登録する。Codex CLI と codex login は別途。"
+  ],
+  "extraKnownMarketplaces": {
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  }
+}

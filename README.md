@@ -5,9 +5,9 @@
 > **Quick start** (Linux / macOS / WSL — Windows itself is not supported, use WSL):
 > ```
 > git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
-> npx github:chocochocopipip/brain-kit --partner <name>
+> npx github:chocochocopipip/brain-kit --partner Hikari --dev Takumi
 > ```
-> Then `cd ~/brain && claude` and run `/setup`.
+> `--partner` names your partner persona, `--dev` your coding agent (any names you like). Then `cd ~/brain && claude` and run `/setup`.
 >
 > **Requirements**: git, python3, node >= 18, Claude Code CLI. Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
 
@@ -54,21 +54,32 @@ base の絵:
 
 **`install.sh` は動かす機で走らせる。**base を選ぶなら base 機の上で。手元の別 PC から遠隔で組む形は作っていない。
 
+どこで何を実行するか:
+
+| | どこで | 何を | 手元の PC／スマホ |
+|---|---|---|---|
+| **local** | 使う PC（WSL の Ubuntu か Mac） | `git clone` → `./install.sh --mode local` → その PC で `claude` を起動 | （それ自体が使う PC） |
+| **base** | **母艦（常時稼働の Linux/WSL 機）に SSH か WSL のターミナルで入って**、そこで | `git clone` → `./install.sh --mode base`（brain も Claude Code も母艦に置く。最後に `setup-base.sh` が続く） | Orca のデスクトップ／モバイル版を入れて Tailscale で母艦に繋ぐ**だけ**。手元に brain や Claude Code は要らない |
+
+手元でも Claude Code を使いたい人は、手元で `./install.sh --mode local` を別に走らせ、brain は母艦の brain を git remote（private リポジトリ）で共有する。
+
 ### 2. install.sh（1コマンド＋対話）
 
 ```bash
 git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 ./install.sh
-# clone せずに: npx github:chocochocopipip/brain-kit --partner <相棒名>   （同じ install.sh に引数がそのまま渡る）
 ```
 
-聞かれるのは 6 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定:
+聞かれるのは 7 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定。
+この README の `<相棒名>` のような `<>` は**置き換える印**で、入力時に `<>` は付けない。具体例:
 
 ```bash
-./install.sh --mode local --partner <相棒名> --dev <開発担当名> --user <あなたの呼び名> \
-             --projects "app-a,app-b" --repos "owner/app-a,owner/app-b"
-./install.sh --mode base  ...同じ引数...          # 最後に ./setup-base.sh が続く
-./install.sh --brain-merge ...                   # ~/brain が既にある機に上乗せ（下の「既に入っている環境へ」）
+./install.sh --partner 光 --dev 匠 --user けん --projects "myapp,shop"
+./install.sh --mode local --partner 光 --dev 匠 --user けん --repos "kenken/myapp,kenken/shop" --yes
+./install.sh --mode base  --partner 光 --dev 匠 --user けん          # 母艦の上で。最後に ./setup-base.sh が続く
+./install.sh --brain-merge --partner 光 --dev 匠                     # ~/brain が既にある機に上乗せ（下の「既に入っている環境へ」）
+./install.sh --codex --partner 光 --dev 匠                           # ChatGPT／Codex の契約がある人（下の節）
+npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone せずに。同じ install.sh に引数がそのまま渡る
 ```
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
@@ -152,7 +163,7 @@ git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 |---|---|
 | `~/brain` | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があれば `<名前>.brain-kit.md` として横に置く。git リポジトリなら足した分だけコミット |
 | `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
-| `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例 |
+| `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例。`enabledPlugins` / `extraKnownMarketplaces` は無いキーだけ |
 | Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |
 | Tailscale / Claude Code / gh / node | あればバージョンを表示してスキップ、無ければ入れる |
 
@@ -167,13 +178,28 @@ git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 - `~/.config/orca/agent-hooks/endpoint.env` — Claude Code の中継フックが繋ぐ先
 - `~/.orca/agent-hooks/claude-hook.sh` `claude-statusline.sh` — Orca が生成する中継スクリプト。手で直しても Orca が書き戻すことがある
 
+## GPT（ChatGPT／Codex）契約がある人
+
+無くても全部動く。あると**レビューが二重になり、行き詰まりに別モデルの相談先ができる**:
+
+- 金・権限・migration に触る PR は、開発担当が Codex の adversarial レビューを通してから出す（Claude と同じ盲点を共有しない目）
+- 同じ失敗を繰り返したとき、Codex に別実装や対案を出させて比べる。採用は開発担当が判断
+- Codex のクレジットが切れたら Claude の別モデルで代替する（skill `dev` §7）
+
+やり方: `./install.sh --codex`（対話なら「ChatGPT／Codex の契約がある？」で yes）。
+
+1. `codex` CLI が無ければ npm で入れる（コマンドを表示して確認してから）
+2. **`codex login` は自分でやる**（ブラウザ認証。install.sh は実行しない）
+3. `~/.claude/settings.json` に Codex plugin の marketplace（`openai-codex` → github `openai/codex-plugin-cc`）と
+   plugin キー（`codex` の `openai-codex` マーケットプレイス）を足す（無いときだけ。`claude/settings.codex.json`）
+4. `claude` を起動して `/plugin` で `codex` が有効になっているか見る
+
+`/setup` の (d) 開発担当の節でも「Codex を使うか」を聞き、`dev/00_核.md` に書く。
+
 ## プラグイン
 
-`settings.snippet.json` の `enabledPlugins` は空にしてある（マーケットプレイスの登録が環境ごとに要るため）。
-Claude Code の `/plugin` から入れる:
-
-- `pr-review-toolkit`（公式マーケットプレイス claude-plugins-official）— 開発担当 skill の `/review-pr` が使う
-- `codex`（OpenAI の codex-plugin-cc マーケットプレイス）— 別モデルで書かせる／疑わせる用。任意
+- `pr-review-toolkit`（公式マーケットプレイス claude-plugins-official）— 開発担当 skill の `/review-pr` が使う。`settings.snippet.json` の `enabledPlugins` で既定で有効
+- `codex`（OpenAI の codex-plugin-cc マーケットプレイス）— 上の「GPT 契約がある人」。`--codex` のときだけ
 
 ## ファイル構成
 
@@ -188,6 +214,7 @@ brain-kit/
 ├── claude/
 │   ├── CLAUDE.md             ← グローバル規律（~/.claude/CLAUDE.md）
 │   ├── settings.snippet.json ← hooks / statusLine / enabledPlugins（マージ用）
+│   ├── settings.codex.json   ← Codex plugin の marketplace と plugin キー（--codex のときだけマージ）
 │   ├── hooks/session-end-brain.sh, brain-digest.js
 │   └── skills/partner/ dev/ setup/ grilling/   ← partner/dev は install 時に名前が付く。setup は /setup
 └── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ はそのまま）
@@ -203,7 +230,8 @@ Orca デスクトップが自分でフックを書き込むと、同じイベン
 
 - `./check.sh <元の持ち主の固有名詞 10 語>`（ユーザー名・プロジェクト名 3 つ・相棒名と dev 名の漢字/かな・組織名・GitHub オーナー名）
   ＋ 組み込み 5 パターン（メール／秘密鍵／認証情報の英単語／ホームの絶対パス／IP アドレス）→ **0 件**
-- 同じ 10 語に「アットマーク」と認証情報の英単語 2 つを足した `grep -rniE` を `brain-kit/` 直下で実行 → **0 件**
+- 同じ語にメールアドレスの形（`[a-z0-9._-]+@[a-z0-9.-]+\.[a-z]{2,}`）と認証情報の英単語 2 つを足した `grep -rniE` を `brain-kit/` 直下で実行 → **0 件**
+  （plugin キーの `名前@マーケットプレイス` はメールの形ではないので対象外）
   （語そのものをここに書くと、それ自体が漏れになるので書かない。例外は Quick start に載せた公開リポジトリの URL に含まれる owner 名だけ）
 - `~/.orca/` `~/.config/orca/` の中身は読んでおらず、同梱もしていない。ファイル名の一覧だけ `ORCA.md` にある
 
