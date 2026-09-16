@@ -507,7 +507,7 @@ cat <<MSG
 次にやること:
   1. cd $BRAIN && claude を起動して /setup と打つ
      → 相棒が順にインタビューして、あなたのこと・声・プロジェクト・開発担当の分担を brain に書く
-  2. 終わったら /$PARTNER で相棒として灯る。開発は /$DEV
+  2. 終わったら /$PARTNER で相棒を呼ぶ。開発は /$DEV
   3. Orca を使うなら ORCA.md。プラグインは README の「プラグイン」
 $( [ "$CODEX" = yes ] && printf '  4. codex login を済ませ、claude の /plugin で codex を確認。レビューの二重化は開発担当 skill §7\n' )
 MSG
