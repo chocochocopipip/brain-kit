@@ -1,0 +1,13 @@
+# Obsidian のローカル設定・作業ファイル
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 巨大なエクスポートの生データは commit しない
+*.zip
+archive/**/_blobs/
