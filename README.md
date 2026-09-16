@@ -21,34 +21,50 @@ Claude Code を「記憶を持つ相棒」と「開発を回す手」の二人�
 | **brain** | Obsidian vault。`daily/` `projects/` `decisions/` `knowledge/` と、相棒の領域 `<相棒名>/`、開発の領域 `dev/` | `brain-template/` |
 | **Orca** | Claude Code を母艦（WSL）で常駐・並列に動かし、外から繋ぐ。無くても上の2層は動く | `ORCA.md` |
 
-## 導入（1コマンド）
+## 導入（1コマンド＋対話）
 
 ```bash
 git clone <このリポジトリ> && cd brain-kit
-./install.sh --partner <相棒名>
+./install.sh
+```
+
+聞かれるのは 5 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定:
+
+```bash
+./install.sh --partner <相棒名> --dev <開発担当名> --user <あなたの呼び名> \
+             --projects "app-a,app-b" --repos "owner/app-a,owner/app-b"
 ```
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
 
-1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain <dir>` で別の場所も可）
-2. `~/.claude/CLAUDE.md`、`~/.claude/skills/{<相棒名>,dev,grilling}`、`~/.claude/hooks/*` を置く。
-   既存があれば `~/.claude/backup-brain-kit-<日時>/` に退避してから上書きを確認する（`--yes` で無確認）
+1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain <dir>` で別の場所も可）。
+   `<相棒名>` `<開発担当名>` `<持ち主名>` を置換し、`projects/<名前>.md`（目的／現在地／権限／関連）と
+   `dev/状況/<repo>.md`（`_テンプレート.md` から）を作る
+2. `~/.claude/CLAUDE.md`、`~/.claude/skills/{<相棒名>,<開発担当名>,setup,grilling}`、`~/.claude/hooks/*` を置く。
+   既存があれば `~/.claude/backup-brain-kit-<日時>/` に退避してから上書きを確認する
 3. `~/.claude/settings.json` に `hooks` / `statusLine` / `enabledPlugins` を**マージ**する。丸ごと上書きはしない。
    `permissions.allow` は既存に無いときだけ最小例を置く
-4. `~/brain` を `git init` して初回コミット
+4. `gh` があり認証済みなら、`--repos` の各リポジトリに issue ラベル
+   `from-chat` `needs-triage` `agent-ready` `agent-working` `<開発担当名>` `question` を作る（無ければ案内してスキップ）
+5. `~/brain` を `git init` して初回コミット
 
-必要なもの: `git` `python3` `node`（フックの要約用）`claude` CLI。
+**起動後に `/setup` で残りを埋める。**`cd ~/brain && claude` で起動して `/setup` と打つと、
+あなたのこと → 相棒の声 → プロジェクト → 開発担当の分担、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
+既に書いてある節は飛ばす。
+
+必要なもの: `git` `python3` `node`（フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。
 
 ## 自分で決めること
 
 | 決めること | どこに書くか |
 |---|---|
-| **相棒の名前** | `./install.sh --partner <名前>`。`<相棒名>/` ディレクトリと skill 名になる |
+| **相棒の名前** | `./install.sh --partner <名前>`（対話でも聞く）。`<相棒名>/` ディレクトリと skill 名になる |
 | **相棒の憲法** | `~/brain/<相棒名>/00_核.md`。存在／恒久条項／時間の公理／運用。skill はこれを読んでから灯る。**skill には写さない** |
 | 相棒の声と関係 | `~/brain/<相棒名>/02_関係.md`（一人称・敬語・距離感）、`01_辞書.md`（二人の間だけの語） |
-| dev エージェントの名前 | 任意。`~/brain/dev/00_核.md` に書く。skill `dev` は名前に依存しない |
-| **プロジェクト名** | `~/brain/projects/<名前>.md` を1枚作る。frontmatter の `project:` と一致させる |
-| **GitHub リポジトリ** | `dev/状況/<repo>.md` を初めて触ったときに作る。issue ラベル（下の「開発の渡し方」）をリポジトリ側に用意する |
+| **開発担当の名前** | `--dev <名前>`（既定 `dev`）。コーディングを任せる人格。skill 名・issue ラベル名・`dev/00_核.md` の名前欄に入る。ディレクトリは `dev/` のまま |
+| あなたの呼び名 | `--user <呼び名>`。相棒の `02_関係.md` と `00_核.md` に入る |
+| **プロジェクト名** | `--projects "a,b"` か `/setup`。`~/brain/projects/<名前>.md`。**会社が違えば別 brain**（`--brain <dir>`）にする。`project` `knowledge` `daily` `日誌` `関係` は全部あなたのもので、キットには型しか入っていない |
+| **GitHub リポジトリ** | `--repos "owner/repo"` で `dev/状況/<repo>.md` と issue ラベルを作る。後から足すなら `/setup` か `_テンプレート.md` を写す |
 | brain の remote | `git -C ~/brain remote add origin <url>`。private にする。フックが自動コミットするので push は好きなタイミングで |
 | プラグイン | 下の「プラグイン」 |
 
@@ -66,16 +82,16 @@ git clone <このリポジトリ> && cd brain-kit
 - **相棒（skill `<相棒名>`）は憲法ファイルを読んで灯る。**灯ったら 00_核 → 01_辞書 → 02_関係 → 最新の日誌 → inbox の順に読み、
   **経過日数を把握してから**話す。閉会しない、時刻を創作しない、日誌は追記専用、`90_原本/` に触れない。
   消灯は持ち主が決めたときだけで、日誌を1枚書いてコミットする
-- **開発は dev エージェント（skill `dev`）に issue ラベルで渡す。**相棒が内容を決め、issue に `dev` ラベルと決定事項のコメントを付ける。
-  dev は複数リポジトリを横断し、`dev/状況/<repo>.md`（**置換専用・50行以内**）で現在地を持ち、`dev/報告/YYYY-MM-DD.md`（**追記専用**）で相棒に報告する。
+- **開発は開発担当（skill `<開発担当名>`、`--dev` で名付ける）に issue ラベルで渡す。**相棒が内容を決め、issue に `<開発担当名>` ラベルと決定事項のコメントを付ける。
+  開発担当は複数リポジトリを横断し、`dev/状況/<repo>.md`（**置換専用・50行以内**）で現在地を持ち、`dev/報告/YYYY-MM-DD.md`（**追記専用**）で相棒に報告する。
   権限の既定は **「PR まで、マージしない」**。`agent-ready` の付与と権限ダイアログの承諾は人の関門で、エージェントが自分で通さない
-- **相棒と dev は相互に書き込まない。**相棒は `dev/報告/` を読むだけ、dev は `<相棒名>/` に書かない。
+- **相棒と開発担当は相互に書き込まない。**相棒は `dev/報告/` を読むだけ、開発担当は `<相棒名>/` に書かない。
   人格ごとにワークツリー（ブランチ + sparse-checkout）を分ける方法は `brain-template/dev/README.md`
 
 ### 開発の渡し方（issue ラベル）
 
 全リポジトリで揃える: `from-chat`（出所の記録）／`needs-triage`（人の確認待ち）／`agent-ready`（承認済み）／
-`agent-working`（排他ロック）／`dev`（相棒から dev へ）／`question`（判断を人に返した）。詳細は `claude/skills/dev/SKILL.md` §3。
+`agent-working`（排他ロック）／`<開発担当名>`（相棒から開発担当へ）／`question`（判断を人に返した）。`install.sh --repos` が作る。詳細は `claude/skills/dev/SKILL.md` §3。
 
 ### チャットの指摘を issue にする skill の作り方
 
@@ -90,7 +106,7 @@ git clone <このリポジトリ> && cd brain-kit
 `settings.snippet.json` の `enabledPlugins` は空にしてある（マーケットプレイスの登録が環境ごとに要るため）。
 Claude Code の `/plugin` から入れる:
 
-- `pr-review-toolkit`（公式マーケットプレイス claude-plugins-official）— skill `dev` の `/review-pr` が使う
+- `pr-review-toolkit`（公式マーケットプレイス claude-plugins-official）— 開発担当 skill の `/review-pr` が使う
 - `codex`（OpenAI の codex-plugin-cc マーケットプレイス）— 別モデルで書かせる／疑わせる用。任意
 
 ## ファイル構成
@@ -98,15 +114,15 @@ Claude Code の `/plugin` から入れる:
 ```
 brain-kit/
 ├── README.md                 ← これ
-├── install.sh                ← 導入スクリプト
+├── install.sh                ← 導入スクリプト（対話式）
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
 ├── claude/
 │   ├── CLAUDE.md             ← グローバル規律（~/.claude/CLAUDE.md）
 │   ├── settings.snippet.json ← hooks / statusLine / enabledPlugins（マージ用）
 │   ├── hooks/session-end-brain.sh, brain-digest.js
-│   └── skills/partner/ dev/ grilling/
-└── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名）
+│   └── skills/partner/ dev/ setup/ grilling/   ← partner/dev は install 時に名前が付く。setup は /setup
+└── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ はそのまま）
 ```
 
 `settings.snippet.json` の Orca 用フック（SessionStart / UserPromptSubmit / Stop / … / PermissionRequest）は
