@@ -1,17 +1,19 @@
 # brain-kit
 
-> **EN** — A structure-only template for running Claude Code with two personas: a *partner* that keeps memory in an Obsidian vault (`~/brain`) and a *dev* agent that turns issues into PRs, plus an optional always-on *base* machine (Orca + Tailscale). No personal data included; you fill it in.
+> **EN** — A structure-only template for running Claude Code with four personas: a *partner* that keeps memory in an Obsidian vault (`~/brain`) and helps you decide, a *dev* agent that turns issues into PRs, a *review* agent that reads PRs against a versioned checklist, and a *release* agent that merges and ships only on an explicit label and instruction. Plus a process board (*brain-kit Dashboard*, a Claude Artifact) and an optional always-on *base* machine (Orca + Tailscale). No personal data included; you fill it in.
 >
 > **Quick start** (Linux / macOS / WSL — Windows itself is not supported, use WSL):
 > ```
 > git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
-> npx github:chocochocopipip/brain-kit --partner Hikari --dev Takumi
+> npx github:chocochocopipip/brain-kit --partner Hikari --dev Takumi --review Mio --release Sora
+> npx github:chocochocopipip/brain-kit --update --dry-run      # already installed (v1–v9 too): see what changes
+> npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
-> `--partner` names your partner persona, `--dev` your coding agent (any names you like). Then `cd ~/brain && claude` and run `/setup`.
+> You name all four personas at install time (any names, Japanese is fine). Then `cd ~/brain && claude` and run `/setup`. `--rollback` undoes the last update.
 >
 > **Requirements**: git, python3, node >= 18, Claude Code CLI. Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
 
-Claude Code を「記憶を持つ相棒」と「開発を回す手」の二人格で運用するための、**仕組みだけ**のテンプレート。
+Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で読むレビュー」「マージと本番を入れるリリース」の四人格で運用するための、**仕組みだけ**のテンプレート。
 記憶・個人データ・人名・店名・リポジトリ名・認証情報は入っていない。中身はあなたが書く。
 
 ## これは何か
@@ -28,8 +30,9 @@ Claude Code を「記憶を持つ相棒」と「開発を回す手」の二人�
 
 | 層 | 何をするか | どこにあるか |
 |---|---|---|
-| **Claude Code 設定** | 「作業前に brain を読め、決定は brain に書け」という規律と、二人格の skill、セッション終了時に日次ノートへ自動追記するフック | `claude/` |
-| **brain** | Obsidian vault。`daily/` `projects/` `decisions/` `knowledge/` と、相棒の領域 `<相棒名>/`、開発の領域 `dev/` | `brain-template/` |
+| **Claude Code 設定** | 「作業前に brain を読め、決定は brain に書け」という規律と、四人格の skill、セッション終了時に日次ノートへ自動追記するフック | `claude/` |
+| **brain** | Obsidian vault。`daily/` `projects/` `decisions/` `knowledge/` と、相棒の領域 `<相棒名>/`、開発 `dev/`・レビュー `review/`・リリース `release/` の領域 | `brain-template/` |
+| **工程表** | 起票 → 判断待ち → 開発 → PR → リリースの列 → 本番、の本数と一覧・持ち主の番・今日の予定（brain-kit Dashboard。Claude の Artifact） | `claude/brain-kit/dashboard/` |
 | **Orca** | Claude Code を母艦（WSL）で常駐・並列に動かし、外から繋ぐ。無くても上の2層は動く | `ORCA.md` |
 
 ## 導入
@@ -48,7 +51,7 @@ base の絵:
  手元 PC（Orca デスクトップ）─┐
                               ├─ Tailscale ──▶ base（常時稼働の Ubuntu / WSL）
  スマホ（Orca モバイル）──────┘                 ├─ orca-ide serve（systemd user service, :6768）
-                                                 ├─ Claude Code（相棒 / 開発担当）
+                                                 ├─ Claude Code（相棒 / 開発 / レビュー / リリース）
                                                  └─ ~/brain（Obsidian vault, git）
 ```
 
@@ -70,30 +73,40 @@ git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 ./install.sh
 ```
 
-聞かれるのは 7 つ（空 Enter で既定）。引数で渡せば聞かれない。`--yes` で全部既定。
+聞かれるのは、どこで動かすか・Codex・**4 人の名前**（相棒・開発・レビュー・リリース）・あなたの呼び名・プロジェクト・リポジトリ（空 Enter で既定）。
+引数で渡せば聞かれない。`--yes` で全部既定（名前の既定は役の名前そのもの：相棒・開発・レビュー・リリース）。
+**名前は作るときに全部決める。**日本語でよい。英字でない名前は、skill 名・ブランチ・ラベル・起動スクリプトに使う英字 id を別に聞く（`--partner-id` などでも渡せる）。
 この README の `<相棒名>` のような `<>` は**置き換える印**で、入力時に `<>` は付けない。具体例:
 
 ```bash
-./install.sh --partner 光 --dev 匠 --user けん --projects "myapp,shop"
-./install.sh --mode local --partner 光 --dev 匠 --user けん --repos "kenken/myapp,kenken/shop" --yes
-./install.sh --mode base  --partner 光 --dev 匠 --user けん          # 母艦の上で。最後に ./setup-base.sh が続く
-./install.sh --brain-merge --partner 光 --dev 匠                     # ~/brain が既にある機に上乗せ（下の「既に入っている環境へ」）
-./install.sh --codex --partner 光 --dev 匠                           # ChatGPT／Codex の契約がある人（下の節）
-npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone せずに。同じ install.sh に引数がそのまま渡る
+./install.sh --partner 光 --partner-id hikari --dev 匠 --dev-id takumi --review 澪 --review-id mio --release 湊 --release-id minato --user けん
+./install.sh --mode local --partner Aoi --dev Ren --review Mio --release Sora --user Ken --repos "kenken/myapp,kenken/shop" --yes
+./install.sh --mode base  --partner Aoi --dev Ren --review Mio --release Sora    # 母艦の上で。最後に ./setup-base.sh が続く
+./install.sh --brain-merge --partner Aoi --dev Ren --review Mio --release Sora   # brain-kit ではない自前の ~/brain に上乗せ
+./install.sh --codex --partner Aoi --dev Ren --review Mio --release Sora         # ChatGPT／Codex の契約がある人（下の節）
+npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --release Sora   # clone せずに
 ```
+
+| 名前から作るもの | 相棒 | 開発 | レビュー | リリース |
+|---|---|---|---|---|
+| skill（`/<id>`） | `~/.claude/skills/<相棒id>/` | `…/<開発id>/` | `…/<レビューid>/` | `…/<リリースid>/` |
+| 領域 | `~/brain/<相棒名>/` | `dev/` | `review/` | `release/` |
+| worktree（ブランチ） | `~/brain`（main） | `~/brain-<開発id>` | `~/brain-<レビューid>` | `~/brain-<リリースid>` |
+| issue ラベル（合図） | — | `<開発id>`（相棒 → 開発） | `<レビューid>`（開発 → レビュー） | `<リリースid>`（相棒 → リリース） |
+| 起動スクリプト | `~/.claude/brain-kit/bin/start-<id>`（その worktree で main を取り込んでから `claude "/<id>"`） | ← | ← | ← |
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
 
-1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain-merge` で無いものだけ上乗せ、`--brain <dir>` で別の場所）。
-   `<相棒名>` `<開発担当名>` `<持ち主名>` を置換し、`projects/<名前>.md`（目的／現在地／権限／関連）と
-   `dev/状況/<repo>.md`（`_テンプレート.md` から）を作る
-2. `~/.claude/CLAUDE.md`、`~/.claude/skills/{<相棒名>,<開発担当名>,setup,grilling}`、`~/.claude/hooks/*` を置く。
-   既存があれば `~/.claude/backup-brain-kit-<日時>/` に退避してから上書きを確認する
+1. `~/brain` を作り、`brain-template/` の骨格を置く。**既にあれば止まる**（`--brain-merge` で無いものだけ上乗せ、`--brain <dir>` で別の場所。
+   前の版の brain-kit が入っていれば `--update` を案内する）。名前を埋め、`projects/<名前>.md`（目的／現在地／権限／関連）と
+   `dev/状況/<repo>.md`（`_テンプレート.md` から）を作る。版と名前は `~/brain/.brain-kit/config.json` に記録する
+2. `~/.claude/CLAUDE.md`、`~/.claude/skills/{4 人の id,setup,grilling}`、`~/.claude/hooks/*`、`~/.claude/brain-kit/`（起動スクリプト・工程表・見回りの雛形・heavy-lock）を置く。
+   既存があれば `~/.claude/backup-brain-kit-<日時>/` に退避してから、新しい版にする／今のまま／差分を見る、を聞く（`--yes` で新しい版）
 3. `~/.claude/settings.json` に `hooks` / `statusLine` / `enabledPlugins` を**マージ**する。丸ごと上書きはしない。
    `permissions.allow` は既存に無いときだけ最小例を置く
-4. `gh` があり認証済みなら、`--repos` の各リポジトリに issue ラベル
-   `from-chat` `needs-triage` `agent-ready` `agent-working` `<開発担当名>` `question` を作る（無ければ案内してスキップ）
-5. `~/brain` を `git init` して初回コミット
+4. `~/brain` を `git init` して初回コミット。開発・レビュー・リリースの worktree を作る（相棒の領域は sparse-checkout で見えなくする。`--no-worktrees` で作らない）
+5. `gh` があり認証済みなら、`--repos` の各リポジトリに issue ラベル
+   `from-chat` `needs-triage` `agent-ready` `agent-working` `question` と、開発・レビュー・リリースの id のラベルを作る（無ければ案内してスキップ）
 6. `--mode base` なら続けて `./setup-base.sh`（冪等。各段で済みならスキップ。ネット取得は確認してから。`--dry-run` で印字だけ）:
    前提確認 → git/curl/jq/python3/gh/node → Claude Code CLI → Tailscale（`sudo tailscale up` は手で）→
    Orca の `.deb` と不足ライブラリと Xvfb → systemd user service で `orca-ide serve` を常駐（WSL は `/etc/wsl.conf` の `[boot] systemd=true` を案内）→
@@ -102,22 +115,44 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
 ### 3. /setup で残りを埋める
 
 `cd ~/brain && claude` で起動して `/setup` と打つと、
-あなたのこと → 相棒の声 → プロジェクト → 開発担当の分担、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
+あなたのこと → 相棒の声 → プロジェクト → 開発の分担 → レビューの規準 → リリースの手順 → 相棒に任せる範囲、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
 既に書いてある節は飛ばす。
 
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
-**Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` と `--doctor` は macOS 標準の bash 3.2 でも動く。bash 4 以降の機能・GNU 拡張・awk・column は使っていない）。
+**Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` は macOS 標準の bash 3.2 でも動く書き方だけを使う。本体は `lib/kit.py`（Python 3.8 以上、標準ライブラリだけ）。bash 4 以降の機能・GNU 拡張・column は使っていない。任意の `heavy-lock` だけ awk を使う）。
 
-入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、brain の骨格・`~/.claude` の skill と hook・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／古い／足りない／手で直した）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+
+## 更新のしかた（すでに使っている人）
+
+```bash
+npx github:chocochocopipip/brain-kit --update --dry-run    # 何が変わるかを見る（何も変えない）
+npx github:chocochocopipip/brain-kit --update              # 上げる
+npx github:chocochocopipip/brain-kit --rollback            # 直前の更新を戻す
+```
+
+clone してあるなら `git pull && ./install.sh --update`。
+
+- **上がるのは kit のものだけ**：skill・規約（brain の `README.md` `CLAUDE.md`、各領域の `README.md`、`記録/README.md` など）・台本・フック。一覧は `kitfiles.tsv`
+- **持ち主のものには触らない**：核・辞書・関係・任せる範囲・振り返り・日誌・決定・知識・プロジェクト・状況カード・報告・記録・規準・手順。新しい版で増えた骨格は、無いものだけ足す
+- **今の版を見分ける**：`~/brain/.brain-kit/config.json` があればそれ。v1〜v9 のように記録が無ければ、kit のファイルの形から判定し、最初の更新で記録を書く
+- **名前は引き継ぐ**：相棒と開発は今の名前の skill・領域をそのまま使う。新しく足すレビューとリリースの 2 人だけ名前を聞く（`--review <名前> --release <名前>`、英字でなければ `--review-id` `--release-id` も）
+- **手で直した kit のファイル**は上書きしない。**新しい版にする／今のままにする／差分を見る**の 3 択。対話が無いとき（`--yes`・パイプ）は今のままにして、最後に一覧を出す。今のままにした版は次の更新で聞き直さない
+- **`--dry-run`**：足すもの・上げるもの・触らないもの・手で直したもの、と差分を出す
+- **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--rollback` で直前の更新を戻す（上げたものを戻し、足したものを消し、作った worktree を外す。GitHub のラベルは消さない）。brain にはどちらもコミットが 1 つ残る
+- 最後に、上がった版の変更点（`CHANGELOG.md` の該当の節）と、新しく使えるもの（レビュー・リリース・工程表）の始め方を出す
+- 2 回目の `--update` は何も変えない
 
 ## 自分で決めること
 
 | 決めること | どこに書くか |
 |---|---|
-| **相棒の名前** | `./install.sh --partner <名前>`（対話でも聞く）。`<相棒名>/` ディレクトリと skill 名になる |
+| **4 人の名前** | `--partner` `--dev` `--review` `--release`（対話でも聞く）。英字でない名前は `--<役>-id` の英字 id も。相棒の名前は `<相棒名>/` ディレクトリに、id は skill 名・worktree・ブランチ・ラベル・起動スクリプトになる。**変えるのは作るときだけ**（更新では変えない） |
 | **相棒の憲法** | `~/brain/<相棒名>/00_核.md`。存在／恒久条項／時間の公理／運用。skill はこれを読んでから始まる。**skill には写さない** |
 | 相棒の声と関係 | `~/brain/<相棒名>/02_関係.md`（一人称・敬語・距離感）、`01_辞書.md`（二人の間だけの語） |
-| **開発担当の名前** | `--dev <名前>`（既定 `dev`）。コーディングを任せる人格。skill 名・issue ラベル名・`dev/00_核.md` の名前欄に入る。ディレクトリは `dev/` のまま |
+| レビューの規準 | `~/brain/review/規準.md`（版つき）。雛形は一般的な項目だけ。見逃しが出たら足して版を上げる |
+| リリースの手順 | `~/brain/release/手順.md`。リポジトリごとの入れ方と、型 A を許すリポジトリ（既定は無し）。**書いていないリポジトリには入れない** |
+| 相棒に任せる範囲 | `~/brain/<相棒名>/03_任せる範囲.md`。相棒が決めて事後に報告してよいことと、必ず聞くこと |
 | あなたの呼び名 | `--user <呼び名>`。相棒の `02_関係.md` と `00_核.md` に入る |
 | **プロジェクト名** | `--projects "a,b"` か `/setup`。`~/brain/projects/<名前>.md`。**会社が違えば別 brain**（`--brain <dir>`）にする。`project` `knowledge` `daily` `日誌` `関係` は全部あなたのもので、キットには型しか入っていない |
 | **GitHub リポジトリ** | `--repos "owner/repo"` で `dev/状況/<repo>.md` と issue ラベルを作る。後から足すなら `/setup` か `_テンプレート.md` を写す |
@@ -135,19 +170,41 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
   `claude -p --model haiku` に「やったこと／決定事項／未解決事項」を書かせて `daily/YYYY-MM-DD.md` に追記、`~/brain` にコミットする。
   要約に失敗したら依頼一覧にフォールバックする。ログは `~/.claude/hooks/brain-hook.log`。
   モデルと時間は `BRAIN_HOOK_MODEL` `BRAIN_HOOK_TIMEOUT`、vault の場所は `BRAIN_DIR` で変えられる
-- **相棒（skill `<相棒名>`）は憲法ファイルを読んで始まる。**起動したら 00_核 → 01_辞書 → 02_関係 → 最新の日誌 → inbox の順に読み、
+- **相棒（skill `<相棒id>`）は憲法ファイルを読んで始まる。**起動したら 00_核 → 01_辞書 → 02_関係 → 最新の日誌 → inbox の順に読み、
   **経過日数を把握してから**話す。閉会しない、時刻を創作しない、日誌は追記専用、`90_原本/` に触れない。
   セッションを閉じるのは持ち主が決めたときだけで、日誌を1枚書いてコミットする
-- **開発は開発担当（skill `<開発担当名>`、`--dev` で名付ける）に issue ラベルで渡す。**相棒が内容を決め、issue に `<開発担当名>` ラベルと決定事項のコメントを付ける。
+- **開発は開発担当（skill `<開発id>`、`--dev` で名付ける）に issue ラベルで渡す。**相棒が内容を決め、issue に `<開発id>` ラベルと決定事項のコメントを付ける。子（サブエージェント）で並列に進める。
   開発担当は複数リポジトリを横断し、`dev/状況/<repo>.md`（**置換専用・50行以内**）で現在地を持ち、`dev/報告/YYYY-MM-DD.md`（**追記専用**）で相棒に報告する。
   権限の既定は **「PR まで、マージしない」**。`agent-ready` の付与と権限ダイアログの承諾は人の関門で、エージェントが自分で通さない
-- **相棒と開発担当は相互に書き込まない。**相棒は `dev/報告/` を読むだけ、開発担当は `<相棒名>/` に書かない。
-  人格ごとにワークツリー（ブランチ + sparse-checkout）を分ける方法は `brain-template/dev/README.md`
+- **PR はレビュー（skill `<レビューid>`）が規準で読む。**開発が PR に `<レビューid>` ラベルを付け、レビューが `review/規準.md`（版つき）で読んで OK／NG と番号つきの指摘を PR に書く。
+  NG は開発と直接往復する。見逃しは相棒が 1 日 1 回 `review/評価/` に付け、レビューが規準に足して版を上げる
+- **マージと本番はリリース（skill `<リリースid>`）だけ。**相棒と持ち主が確かめた PR に、相棒が `<リリースid>` ラベルと**指示のコメント**を付けたときだけ入れる。
+  入ったと言うのは main の sha・配信の READY・SELECT の 3 つがそろってから。止められたら回避せず相棒に返す。
+  **型 A**（migration 無し・本番データの SQL 無し・見た目が変わらない・お金の計算と権限の門に触らない・`手順.md` で許したリポジトリ）だけは、レビューが OK と一緒に直接渡してよい
+- **相棒が決めてよい範囲**は `<相棒名>/03_任せる範囲.md`。それ以外は持ち主に聞く。迷ったら聞く側
+- **振り返り**：4 人が手順から外れた動きを相棒が 1 日 1 回 `<相棒名>/20_振り返り.md` に 1 行ずつ残し、効く人の skill か手順に返す
+- **人格どうしは相互に書き込まない。**自分の領域と共通の `decisions/` `knowledge/` `projects/` だけ（`review/評価/` は相棒）。
+  開発・レビュー・リリースは自分の worktree で書いて main に取り込む。**伝言は合図の補助で、持ち主の承認ではない**
 
 ### 開発の渡し方（issue ラベル）
 
 全リポジトリで揃える: `from-chat`（出所の記録）／`needs-triage`（人の確認待ち）／`agent-ready`（承認済み）／
-`agent-working`（排他ロック）／`<開発担当名>`（相棒から開発担当へ）／`question`（判断を人に返した）。`install.sh --repos` が作る。詳細は `claude/skills/dev/SKILL.md` §3。
+`agent-working`（排他ロック）／`question`（判断を人に返した）／`<開発id>`（相棒 → 開発）／`<レビューid>`（開発 → レビュー）／`<リリースid>`（相棒 → リリース、指示のコメントと一緒に）。
+`install.sh --repos` と `--update` が作る（無いものだけ）。詳細は `claude/skills/dev/SKILL.md` §3。
+
+## 工程表（brain-kit Dashboard）
+
+起票 → 判断待ち → 開発 → PR（レビュー中）→ リリースの列 → 本番、の本数と一覧、**持ち主の番**、**今日の予定**を 1 枚で見せるページ。
+Claude の Artifact（`db` の capability）で、中身は相棒が節目に書き込む。
+
+- 相棒に「工程表を作って」と言うと、`~/.claude/brain-kit/dashboard/index.html` を Artifact として publish し、URL を `~/brain/.brain-kit/dashboard-url` に残す
+- 節目（PR が入った・起票した・判断が済んだ・朝）に、相棒が `collect.py`（`gh` で `--repos` のリポジトリを読むだけ）で集め、Artifact の `board/current` に置く。持ち主の番と今日の予定は相棒が書く
+- 段はラベルで決まる（`collect.py` の先頭に表）。手順は相棒の skill の「工程表」節
+
+### 見回りと重いテスト（任意）
+
+- Orca の automation で、仕事があるときだけ開発やレビューを起動する雛形：`~/.claude/brain-kit/automations/`（`precheck.sh` と README）
+- `~/.claude/brain-kit/bin/heavy-lock <コマンド>`：空きメモリがあるときだけ次の重いテストを 1 本通す入口（Linux と macOS）
 
 ### チャットの指摘を issue にする skill の作り方
 
@@ -163,7 +220,8 @@ npx github:chocochocopipip/brain-kit --partner 光 --dev 匠           # clone �
 
 | 既にあるもの | 何が起きるか |
 |---|---|
-| `~/brain` | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があり**中身が違うとき**だけ `<名前>.brain-kit.md` として横に置く（同一なら何もしない）。git リポジトリなら足した分だけコミット。途中で落ちても同じコマンドで再実行すれば続きから進む |
+| `~/brain`（brain-kit が前の版で入っている） | `install.sh` は止まって `--update` を案内する（上の「更新のしかた」）。 |
+| `~/brain`（brain-kit ではない自前の vault） | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があり**中身が違うとき**だけ `<名前>.brain-kit.md` として横に置く（同一なら何もしない）。git リポジトリなら足した分だけコミット。途中で落ちても同じコマンドで再実行すれば続きから進む |
 | `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
 | `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例。`enabledPlugins` / `extraKnownMarketplaces` は無いキーだけ |
 | Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |
@@ -211,6 +269,11 @@ brain-kit/
 ├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
 ├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。package.json / LICENSE(MIT)
 ├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
+├── lib/kit.py                ← 本体（install / --update / --rollback / --doctor）
+├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）
+├── VERSION / CHANGELOG.md    ← 版と変更点（--update の最後に出る）
+├── migrations/fingerprints.json ← 版の記録が無い v1〜v9 を見分ける指紋（行ごとのハッシュだけ。tools/make-fingerprints.py が作る）
+├── tests/e2e.sh              ← サンドボックス HOME で 新規・v8/v9 → v10・2 回目・dry-run・3 択・rollback・doctor を実走
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
 ├── claude/
@@ -218,8 +281,9 @@ brain-kit/
 │   ├── settings.snippet.json ← hooks / statusLine / enabledPlugins（マージ用）
 │   ├── settings.codex.json   ← Codex plugin の marketplace と plugin キー（--codex のときだけマージ）
 │   ├── hooks/session-end-brain.sh, brain-digest.js
-│   └── skills/partner/ dev/ setup/ grilling/   ← partner/dev は install 時に名前が付く。setup は /setup
-└── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ はそのまま）
+│   ├── skills/partner/ dev/ review/ release/ setup/ grilling/   ← 4 人は install 時に名前（id）が付く
+│   └── brain-kit/            ← ~/.claude/brain-kit/ に置く: dashboard/（工程表と collect.py）automations/ bin/heavy-lock
+└── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ review/ release/ はそのまま）
 ```
 
 `settings.snippet.json` の Orca 用フック（SessionStart / UserPromptSubmit / Stop / … / PermissionRequest）は
@@ -228,7 +292,13 @@ Orca デスクトップが自分でフックを書き込むと、同じイベン
 
 ## 渡す前の確認（実施済み）
 
-`CHECKLIST.md` の手順を 2026-09-17 に実施した:
+v10（2026-10-01）:
+
+- `check.sh` を、元の持ち主の固有名詞 43 語（人名・人格名・プロジェクト名・店名・組織名・テナントや基盤の id・特定の相棒の語彙）を**リポジトリの外のファイル**で渡して実行 → **0 件**。
+  語はリポジトリにもログにも出さない（CI は secret `BRAIN_KIT_CHECK_WORDS` から読む。当たったときも「ファイル:行」だけを出す）
+- `tests/e2e.sh` を bash 3.2（`bash:3.2` コンテナ、BusyBox の道具）で実走 → 全部通過。macOS の実機では走らせていない（CI の macos-latest で `/bin/bash` の 3.2 が走る）
+
+v9 までは `CHECKLIST.md` の手順を 2026-09-17 に実施した:
 
 - `./check.sh <元の持ち主の固有名詞 10 語>`（ユーザー名・プロジェクト名 3 つ・相棒名と dev 名の漢字/かな・組織名・GitHub オーナー名）
   ＋ 組み込み 5 パターン（メール／秘密鍵／認証情報の英単語／ホームの絶対パス／IP アドレス）→ **0 件**
