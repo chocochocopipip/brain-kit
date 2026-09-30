@@ -1,0 +1,184 @@
+<title>brain-kit Dashboard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700&display=swap">
+<style>
+/* 工程表: 上に流れ（段ごとの本数）、下に持ち主の番と今日の予定、その下に段ごとの一覧。 */
+:root {
+  --bg: #f3f5f6; --panel: #ffffff; --ink: #1c2429; --muted: #5d6b73; --line: #d7dee2;
+  --accent: #2f6f8f; --accent-soft: #e1eef4; --warn: #9a5b00; --warn-soft: #fbefd9; --ok: #2e7447; --ok-soft: #e0f1e6;
+  --display: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --body: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12181b; --panel: #1a2226; --ink: #e3e9ec; --muted: #93a2aa; --line: #2c373d;
+  --accent: #7bb6d4; --accent-soft: #1d3440; --warn: #e6b366; --warn-soft: #3a2c16; --ok: #7cc79a; --ok-soft: #173424; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12181b; --panel: #1a2226; --ink: #e3e9ec; --muted: #93a2aa; --line: #2c373d;
+  --accent: #7bb6d4; --accent-soft: #1d3440; --warn: #e6b366; --warn-soft: #3a2c16; --ok: #7cc79a; --ok-soft: #173424; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); line-height: 1.6; }
+.wrap { max-width: 72rem; margin: 0 auto; padding-inline: 16px; padding-block: 20px 40px; display: grid; gap: 20px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+h1 { font-family: var(--display); font-size: 1.5rem; margin: 0; text-wrap: balance; letter-spacing: .02em; }
+.meta { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.flow { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+.stage { padding: 12px 14px; border-left: 1px solid var(--line); display: grid; gap: 2px; text-decoration: none; color: inherit; position: relative; }
+.stage:first-child { border-left: 0; }
+.stage:hover, .stage:focus-visible { background: var(--accent-soft); outline: none; }
+.stage .k { font-size: .75rem; color: var(--muted); letter-spacing: .04em; }
+.stage .n { font-family: var(--mono); font-size: 1.9rem; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stage.decide .n { color: var(--warn); }
+.stage.prod .n { color: var(--ok); }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+section.box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+h2 { font-size: .95rem; margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
+h2 .c { font-family: var(--mono); color: var(--muted); font-weight: 400; font-size: .85rem; }
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: baseline; }
+.ref { font-family: var(--mono); font-size: .8rem; color: var(--muted); white-space: nowrap; }
+li a { color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underline; }
+.chip { font-size: .7rem; padding: 0 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; white-space: nowrap; }
+.chip.draft { background: var(--line); color: var(--muted); }
+.owner li .ref { color: var(--warn); }
+.owner { border-color: var(--warn); background: linear-gradient(var(--warn-soft), var(--warn-soft)) top / 100% 3px no-repeat, var(--panel); }
+.plan .ref { min-width: 3.2em; }
+.empty { color: var(--muted); font-size: .9rem; }
+.stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
+.notice { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 16px; color: var(--muted); }
+.notice code { font-family: var(--mono); font-size: .85em; color: var(--ink); }
+.err { color: var(--warn); font-size: .85rem; }
+@media (max-width: 760px) {
+  .flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stage:nth-child(4) { border-left: 0; }
+  .stage:nth-child(n+4) { border-top: 1px solid var(--line); }
+  .cols { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>工程表</h1>
+    <div class="meta" id="meta">読み込み中</div>
+  </header>
+
+  <nav class="flow" id="flow" aria-label="段ごとの本数"></nav>
+
+  <div class="cols">
+    <section class="box owner" aria-labelledby="owner-h">
+      <h2 id="owner-h">持ち主の番 <span class="c" id="owner-c"></span></h2>
+      <ul id="owner"></ul>
+    </section>
+    <section class="box plan" aria-labelledby="plan-h">
+      <h2 id="plan-h">今日の予定 <span class="c" id="plan-c"></span></h2>
+      <ul id="plan"></ul>
+    </section>
+  </div>
+
+  <div class="notice" id="notice" hidden></div>
+  <div class="stages" id="stages"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var STAGES = [["filed", "起票"], ["decide", "判断待ち"], ["dev", "開発"], ["review", "PR（レビュー中）"], ["release", "リリースの列"], ["prod", "本番"]];
+  var state = { board: null, owner: null, plan: null };
+
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function fmt(iso) {
+    if (!iso) return "";
+    var d = new Date(iso); if (isNaN(d)) return iso;
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function itemLi(ref, text, url, chips) {
+    var li = el("li");
+    li.appendChild(el("span", "ref", ref));
+    var body = el("span");
+    if (url && /^https:\/\//.test(url)) { var a = el("a", null, text); a.href = url; a.target = "_blank"; a.rel = "noopener"; body.appendChild(a); }
+    else body.appendChild(el("span", null, text));
+    (chips || []).forEach(function (c) { body.appendChild(el("span", "chip" + (c === "下書き" ? " draft" : ""), c)); });
+    li.appendChild(body);
+    return li;
+  }
+  function fill(ul, rows, emptyText) {
+    ul.textContent = "";
+    if (!rows.length) { ul.appendChild(el("li", "empty", emptyText)); return; }
+    rows.forEach(function (r) { ul.appendChild(r); });
+  }
+
+  function render() {
+    var b = state.board || {}, items = Array.isArray(b.items) ? b.items : [];
+    var counts = {};
+    STAGES.forEach(function (s) { counts[s[0]] = 0; });
+    items.forEach(function (it) { if (it && counts.hasOwnProperty(it.stage)) counts[it.stage]++; });
+
+    var flow = document.getElementById("flow");
+    flow.textContent = "";
+    STAGES.forEach(function (s) {
+      var a = el("a", "stage " + s[0]); a.href = "#" + s[0];
+      a.appendChild(el("span", "k", s[1]));
+      a.appendChild(el("span", "n", state.board ? String(counts[s[0]]) : "–"));
+      flow.appendChild(a);
+    });
+
+    var meta = document.getElementById("meta");
+    meta.textContent = state.board ? "集計 " + fmt(b.collected_at) + "・" + (b.repos || []).length + " リポジトリ" : "まだ集計が無い";
+
+    // 持ち主の番: 相棒が書いたもの＋集計が拾った判断待ち（同じ ref は 1 つに）
+    var seen = {}, owner = [];
+    ((state.owner && state.owner.items) || []).concat(b.owner_auto || []).forEach(function (o) {
+      if (!o || !o.text) return;
+      var key = o.ref || o.text; if (seen[key]) return; seen[key] = 1;
+      owner.push(itemLi(o.ref || "—", o.text, o.url));
+    });
+    fill(document.getElementById("owner"), owner, "いま持ち主の判断を待っているものは無い");
+    document.getElementById("owner-c").textContent = owner.length ? owner.length + " 件" : "";
+
+    var plan = state.plan || {}, today = new Date(), iso = today.getFullYear() + "-" + ("0" + (today.getMonth() + 1)).slice(-2) + "-" + ("0" + today.getDate()).slice(-2);
+    var planRows = (plan.date === iso ? plan.items || [] : []).map(function (p) { return itemLi(p.time || "—", p.text || ""); });
+    fill(document.getElementById("plan"), planRows, plan.date && plan.date !== iso ? "今日の予定はまだ（最後の予定は " + plan.date + "）" : "今日の予定はまだ無い");
+    document.getElementById("plan-c").textContent = iso;
+
+    var wrap = document.getElementById("stages");
+    wrap.textContent = "";
+    if (!state.board) return;
+    STAGES.forEach(function (s) {
+      var sec = el("section", "box"); sec.id = s[0];
+      var h = el("h2", null, s[1]); h.appendChild(el("span", "c", counts[s[0]] + " 件"));
+      sec.appendChild(h);
+      var ul = el("ul");
+      var rows = items.filter(function (it) { return it.stage === s[0]; }).map(function (it) {
+        var chips = [];
+        if (it.kind === "pr") chips.push("PR"); if (it.draft) chips.push("下書き");
+        return itemLi(it.repo.split("/").pop() + "#" + it.number, it.title, it.url, chips);
+      });
+      fill(ul, rows, s[0] === "prod" ? (b.prod_since || "") + " 以降に入ったものは無い" : "無い");
+      sec.appendChild(ul);
+      if (s[0] === "prod" && (b.errors || []).length) sec.appendChild(el("p", "err", "読めなかったリポジトリ: " + b.errors.join("; ")));
+      wrap.appendChild(sec);
+    });
+  }
+
+  function notice(html) { var n = document.getElementById("notice"); n.hidden = !html; n.innerHTML = html || ""; }
+
+  render();
+  notice("中身は相棒が書き込む。まだ空なら、相棒に「工程表を更新して」と言う（<code>collect.py</code> で集めて <code>board/current</code> に置く）。");
+
+  var use = window.claude && window.claude.use;
+  if (!use) return;
+  window.claude.use("db").then(function (db) {
+    if (!db) { notice("この表示では保存された中身を読めない。claude.ai で開くと出る。"); return; }
+    function watch(path, key) {
+      db.doc(path).onSnapshot(function (snap) {
+        state[key] = snap.exists ? snap.data() : null;
+        if (key === "board") notice(state.board ? "" : "まだ集計が無い。相棒に「工程表を更新して」と言う。");
+        render();
+      }, function () { notice("中身を読めなかった。しばらくして開き直す。"); });
+    }
+    watch("board/current", "board");
+    watch("board/owner", "owner");
+    watch("board/plan", "plan");
+  });
+})();
+</script>

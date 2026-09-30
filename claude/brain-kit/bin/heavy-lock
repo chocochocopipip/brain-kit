@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# heavy-lock — 重いテスト（jest・vitest・docker の SQL・typecheck など）の入口。任意。
+# 空きメモリに余裕があるときだけ次の 1 本を通す。4 人格とその子が同じ入口を使うと、同時に走らせすぎて落ちるのを防げる。
+#
+#   heavy-lock npx jest --maxWorkers=4
+#   heavy-lock bash -c 'npm run build && npm test'
+#
+# 入る条件：空いている枠がある、かつ 空きメモリ ≥ 下限（FLOOR）＋ 1 本分（NEED）。
+# 入ったあと RAMP 秒は次を入れない（走り出した 1 本がメモリを取り終わる前に、次が同じ空きを見て入らないように）。
+#
+# 環境変数（既定値は目安。自分の機で 1 本がどれだけ使うかを測って決める）：
+#   HEAVY_LOCK_NEED_GB=4    1 本分に見込む量
+#   HEAVY_LOCK_FLOOR_GB=4   常に残す量（Claude のセッションや DB の分）
+#   HEAVY_LOCK_SLOTS=4      同時の上限
+#   HEAVY_LOCK_RAMP=30      入ったあと次を入れない秒数（終われば早く開く）
+#   HEAVY_LOCK_DIR=~/.cache/heavy-lock
+#
+# Linux（/proc/meminfo の MemAvailable）と macOS（vm_stat の free＋inactive＋speculative）で動く。
+# 鍵は mkdir で取る（flock が無い macOS でも同じ）。bash 3.2 で動く書き方だけを使う。
+set -u
+
+NEED_GB=${HEAVY_LOCK_NEED_GB:-4}
+FLOOR_GB=${HEAVY_LOCK_FLOOR_GB:-4}
+SLOTS=${HEAVY_LOCK_SLOTS:-4}
+RAMP=${HEAVY_LOCK_RAMP:-30}
+DIR=${HEAVY_LOCK_DIR:-$HOME/.cache/heavy-lock}
+mkdir -p "$DIR"
+
+[ $# -gt 0 ] || { echo "usage: heavy-lock <command...>" >&2; exit 2; }
+
+avail_kb() {
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemAvailable:/ {print $2}' /proc/meminfo
+  elif command -v vm_stat >/dev/null 2>&1; then
+    vm_stat | awk '
+      /page size of/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) ps = $i }
+      /^Pages (free|inactive|speculative):/ { gsub(/\./, "", $NF); n += $NF }
+      END { if (ps == 0) ps = 4096; printf "%d\n", n * ps / 1024 }'
+  else
+    echo 0
+  fi
+}
+need_kb=$(( (NEED_GB + FLOOR_GB) * 1024 * 1024 ))
+
+# 鍵: mkdir は原子的。持ち主の pid を中に書き、死んだ持ち主の鍵は取り戻す
+take() { # take <dir>
+  if mkdir "$1" 2>/dev/null; then echo $$ >"$1/pid"; return 0; fi
+  local p
+  p="$(cat "$1/pid" 2>/dev/null || echo)"
+  if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+    rm -rf "$1"
+    if mkdir "$1" 2>/dev/null; then echo $$ >"$1/pid"; return 0; fi
+  fi
+  return 1
+}
+drop() { rm -rf "$1"; }
+
+# 入口は 1 人ずつ
+while ! take "$DIR/admission"; do sleep 1; done
+slot=""
+waited=0
+while :; do
+  i=1
+  while [ "$i" -le "$SLOTS" ]; do
+    if take "$DIR/slot-$i"; then slot="$DIR/slot-$i"; break; fi
+    i=$((i + 1))
+  done
+  if [ -n "$slot" ]; then
+    if [ "$(avail_kb)" -ge "$need_kb" ]; then break; fi
+    drop "$slot"; slot=""          # 枠はあるがメモリが足りない。枠を返して待つ
+  fi
+  if [ $((waited % 60)) -eq 0 ]; then
+    echo "heavy-lock: 待機中（空き $(( $(avail_kb) / 1024 / 1024 ))GB、必要 $((NEED_GB + FLOOR_GB))GB）" >&2
+  fi
+  sleep 5; waited=$((waited + 5))
+done
+
+echo "heavy-lock: ${slot##*/} で開始（空き $(( $(avail_kb) / 1024 / 1024 ))GB）" >&2
+"$@" &
+pid=$!
+echo "$pid" >"$slot/pid"           # 枠の持ち主は走っている本体
+trap 'kill -TERM "$pid" 2>/dev/null' INT TERM
+n=0
+while [ "$n" -lt "$RAMP" ] && kill -0 "$pid" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+drop "$DIR/admission"              # 次の人を入口に入れる
+wait "$pid"
+rc=$?
+drop "$slot"
+exit "$rc"

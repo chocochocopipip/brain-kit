@@ -15,6 +15,9 @@
   領域 `review/` `release/`、worktree（`~/brain-<id>`）、ラベル（開発・レビュー・リリース）、起動スクリプト（`~/.claude/brain-kit/bin/start-<id>`）を作る
   - 型 A（レビューの OK だけで入れてよい PR。既定は使わない）、相棒が決めて事後に報告してよい範囲（`<相棒名>/03_任せる範囲.md`）、振り返りの表（`<相棒名>/20_振り返り.md`）、1 日 1 回の評価（`review/評価/`）
 - **名前は作るときに 4 人とも決める**：対話で順に聞く（`--partner` `--dev` `--review` `--release` でも）。日本語の名前は英字 id を別に聞く
+- **工程表（brain-kit Dashboard）**：起票 → 判断待ち → 開発 → PR → リリースの列 → 本番、の本数と一覧・持ち主の番・今日の予定。Claude の Artifact（db）。`collect.py` が `gh` で集め、相棒が節目に書き込む
+- **任意**：Orca の automation で見回る雛形（`precheck.sh`）、重いテストの入口 `heavy-lock`（空きメモリで通す）
+- `check.sh`：BusyBox・BSD の grep でも動くように、grep が失敗したら止まるように。語をリポジトリの外のファイル（CI は Actions の BRAIN_KIT_CHECK_WORDS）から読む
 
 ## v9
 

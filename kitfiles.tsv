@@ -17,6 +17,11 @@ gen:start:partner	~/.claude/brain-kit/bin/start-{partner.id}	exec
 gen:start:dev	~/.claude/brain-kit/bin/start-{dev.id}	exec
 gen:start:review	~/.claude/brain-kit/bin/start-{review.id}	exec
 gen:start:release	~/.claude/brain-kit/bin/start-{release.id}	exec
+claude/brain-kit/bin/heavy-lock	~/.claude/brain-kit/bin/heavy-lock	exec
+claude/brain-kit/dashboard/index.html	~/.claude/brain-kit/dashboard/index.html	
+claude/brain-kit/dashboard/collect.py	~/.claude/brain-kit/dashboard/collect.py	exec
+claude/brain-kit/automations/README.md	~/.claude/brain-kit/automations/README.md	render
+claude/brain-kit/automations/precheck.sh	~/.claude/brain-kit/automations/precheck.sh	render,exec
 brain-template/CLAUDE.md	{brain}/CLAUDE.md	render
 brain-template/README.md	{brain}/README.md	render
 brain-template/dev/README.md	{brain}/dev/README.md	render
