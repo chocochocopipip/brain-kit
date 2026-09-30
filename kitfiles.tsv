@@ -7,6 +7,8 @@
 claude/CLAUDE.md	~/.claude/CLAUDE.md
 claude/skills/partner/SKILL.md	~/.claude/skills/{partner.id}/SKILL.md	render,skill:partner
 claude/skills/dev/SKILL.md	~/.claude/skills/{dev.id}/SKILL.md	render,skill:dev
+claude/skills/review/SKILL.md	~/.claude/skills/{review.id}/SKILL.md	render,skill:review
+claude/skills/release/SKILL.md	~/.claude/skills/{release.id}/SKILL.md	render,skill:release
 claude/skills/setup/SKILL.md	~/.claude/skills/setup/SKILL.md	render
 claude/skills/grilling/SKILL.md	~/.claude/skills/grilling/SKILL.md
 claude/hooks/session-end-brain.sh	~/.claude/hooks/session-end-brain.sh	exec
@@ -19,3 +21,8 @@ brain-template/CLAUDE.md	{brain}/CLAUDE.md	render
 brain-template/README.md	{brain}/README.md	render
 brain-template/dev/README.md	{brain}/dev/README.md	render
 brain-template/dev/状況/_テンプレート.md	{brain}/dev/状況/_テンプレート.md
+brain-template/review/README.md	{brain}/review/README.md	render
+brain-template/review/記録/README.md	{brain}/review/記録/README.md	render
+brain-template/review/評価/README.md	{brain}/review/評価/README.md	render
+brain-template/release/README.md	{brain}/release/README.md	render
+brain-template/release/記録/README.md	{brain}/release/記録/README.md	render
