@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# 渡す前の漏れチェック。固有名詞は引数で渡す（このファイルに書かない）。
-#   ./check.sh <ユーザー名> <プロジェクト名> <相棒名> ...
+# 渡す前の漏れチェック。固有名詞はこのリポジトリに書かない（書いた瞬間にそれ自体が漏れになる）。
+#   ./check.sh <ユーザー名> <プロジェクト名> <相棒名> ...     引数の語を探す
+#   BRAIN_KIT_CHECK_WORDS_FILE=<file> ./check.sh              ファイルの語（1 行 1 語、# はコメント）も探す
+#                                                              既定 ~/.config/brain-kit/check-words.txt（在れば）
+#   CI は secret BRAIN_KIT_CHECK_WORDS（1 行 1 語）をファイルにして渡す（.github/workflows/check.yml）
 # .git/ は対象外。終了コードは 0 = 漏れなし、1 = 何か見つかった。
+# macOS の grep（BSD）や BusyBox でも動くように、find で集めて grep -n -i -E/-F だけを使う。grep が失敗したら 2 で止まる。
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 # 記号や単語を直書きすると自分にヒットするので、組み立てる
 at="$(printf '\100')"
@@ -12,25 +16,49 @@ BUILTIN=(
   "[[:alnum:]._%+-]+${at}[[:alnum:].-]+\.[a-z]{2,}"      # メールらしきもの
   "BEGIN [A-Z ]*PRIVATE KEY"                             # 秘密鍵
   "${w1}${w2}|${w3}${w4}|${w5}${w6}|${w7}[_-]?${w8}"     # 認証情報らしき英単語
-  "/home/[A-Za-z0-9_-]+"                                 # 絶対パス
-  "\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b"                      # IP アドレス
+  "/home/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+"           # ホームの絶対パス（Linux・macOS）
+  "(^|[^0-9.])[0-9]{1,3}(\.[0-9]{1,3}){3}([^0-9.]|$)"    # IP アドレス
 )
+# 例として書いてよいもの（テストの一時アドレス、plugin キー、漏れチェック自身の語の入れ物の名前）
+ALLOW="example\.invalid|BRAIN_KIT_CHECK_WORDS|${at}claude-plugins-official|${at}openai-codex"
 
 found=0
-run() { # run <label> <regex>
-  local label="$1" re="$2" out
-  out="$(grep -rniE --exclude-dir=.git --exclude=check.sh -- "$re" . || true)"
-  if [ -n "$out" ]; then
+report() { # report <label> <grep の出力>
+  if [ -n "$2" ]; then
     found=1
-    printf '\n[%s]\n%s\n' "$label" "$out"
+    printf '\n[%s]\n%s\n' "$1" "$2"
   fi
 }
+# 対象のファイル（.git と check.sh を除く）。grep の --exclude-dir は BusyBox に無いので find で集める
+FILES=()
+while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -path ./.git -prune -o -type f ! -name check.sh -print0)
+g() { # g <-E|-F> <pattern> : 一致した行。grep が壊れていたら（終了コード 2 以上）止める
+  local out rc
+  out="$(grep -ni "$1" -- "$2" /dev/null ${FILES[@]+"${FILES[@]}"})"; rc=$?
+  if [ "$rc" -ge 2 ]; then echo "error: grep が失敗した（$rc）。この grep では確かめられない" >&2; exit 2; fi
+  printf '%s' "$out"
+}
+runE() { report "$1" "$(g -E "$2" | grep -viE -- "$ALLOW")"; }
+# 語の一致は「ファイル:行」だけ出す（CI のログに語そのものを残さない）
+runF() { report "$1" "$(g -F "$2" | cut -d: -f1,2)"; }
 
-for ((i=0; i<${#BUILTIN[*]}; i++)); do run "builtin" "${BUILTIN[i]}"; done
-for word; do run "word: $word" "$word"; done   # for word; は位置引数を順に回す
+for ((i = 0; i < ${#BUILTIN[*]}; i++)); do runE "builtin" "${BUILTIN[i]}"; done
+nwords=0
+for word; do runF "word: (引数 $((nwords + 1)))" "$word"; nwords=$((nwords + 1)); done   # for word; は位置引数を順に回す
+
+WORDS_FILE="${BRAIN_KIT_CHECK_WORDS_FILE:-$HOME/.config/brain-kit/check-words.txt}"
+nfile=0
+if [ -f "$WORDS_FILE" ]; then
+  while IFS= read -r word || [ -n "$word" ]; do
+    word="${word%$'\r'}"
+    case "$word" in ""|\#*) continue ;; esac
+    nfile=$((nfile + 1))
+    runF "word: (ファイルの $nfile 語目)" "$word"   # 語そのものはログに出さない（CI のログも公開される）
+  done <"$WORDS_FILE"
+fi
 
 if [ "$found" = 0 ]; then
-  echo "ok: 0 件（引数 $# 語 + 組み込みパターン）"
+  echo "ok: 0 件（引数 $nwords 語 + ファイル $nfile 語 + 組み込みパターン ${#BUILTIN[*]}）"
   exit 0
 fi
 echo; echo "NG: 上のものを消してから渡す"
