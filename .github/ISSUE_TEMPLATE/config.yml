@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability / 脆弱性の報告
+    url: https://github.com/chocochocopipip/brain-kit/security/advisories/new
+    about: Report privately, not as a public issue. / 公開の issue ではなく、非公開で報告する。

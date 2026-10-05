@@ -1,0 +1,27 @@
+name: Feature request / 提案
+description: Suggest a change to the kit / キットへの変更の提案
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        brain-kit ships structure only. Proposals that would put personal data, real names or private vocabulary into the kit cannot be accepted.
+        brain-kit は仕組みだけを渡すもの。個人のデータ・実名・特定の人格の言い回しをキットに入れる提案は受けられない。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 困っていること
+      description: What you are trying to do and what gets in the way. / 何をしようとして、何が妨げになっているか。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 提案
+      description: The change you would like. Which part (install, update, skills, hooks, brain template, docs)? / 望む変更。どの部分か（導入・更新・skill・フック・brain の雛形・文書）。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 考えた別案
