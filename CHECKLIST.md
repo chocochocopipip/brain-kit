@@ -53,6 +53,7 @@ check.sh は引数の語に加えて、次を**常に**探す:
 
 ```bash
 ./check.sh <固有名詞...>     # 0 件
+bash tests/lint.sh   # shellcheck と bash 3.2/BSD で動かない書き方（shellcheck が要る）
 bash tests/e2e.sh             # 新規・更新・戻しの実走（macOS なら /bin/bash で）
 git status                    # clean
 ```

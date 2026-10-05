@@ -279,6 +279,7 @@ brain-kit/
 ├── migrations/fingerprints.json ← 版の記録が無い v1〜v9 を見分ける指紋（行ごとのハッシュだけ。tools/make-fingerprints.py が作る）
 ├── tests/e2e.sh              ← サンドボックス HOME で 新規・v8/v9 → v10・2 回目・dry-run・3-way・rollback・doctor を実走
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
+├── tests/lint.sh             ← shellcheck と bash 3.2 / BSD の移植性チェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
 ├── claude/
 │   ├── CLAUDE.md             ← グローバル規律（~/.claude/CLAUDE.md）

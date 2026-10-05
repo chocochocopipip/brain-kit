@@ -81,7 +81,9 @@ fi
 # ---------------------------------------------------------------- (a) 前提
 say "(a) 前提"
 [ "$DRY" = 1 ] && note "--dry-run: 実行せず、コマンドだけ印字する"
+# shellcheck source=/dev/null
 os_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-}")"
+# shellcheck source=/dev/null
 os_ver="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-}")"
 note "OS: ${os_id:-unknown} ${os_ver:-}  WSL: $(is_wsl && echo yes || echo no)  user: $USER"
 case "$os_id:$os_ver" in
@@ -110,6 +112,8 @@ if have node; then
 else
   note "node が無い。nvm で LTS を入れる（apt の node は古い）"
   if fetch "nvm $NVM_VERSION" "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash"; then
+    # run の中で後から展開する。
+    # shellcheck disable=SC2016
     run 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm install --lts && nvm alias default lts/*'
     mark node 足した nvm
   else mark node 手動 "nvm を入れる"; fi
@@ -120,7 +124,11 @@ say "(c) Claude Code CLI"
 if have claude; then
   note "済み: claude $(claude --version 2>/dev/null | head -1)"; mark claude あった "$(claude --version 2>/dev/null | head -1)"
 else
-  fetch "Claude Code（公式インストーラ）" "curl -fsSL https://claude.ai/install.sh | bash" && mark claude 足した || mark claude 手動 "公式インストーラ"
+  if fetch "Claude Code（公式インストーラ）" "curl -fsSL https://claude.ai/install.sh | bash"; then
+    mark claude 足した
+  else
+    mark claude 手動 "公式インストーラ"
+  fi
   note "入ったら一度 'claude' を起動してログインする（ブラウザ認証）"
 fi
 
@@ -129,7 +137,11 @@ say "(d) Tailscale"
 if have tailscale; then
   note "済み: tailscale $(tailscale version 2>/dev/null | head -1)"; mark tailscale あった "$(tailscale version 2>/dev/null | head -1)"
 else
-  fetch "Tailscale（公式インストーラ）" "curl -fsSL https://tailscale.com/install.sh | sh" && mark tailscale 足した || mark tailscale 手動 "公式インストーラ"
+  if fetch "Tailscale（公式インストーラ）" "curl -fsSL https://tailscale.com/install.sh | sh"; then
+    mark tailscale 足した
+  else
+    mark tailscale 手動 "公式インストーラ"
+  fi
 fi
 if [ "$DRY" != 1 ] && have tailscale && tailscale status >/dev/null 2>&1; then
   note "済み: tailnet に参加している"
@@ -202,6 +214,8 @@ else
         *) unknown="$unknown $lib" ;;
       esac
     done
+    # 空白で分けて重複を除く。
+    # shellcheck disable=SC2086
     pkgs="$(printf '%s\n' $pkgs | sort -u | tr '\n' ' ')"
     [ -n "$pkgs" ] && run "sudo apt-get install -y $pkgs"
     [ -n "$unknown" ] && note "warn: 対応パッケージ不明:$unknown  → apt-file search <lib名> で探して入れる"
