@@ -1174,6 +1174,9 @@ del s["enabledPlugins"]["pr-review-toolkit@claude-plugins-official"]
 json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
 PY
 cp "$H/.claude/settings.json" "$H.edited"
+new "$H" --update --no-worktrees >"$H.up-again" 2>&1
+check "手で消した項目: 解消前の再更新でも足し直さない" cmp "$H.edited" "$H/.claude/settings.json"
+check "手で消した項目: 解消前の再更新でも衝突を出す" grep -q 'settings.json の衝突: 1 件' "$H.up-again"
 new "$H" --resolve "$H/.claude/settings.json" >"$H.resolve" 2>&1
 check "手で消した項目: 解消が 0" test $? -eq 0
 new "$H" --update --no-worktrees >"$H.up2" 2>&1

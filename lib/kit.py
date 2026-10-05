@@ -536,6 +536,8 @@ def plan_settings(codex=False, manifest=None, text=None):
     plan = {"path": path, "raw": raw, "record": {}, "add": [], "update": [],
             "remove": [], "keep": [], "conflict": [], "theirs": theirs}
     owned = dict(record)
+    # 前の更新で衝突になり、まだ --resolve していない項目。kit の値と一致するまで、足す・上げる・外すをしない
+    pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
 
     def change(entry, value, old):
         part, key = entry
@@ -603,6 +605,12 @@ def plan_settings(codex=False, manifest=None, text=None):
         old_sha = settings_sha(old) if old is not absent else None
         new_sha = settings_sha(new) if new is not absent else None
         name = settings_name(entry)
+        # 持ち主が手で消しても「足す」にしない。理由は最初の衝突と同じ言葉にする（資料を作り直さない）
+        if entry in pending and new is not absent and old_sha != new_sha and \
+                not (rec is not None and old is not absent and old_sha == rec):
+            conflict(entry, old, rec, new, "未登録の項目と kit が違う" if rec is None else
+                     "持ち主が消した／kit が変えた" if old is absent else "両方が変えた")
+            continue
         if rec is None:
             if old is absent:
                 change(entry, new, old)
