@@ -1227,5 +1227,47 @@ check "meta の書きかけ: 対象は書き換わっている" cmp "$H.merged" 
 new "$H" --rollback >"$H.rb" 2>&1
 check "meta の書きかけ: rollback は途中の解消を戻す" test "$after_update" = "$(snap "$H")"
 
+# 解消待ちの項目は、記録の値に戻しても・command の変更でも・--codex 無しでも、解消するまで動かさない
+python3 - "$KIT" "$TMP" <<'PY'
+import json, os, runpy, sys
+kit, tmp = sys.argv[1:]
+ns = runpy.run_path(kit + "/lib/kit.py")
+plan, ssha = ns["plan_settings"], ns["settings_sha"]
+g = plan.__globals__
+k = tmp + "/pending-cases"
+os.makedirs(k + "/claude")
+g["KIT"], g["CLAUDE"] = k, k + "/claude"
+def write(name, obj):
+    with open(k + "/claude/" + name, "w") as f:
+        json.dump(obj, f)
+def hook(cmd, n):
+    return {"hooks": [{"type": "command", "command": cmd, "timeout": n}]}
+write("settings.codex.json", {})
+# 記録の値（10）に戻した解消待ちのフックを kit の 20 で上げない
+write("settings.snippet.json", {"hooks": {"Stop": [hook("echo kit", 20)]}})
+write("settings.json", {"hooks": {"Stop": [hook("echo kit", 10)]}})
+r = plan(False, {"settings": {"hooks.Stop": {"echo kit": ssha(hook("echo kit", 10))}},
+                 "settings_conflicts": [["hooks.Stop", "echo kit"]]})
+assert not r["changed"] and [c["entry"] for c in r["conflict"]] == [("hooks.Stop", "echo kit")], r
+# command の変更でも、解消待ちなら置き換えない
+write("settings.snippet.json", {"hooks": {"Stop": [hook("echo new", 10)]}})
+write("settings.json", {"hooks": {"Stop": [hook("echo old", 10)]}})
+r = plan(False, {"settings": {"hooks.Stop": {"echo old": ssha(hook("echo old", 10))}},
+                 "settings_conflicts": [["hooks.Stop", "echo old"], ["hooks.Stop", "echo new"]]})
+assert not r["changed"] and len(r["conflict"]) == 2, r
+# kit から外れた解消待ちの項目は消さない
+write("settings.snippet.json", {})
+r = plan(False, {"settings": {"hooks.Stop": {"echo old": ssha(hook("echo old", 10))}},
+                 "settings_conflicts": [["hooks.Stop", "echo old"]]})
+assert not r["changed"] and r["keep"] and "hooks.Stop" not in r["record"], r
+# --codex 無しでも、解消待ちの Codex の項目は kit の項目として扱い、手で消したものを足さない
+write("settings.codex.json", {"enabledPlugins": {"codex@example-market": True}})
+write("settings.json", {})
+r = plan(False, {"settings": {}, "settings_conflicts": [["enabledPlugins", "codex@example-market"]]})
+assert not r["changed"] and ("enabledPlugins", "codex@example-market") in r["theirs"], r
+assert [c["entry"] for c in r["conflict"]] == [("enabledPlugins", "codex@example-market")], r
+PY
+check "解消待ち: 記録の値に戻しても・command 変更でも・外れても・--codex 無しでも動かさない" test $? -eq 0
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

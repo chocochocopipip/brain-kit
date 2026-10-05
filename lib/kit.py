@@ -530,14 +530,14 @@ def plan_settings(codex=False, manifest=None, text=None):
     snip = load_json(os.path.join(KIT, "claude/settings.snippet.json"))
     theirs = settings_entries(snip)
     extra = settings_entries(load_json(os.path.join(KIT, "claude/settings.codex.json")))
-    if codex or any(e in record for e in extra) or (
+    # 前の更新で衝突になり、まだ --resolve していない項目。kit の値と一致するまで、足す・上げる・外すをしない
+    pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
+    if codex or any(e in record or e in pending for e in extra) or (
             "settings" not in manifest and any(current(e) is not absent for e in extra)):
         theirs.update(extra)
     plan = {"path": path, "raw": raw, "record": {}, "add": [], "update": [],
             "remove": [], "keep": [], "conflict": [], "theirs": theirs}
     owned = dict(record)
-    # 前の更新で衝突になり、まだ --resolve していない項目。kit の値と一致するまで、足す・上げる・外すをしない
-    pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
 
     def change(entry, value, old):
         part, key = entry
@@ -587,7 +587,8 @@ def plan_settings(codex=False, manifest=None, text=None):
         for old_entry, new_entry in zip(removed, added):
             paired.update((old_entry, new_entry))
             old, new, rec = current(old_entry), theirs[new_entry], record[old_entry]
-            if old is not absent and settings_sha(old) == rec:
+            if old is not absent and settings_sha(old) == rec and \
+                    old_entry not in pending and new_entry not in pending:
                 change(old_entry, new, old)
                 owned.pop(old_entry)
                 owned[new_entry] = settings_sha(new)
@@ -606,8 +607,12 @@ def plan_settings(codex=False, manifest=None, text=None):
         new_sha = settings_sha(new) if new is not absent else None
         name = settings_name(entry)
         # 持ち主が手で消しても「足す」にしない。理由は最初の衝突と同じ言葉にする（資料を作り直さない）
-        if entry in pending and new is not absent and old_sha != new_sha and \
-                not (rec is not None and old is not absent and old_sha == rec):
+        if entry in pending and new is absent:
+            owned.pop(entry, None)            # kit から外れた。解消待ちのものは消さず、持ち主のものとして残す
+            if old is not absent:
+                plan["keep"].append(name)
+            continue
+        if entry in pending and old_sha != new_sha:
             conflict(entry, old, rec, new, "未登録の項目と kit が違う" if rec is None else
                      "持ち主が消した／kit が変えた" if old is absent else "両方が変えた")
             continue
