@@ -8,7 +8,7 @@
   kit.py doctor                        何も変えずに状態を表で出す
 
 持ち主のもの（核・辞書・関係・日誌・決定・知識・プロジェクト・記録・規準・手順）には、どの経路でも書かない。
-kit のもの（kitfiles.tsv の一覧）だけを、退避してから上げる。手で直した kit のファイルは聞いてから。
+kit のもの（kitfiles.tsv の一覧）だけを、退避してから上げる。更新では両方が変わったファイルを衝突として残す。
 """
 from __future__ import print_function
 
@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOME = os.path.expanduser("~")
@@ -78,7 +79,7 @@ def sha(data):
 
 def read_text(path):
     try:
-        with io.open(path, encoding="utf-8") as f:
+        with io.open(path, encoding="utf-8", newline="") as f:
             return f.read()
     except (IOError, OSError, UnicodeDecodeError):
         return None
@@ -534,35 +535,70 @@ def manifest_key(path, cfg):
     return "claude", os.path.relpath(path, HOME)
 
 
-def build_plan(cfg, manifests, legacy, fps):
-    """kit と持ち主のファイルを状態ごとに分ける。
+def base_path(dst, cfg):
+    where, key = manifest_key(dst, cfg)
+    root = brain_state_dir(cfg["brain"]) if where == "brain" else KIT_STATE
+    return os.path.join(root, "base", key)
 
-    kit:   add（無い）/ same（同じ）/ upgrade（手で直していない古い版 → 上げる）/
-           edited（手で直してある → 聞く）/ declined（前に「今のまま」を選んだ版と同じ → 黙って残す）
-    owner: add（無い → 足す）/ keep（在る → 触らない）
-    """
+
+def build_plan(cfg, manifests, legacy, fps, mode="update"):
+    """base・持ち主・kit を比較する。install の確認は従来どおり。"""
     items = []
     lt = legacy_marks(cfg) if legacy else None
     for src, dst, flags in load_kitfiles(cfg):
         it = Item("kit", src, dst, flags, source_text(src, cfg, flags))
         where, key = manifest_key(dst, cfg)
         ent = (manifests[where].get("files") or {}).get(key)
+        bp = base_path(dst, cfg)
+        it.base = read_text(bp) if ent else None
+        if it.base is not None and sha(it.base) != ent.get("sha"):
+            it.base = None
+        if not os.path.exists(bp) and ent and it.cur is not None and sha(it.cur) == ent.get("sha"):
+            it.base = it.cur
         if not it.exists:
             it.state = "add"
         elif it.cur == it.new:
             it.state = "same"
-        elif it.cur is None:
-            it.state = "edited"             # 読めない（バイナリなど）。触らない側に倒す
-        elif ent and sha(it.cur) == ent.get("sha"):
+        elif mode == "install":
+            if ent and it.cur is not None and sha(it.cur) == ent.get("sha"):
+                it.state = "upgrade"
+            elif ent and ent.get("declined") == sha(it.new):
+                it.state = "declined"
+            else:
+                it.state = "edited"
+        elif it.base is not None and it.cur == it.base:
             it.state = "upgrade"
-        elif ent and ent.get("declined") == sha(it.new):
-            it.state = "declined"
-        elif not ent and legacy and fingerprint_versions(src, it.cur, lt, fps):
+        elif it.base is not None and it.new == it.base:
+            it.state = "owner"
+        elif not ent and legacy and it.cur is not None and fingerprint_versions(src, it.cur, lt, fps):
             it.state = "upgrade"
         else:
-            it.state = "edited"
+            it.state = "conflict"
         items.append(it)
+    tracked = {manifest_key(it.dst, cfg) for it in items}
+    dropped = set()
+    if mode == "update":
+        # HOME に // が混ざっても（macOS の TMPDIR は / で終わる）比べられるように、正規化してから比べる
+        for where, root in (("brain", os.path.abspath(cfg["brain"])), ("claude", os.path.abspath(CLAUDE))):
+            base_root = os.path.abspath(cfg["brain"] if where == "brain" else HOME)
+            for key, ent in sorted((manifests[where].get("files") or {}).items()):
+                dst = os.path.abspath(os.path.join(base_root, key))
+                # 別の manifest や領域外（claude 側は ~/.claude の外）を指す記録は扱わない。
+                if (where, key) in tracked or manifest_key(dst, cfg) != (where, key):
+                    continue
+                if not dst.startswith(root + os.sep):
+                    continue
+                if not os.path.realpath(dst).startswith(os.path.realpath(root) + os.sep):
+                    continue
+                it = Item("kit", None, dst, [], None)
+                it.state = "dropped"
+                it.base = read_text(base_path(dst, cfg))
+                it.remove = it.cur is not None and sha(it.cur) == ent.get("sha")
+                dropped.add(dst)
+                items.append(it)
     for src, dst, flags in owner_files(cfg):
+        if dst in dropped:
+            continue
         it = Item("owner", src, dst, flags, None)
         it.state = "keep" if it.exists else "add"
         if it.state == "add":
@@ -634,7 +670,14 @@ def put(path, text, backup, exe=False):
         backup.save(path)
     else:
         backup.added(path, text)
-    write_text(path, text, exe=exe)
+    if isinstance(text, bytes):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(text)
+        if exe:
+            os.chmod(path, 0o755)
+    else:
+        write_text(path, text, exe=exe)
 
 
 # ------------------------------------------------------------------ worktree とラベル
@@ -733,7 +776,7 @@ def ensure_labels(cfg, dry):
 
 # ------------------------------------------------------------------ 書く（install と update で共通）
 def apply_items(items, cfg, backup, args, mode):
-    """計画どおりに書く。edited は聞く（対話が無ければ今のまま）。書いたものの一覧を返す。"""
+    """計画どおりに書く。更新の衝突は残し、install の edited は確認する。"""
     written, kept = [], []
     for it in items:
         if it.kind == "owner":
@@ -749,19 +792,102 @@ def apply_items(items, cfg, backup, args, mode):
                     put(it.dst, it.new, backup)
                 written.append(it)
             continue
+        if it.state == "dropped":
+            if it.remove:
+                backup.save(it.dst)
+                os.remove(it.dst)
+            bp = base_path(it.dst, cfg)
+            if os.path.isfile(bp):
+                backup.save(bp)
+                os.remove(bp)
+            written.append(it)
+            continue
         if it.state in ("add", "upgrade"):
             put(it.dst, it.new, backup, it.exe)
             written.append(it)
-        elif it.state == "edited":
+        elif it.state in ("edited", "conflict"):
             it.choice = choose_edited(it, args, mode)
             if it.choice == "new":
                 put(it.dst, it.new, backup, it.exe)
                 written.append(it)
             else:
                 kept.append(it)
+                if mode == "update" and read_text(it.dst + ".new") != it.new:
+                    put(it.dst + ".new", it.new, backup, it.exe)
         elif it.state == "same" and it.exe and not os.access(it.dst, os.X_OK):
+            backup.save(it.dst)
             os.chmod(it.dst, 0o755)
+        if it.state in ("add", "upgrade", "same") or it.choice == "new":
+            if read_text(base_path(it.dst, cfg)) != it.new:
+                put(base_path(it.dst, cfg), it.new, backup)
     return written, kept
+
+
+def write_conflicts(items, cfg, backup):
+    """同じ衝突は既存の bundle を再利用する。候補は実ファイルへ戻さない。"""
+    if not items:
+        return None
+    files = {}
+    notes = ["# 更新の衝突\n"]
+    for it in items:
+        where, key = manifest_key(it.dst, cfg)
+        stem = os.path.join("files", where, key)
+        ours = open_bytes(it.dst)
+        files[stem + ".ours"] = ours
+        files[stem + ".theirs"] = it.new
+        notes.append("\n## %s\n\n.new: %s.new\n" % (tilde(it.dst), tilde(it.dst)))
+        if it.base is None:
+            notes.append("\nbase 不明。git merge-file: not possible without base\n")
+            notes.append("\n### ours → theirs\n\n```diff\n%s```\n" % diff_text(it.cur, it.new, it.dst))
+        else:
+            files[stem + ".base"] = it.base
+            with tempfile.TemporaryDirectory() as tmp:
+                paths = [os.path.join(tmp, name) for name in ("ours", "base", "theirs")]
+                for path, text in zip(paths, (ours, it.base, it.new)):
+                    if isinstance(text, bytes):
+                        with open(path, "wb") as f:
+                            f.write(text)
+                    else:
+                        write_text(path, text)
+                try:
+                    result = subprocess.run(
+                        ["git", "merge-file", "-p", "-L", "ours", "-L", "base", "-L", "theirs"] + paths,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                    rc, merged = result.returncode, result.stdout
+                except (OSError, subprocess.TimeoutExpired):
+                    rc, merged = -1, b""
+            # git の負の終了値はシェルでは 255 になる。
+            result = "clean" if rc == 0 else "%d conflict markers" % rc if 0 < rc <= 127 else "エラー"
+            files[stem + ".merged"] = merged
+            notes.append("\nbase 既知。git merge-file: %s\n" % result)
+            for name, text in (("ours", it.cur), ("theirs", it.new)):
+                notes.append("\n### base → %s\n\n```diff\n%s```\n" % (name, diff_text(it.base, text, it.dst)))
+    files["README.md"] = "".join(notes)
+    root = os.path.join(KIT_STATE, "conflicts")
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root), reverse=True):
+            candidate = os.path.join(root, name)
+            if all(os.path.isfile(os.path.join(candidate, key)) and
+                   open_bytes(os.path.join(candidate, key)) == as_bytes(text) for key, text in files.items()):
+                return candidate
+    stamp = os.path.basename(backup.dir).replace("backup-brain-kit-", "", 1)
+    target = os.path.join(root, stamp)
+    n = 1
+    while os.path.exists(target):
+        n += 1
+        target = os.path.join(root, stamp + "-%d" % n)
+    for key, text in files.items():
+        put(os.path.join(target, key), text, backup)
+    return target
+
+
+def as_bytes(text):
+    return text if isinstance(text, bytes) else text.encode("utf-8")
+
+
+def open_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
 
 
 def choose_edited(it, args, mode):
@@ -769,6 +895,8 @@ def choose_edited(it, args, mode):
     forced = getattr(args, "edited", None)
     if forced in ("new", "keep"):
         return forced
+    if mode == "update":
+        return "keep"
     if mode == "install" and getattr(args, "yes", False):
         return "new"                                  # install --yes は v9 までと同じく退避して上書き
     if not interactive(args):
@@ -793,7 +921,9 @@ def update_manifests(items, cfg, manifests):
         files = manifests[where].setdefault("files", {})
         if it.state in ("add", "upgrade", "same") or it.choice == "new":
             files[key] = {"sha": sha(it.new)}
-        elif it.choice == "keep":
+        elif it.state == "dropped":
+            files.pop(key, None)
+        elif it.choice == "keep" and it.state == "edited":
             ent = dict(files.get(key) or {})
             ent["declined"] = sha(it.new)
             ent.setdefault("sha", "")
@@ -837,9 +967,11 @@ def print_plan(items, sett, wts, dry, verbose_diff):
         return [it for it in items if it.kind == kind and it.state == state]
     groups = [
         ("足すもの（kit）", rows("kit", "add")),
-        ("上げるもの（kit、手で直していない）", rows("kit", "upgrade")),
+        ("上げるもの（kit だけが変わった）", rows("kit", "upgrade")),
         ("手で直したもの（kit。上書きせずに聞く）", rows("kit", "edited")),
-        ("手で直したまま（前に「今のまま」を選んだ）", rows("kit", "declined")),
+        ("持ち主だけが変えたもの（触らない）", rows("kit", "owner")),
+        ("両方が変えたもの（衝突。<file>.new を置く）", rows("kit", "conflict")),
+        ("kit から外れたもの（消す・残す）", rows("kit", "dropped")),
         ("足すもの（持ち主の領域の骨格。無いものだけ）", rows("owner", "add")),
     ]
     for title, rs in groups:
@@ -848,9 +980,11 @@ def print_plan(items, sett, wts, dry, verbose_diff):
         print("  %s: %d 件" % (title, len(rs)))
         for it in rs:
             extra = ""
-            if it.state in ("upgrade", "edited", "declined"):
+            if it.state in ("upgrade", "edited", "owner", "conflict", "dropped"):
                 p, m = diff_count(it.cur, it.new)
                 extra = "  (+%d -%d)" % (p, m)
+            if it.state == "dropped":
+                extra += "  " + ("消す" if it.remove else "残す" if it.exists else "記録を外す")
             print("    %s%s" % (tilde(it.dst), extra))
     same = len(rows("kit", "same"))
     keep = len(rows("owner", "keep"))
@@ -860,9 +994,9 @@ def print_plan(items, sett, wts, dry, verbose_diff):
         print("  settings.json に足すもの: %s" % ", ".join(sett[3]))
     for r, path, b, what in wts:
         print("  worktree %s: %s（ブランチ %s）" % ("足す" if what == "add" else "作らない（別のものが在る）", tilde(path), b))
-    if dry and verbose_diff:
+    if verbose_diff:
         for it in items:
-            if it.kind == "kit" and it.state in ("upgrade", "edited"):
+            if it.kind == "kit" and it.state in ("upgrade", "edited", "conflict", "owner", "dropped"):
                 print()
                 sys.stdout.write(diff_text(it.cur, it.new, it.dst))
 
@@ -912,7 +1046,7 @@ def cmd_install(args):
     say("[2/6] brain と ~/.claude にファイルを置く")
     if not os.path.isdir(brain):
         os.makedirs(brain)
-    items = build_plan(cfg, manifests, False, {})
+    items = build_plan(cfg, manifests, False, {}, mode="install")
     # --brain-merge: 同名の .md で中身が違う kit のファイルは横に置く（v9 までと同じ）
     if args.brain_merge:
         for it in items:
@@ -1082,6 +1216,7 @@ def cmd_update(args):
 
     backup = Backup("update", {"brain": cfg["brain"], "from": v_from, "to": VERSION})
     written, kept = apply_items(items, cfg, backup, args, "update")
+    bundle = write_conflicts(kept, cfg, backup)
     if sett[3]:
         put(sett[0], sett[2], backup)
     # 版の記録（無ければ最初の更新で書く）
@@ -1103,21 +1238,23 @@ def cmd_update(args):
         if what == "add":
             make_worktree(cfg, r, path, b, backup)
     ensure_labels(cfg, False)
-    touched = [it.dst for it in written] + list(new_state.keys())
+    touched = list(backup.meta["overwritten"]) + list(backup.meta["added"])
     commit_brain(cfg, touched, "brain-kit: v%s → v%d に更新（kit のものだけ）" % (v_from if v_from else "?", VERSION))
     bdir = backup.close()
 
     print()
-    changed = len(written) + (1 if sett[3] else 0)
+    changed = len(set(backup.meta["overwritten"]) | set(backup.meta["added"]))
     if changed == 0 and not backup.meta["worktrees"]:
         print("変わったもの: なし（すでに v%d）" % VERSION)
     else:
-        print("変わったもの: %d 件（kit %d、持ち主の領域の骨格 %d）"
+        print("変わったもの: %d 件（kit %d、持ち主の領域の骨格 %d、ほかは記録・衝突資料など）"
               % (changed, len([i for i in written if i.kind == "kit"]), len([i for i in written if i.kind == "owner"])))
     if kept:
-        print("手で直したので今のままにしたもの（新しい版は --update --dry-run で差分が見られる。上げるなら対話で n）:")
+        print("衝突したもの（元のファイルはそのまま）:")
         for it in kept:
-            print("  %s" % tilde(it.dst))
+            print("  %s → %s.new" % (tilde(it.dst), tilde(it.dst)))
+        print("衝突 bundle: %s" % tilde(bundle))
+        print("<file>.new と比較して編集し、.new を消す。kit 版にするなら --update --edited new。")
     if bdir:
         print("退避: %s（戻すなら ./install.sh --rollback）" % tilde(bdir))
     if v_from != VERSION:
@@ -1286,12 +1423,17 @@ def cmd_doctor(args):
             cnt.setdefault(i.state, []).append(i)
         row("  最新", True, "%d 件" % len(cnt.get("same", [])))
         if cnt.get("upgrade"):
-            row("  古い（更新で上がる）", False, "%d 件" % len(cnt["upgrade"]), "古い")
+            row("  kit だけの更新待ち", False, "%d 件" % len(cnt["upgrade"]), "更新待ち")
         if cnt.get("add"):
             row("  足りない", False, "%d 件: %s" % (len(cnt["add"]), ", ".join(tilde(i.dst) for i in cnt["add"][:4])
                                                   + (" …" if len(cnt["add"]) > 4 else "")), "要対応")
-        for i in cnt.get("edited", []) + cnt.get("declined", []):
-            row("  手で直した", True, tilde(i.dst), "手で直した")
+        for i in cnt.get("owner", []):
+            row("  持ち主だけが変更", True, tilde(i.dst), "持ち主の変更")
+        for i in cnt.get("conflict", []):
+            row("  衝突", False, tilde(i.dst), "衝突")
+        for i in kits:
+            if os.path.exists(i.dst + ".new"):
+                row("  .new が残っている", False, tilde(i.dst + ".new"), "要確認")
         if cnt.get("upgrade") or cnt.get("add"):
             if "./install.sh --update --dry-run で中身を見て、./install.sh --update" not in todo:
                 todo.append("./install.sh --update --dry-run で中身を見て、./install.sh --update")
