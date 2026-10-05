@@ -1693,7 +1693,8 @@ def cmd_resolve(args):
         put(mp, dump_json(manifest), backup)
     if not backup.opened:
         backup.save(mp)  # 同じ内容の --from でも、この解消を先に戻せるようにする。
-    touched = list(backup.meta["overwritten"]) + list(backup.meta["added"])
+    # 今の内容をそのまま結果にしたときも、受け入れた中身を記録と一緒にコミットする
+    touched = list(backup.meta["overwritten"]) + list(backup.meta["added"]) + [target]
     commit_brain(cfg, touched, "brain-kit: 更新の衝突を解消")
     bdir = backup.close()
     print("解消した: %s%s" % (tilde(target), "（今の内容を保った）" if result == current else ""))

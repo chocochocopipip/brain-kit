@@ -1293,5 +1293,23 @@ new "$H" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resol
 check "settings.json が無い: 解消は終了 2" test $? -eq 2
 check "settings.json が無い: 作らない" test "$before" = "$(snap "$H")"
 
+# brain のファイルを今の内容のまま解消したときも、その中身をコミットに入れる
+for method in inplace keep; do
+  H="$TMP/resolve-brain-$method"
+  mkdir -p "$H"
+  new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+  printf '\n# 持ち主の追記。\n' >>"$H/brain/README.md"
+  next_update "$H" >"$H.up" 2>&1
+  printf '\n# 解消のときの持ち主の追記。\n' >>"$H/brain/README.md"
+  if [ "$method" = keep ]; then
+    HOME="$H" bash "$NEXT/install.sh" --resolve --keep "$H/brain/README.md" >"$H.resolve" 2>&1
+  else
+    HOME="$H" bash "$NEXT/install.sh" --resolve "$H/brain/README.md" >"$H.resolve" 2>&1
+  fi
+  check "解消 brain $method: 実行が 0" test $? -eq 0
+  check "解消 brain $method: 受け入れた中身がコミットに入る" sh -c "git -C '$H/brain' show HEAD:README.md | cmp - '$H/brain/README.md'"
+  check "解消 brain $method: 作業ツリーに残りが無い" test -z "$(git -C "$H/brain" status --porcelain)"
+done
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
