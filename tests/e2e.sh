@@ -1391,5 +1391,47 @@ check "settings の symlink: --keep は 0" test $? -eq 0
 check "settings の symlink: --keep は指す先をそのまま" cmp "$H.target-before" "$H/brain/dotfiles/settings.json"
 check "settings の symlink: symlink のまま" test -L "$H/.claude/settings.json"
 
+# --from で kit の項目を前の値に戻して解消したら、次の更新で kit の値に戻さない
+# （記録は前の版の A、今は手で新しい版の B、kit も B、解消結果は A）
+NEXTS3="$TMP/kit-next-s3"
+mkdir -p "$NEXTS3"
+(cd "$KIT" && git ls-files -z | xargs -0 tar cf -) | (cd "$NEXTS3" && tar xf -)
+python3 - "$NEXTS3" <<'PY'
+import json, sys
+p = sys.argv[1] + "/claude/settings.snippet.json"
+s = json.load(open(p))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 20                 # Stop だけ変える版
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=2)
+PY
+H="$TMP/settings-from-revert"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" "$NEXTS" <<'PY'
+import json, sys
+h, nexts = sys.argv[1:]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30                 # 衝突（解消の入口）
+s["statusLine"] = json.load(open(nexts + "/claude/settings.snippet.json"))["statusLine"]   # 手で新しい版の B に
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS3/install.sh" --update --no-worktrees >"$H.up" 2>&1
+check "--from で戻した項目: 衝突がある" grep -q 'settings.json の衝突' "$H.up"
+python3 - "$H" "$KIT" <<'PY'
+import json, sys
+h, kit = sys.argv[1:]
+s = json.load(open(h + "/.claude/settings.json"))
+s["statusLine"] = json.load(open(kit + "/claude/settings.snippet.json"))["statusLine"]   # 前の版の A に戻す
+json.dump(s, open(h + ".merged.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS/install.sh" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resolve" 2>&1
+check "--from で戻した項目: 解消が 0" test $? -eq 0
+HOME="$H" bash "$NEXTS/install.sh" --update --no-worktrees >"$H.up2" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+assert json.load(open(h + "/.claude/settings.json"))["statusLine"] == json.load(open(h + ".merged.json"))["statusLine"]
+PY
+check "--from で戻した項目: 次の更新で kit の値に戻さない" test $? -eq 0
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
