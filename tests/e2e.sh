@@ -821,6 +821,13 @@ PY
   next_update "$H" >"$H.moved" 2>&1
   check "重なり $kind: 持ち主が移したあと kit を足せる" cmp "$NEXT/claude/skills/extra/SKILL.md" "$H/.claude/skills/extra/SKILL.md"
 done
+H="$TMP/collision-empty"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+mkdir -p "$H/.claude/skills/extra"
+next_update "$H" >"$H.up" 2>&1
+check "重なり empty: 空のディレクトリには kit を足す" cmp "$NEXT/claude/skills/extra/SKILL.md" "$H/.claude/skills/extra/SKILL.md"
+check "重なり empty: 重なりとして出さない" sh -c "! grep -q '名前の重なり' '$H.up'"
 HOME="$H" python3 - "$KIT" <<'PY' >"$H.id" 2>&1
 import argparse, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
@@ -1266,6 +1273,12 @@ write("settings.json", {})
 r = plan(False, {"settings": {}, "settings_conflicts": [["enabledPlugins", "codex@example-market"]]})
 assert not r["changed"] and ("enabledPlugins", "codex@example-market") in r["theirs"], r
 assert [c["entry"] for c in r["conflict"]] == [("enabledPlugins", "codex@example-market")], r
+# 未登録の解消待ちのフックを持ち主が消したあと、kit が command を変えても新しい command を足さない
+write("settings.codex.json", {})
+write("settings.snippet.json", {"hooks": {"Stop": [hook("echo new", 10)]}})
+write("settings.json", {})
+r = plan(False, {"settings": {}, "settings_conflicts": [["hooks.Stop", "echo old"]]})
+assert not r["changed"] and sorted(c["entry"] for c in r["conflict"]) == [("hooks.Stop", "echo new"), ("hooks.Stop", "echo old")], r
 PY
 check "解消待ち: 記録の値に戻しても・command 変更でも・外れても・--codex 無しでも動かさない" test $? -eq 0
 

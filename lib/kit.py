@@ -572,25 +572,27 @@ def plan_settings(codex=False, manifest=None, text=None):
     # 同じイベントで消えた command と増えた command が 1 つずつなら、command の変更として対応付ける。
     # 複数あると対応が決まらないので、どれも触らずに衝突として出す（古い記録は残し、新しいものは足さない）。
     paired = set()
-    for part in dict.fromkeys(e[0] for e in record if e[0].startswith("hooks.")):
-        removed = [e for e in record if e[0] == part and e not in theirs]
+    # 解消待ちの未登録のフック（持ち主が消したもの・変えたもの）も、command の変更の元として数える
+    known = list(record) + [e for e in sorted(pending) if e not in record]
+    for part in dict.fromkeys(e[0] for e in known if e[0].startswith("hooks.")):
+        removed = [e for e in known if e[0] == part and e not in theirs]
         added = [e for e in theirs if e[0] == part and e not in record and current(e) is absent]
         if not removed or not added:
             continue
         if len(removed) > 1 or len(added) > 1:
             paired.update(removed + added)
             for e in removed:
-                conflict(e, current(e), record[e], absent, "command の変更が複数あり対応が決まらない")
+                conflict(e, current(e), record.get(e), absent, "command の変更が複数あり対応が決まらない")
             for e in added:
                 conflict(e, absent, None, theirs[e], "command の変更が複数あり対応が決まらない")
             continue
         for old_entry, new_entry in zip(removed, added):
             paired.update((old_entry, new_entry))
-            old, new, rec = current(old_entry), theirs[new_entry], record[old_entry]
-            if old is not absent and settings_sha(old) == rec and \
+            old, new, rec = current(old_entry), theirs[new_entry], record.get(old_entry)
+            if old is not absent and rec is not None and settings_sha(old) == rec and \
                     old_entry not in pending and new_entry not in pending:
                 change(old_entry, new, old)
-                owned.pop(old_entry)
+                owned.pop(old_entry, None)
                 owned[new_entry] = settings_sha(new)
                 plan["update"].append(settings_name(new_entry))
             else:
@@ -696,6 +698,7 @@ def build_plan(cfg, manifests, legacy, fps, mode="update"):
         directory = skill_dir(dst)
         collision = (mode == "update" and "files" in manifests["claude"] and directory and
                      os.path.isdir(os.path.join(CLAUDE, "skills", directory)) and
+                     bool(os.listdir(os.path.join(CLAUDE, "skills", directory))) and
                      not claude_dir_owned("skills", directory, manifests["claude"]))
         it = Item("kit", src, dst, flags, source_text(src, cfg, flags), read_current=not collision)
         if collision:
