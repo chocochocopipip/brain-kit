@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 実走テスト（サンドボックス HOME）。新規・v8 → v10・v9 → v10・v10 → v10、--dry-run、手で直したファイルの 3 択、
+# 実走テスト（サンドボックス HOME）。新規・v8 → v10・v9 → v10・v10 → v10、--dry-run、base・3-way・衝突の保全、
 # --rollback、--doctor を、日本語と英語の名前で通す。bash 3.2（macOS 標準）で動く書き方だけを使う。
 #
 #   /bin/bash tests/e2e.sh       # macOS なら標準の bash 3.2 で。git の履歴（v8・v9 のコミット）が要る。浅い clone なら git fetch --unshallow
@@ -167,32 +167,34 @@ new "$H9" --doctor >"$H9.doctor1" 2>&1
 check "更新後の --doctor が 0" test $? -eq 0
 check "更新後の --doctor に 4 人" grep -q 'リリース 湊' "$H9.doctor1"
 
-# ------------------------------------------------------------------ 4. 手で直した kit のファイル（3 択）
+# ------------------------------------------------------------------ 4. 手で直した kit のファイル
 section "手で直した kit のファイル（v9 → v10）"
 for v in keep new diff; do
   printf '\n## 自分で足した節\n手で直した。\n' >>"$TMP/v9-$v/.claude/skills/匠/SKILL.md"
 done
 edited_before="$(cat "$TMP/v9-keep/.claude/skills/匠/SKILL.md")"
-# 対話なし → 今のまま、一覧を最後に出す
 new "$TMP/v9-keep" --update --yes </dev/null >"$TMP/keep.log" 2>&1
 check "対話なし: 0" test $? -eq 0
 check "対話なし: 今のまま" test "$edited_before" = "$(cat "$TMP/v9-keep/.claude/skills/匠/SKILL.md")"
-check "対話なし: 一覧を出す" grep -q '今のままにしたもの' "$TMP/keep.log"
-check "対話なし: 手で直したものに挙がる" grep -q '手で直したもの' "$TMP/keep.log"
+check "対話なし: 衝突を出す" grep -q '両方が変えたもの' "$TMP/keep.log"
+check "対話なし: .new を置く" test -f "$TMP/v9-keep/.claude/skills/匠/SKILL.md.new"
+check "対話なし: bundle" sh -c "ls '$TMP/v9-keep'/.claude/brain-kit/conflicts/*/README.md"
+check "対話なし: base 不明" sh -c "grep -q 'base 不明' '$TMP/v9-keep'/.claude/brain-kit/conflicts/*/README.md"
 check "対話なし: ほかの kit は上がる" grep -q 'レビュー' "$TMP/v9-keep/.claude/skills/光/SKILL.md"
 sk="$(snap "$TMP/v9-keep")"
+mt="$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$TMP/v9-keep/.claude/skills/匠/SKILL.md.new" 2>/dev/null)"
 new "$TMP/v9-keep" --update </dev/null >"$TMP/keep2.log" 2>&1
-check "今のまま → 2 回目は聞かずに何も変えない" test "$sk" = "$(snap "$TMP/v9-keep")"
-# 対話: n（新しい版にする）
-printf 'n\n' | BRAIN_KIT_INTERACTIVE=1 HOME="$TMP/v9-new" bash "$KIT/install.sh" --update --review 澪 --review-id mio --release 湊 --release-id minato >"$TMP/new.log" 2>&1
-check "n: 0" test $? -eq 0
-check "n: 新しい版になる" sh -c "! grep -q '自分で足した節' '$TMP/v9-new/.claude/skills/匠/SKILL.md'"
-check "n: 退避に手で直した版がある" sh -c "grep -rq '自分で足した節' '$TMP'/v9-new/.claude/backup-brain-kit-*/files"
-# 対話: d（差分を見る）→ k（今のまま）
-printf 'd\nk\n' | BRAIN_KIT_INTERACTIVE=1 HOME="$TMP/v9-diff" bash "$KIT/install.sh" --update --review 澪 --review-id mio --release 湊 --release-id minato >"$TMP/diff.log" 2>&1
-check "d→k: 0" test $? -eq 0
-check "d: 差分を出した" grep -q '^-手で直した。' "$TMP/diff.log"
-check "d→k: 今のまま" grep -q '自分で足した節' "$TMP/v9-diff/.claude/skills/匠/SKILL.md"
+check "衝突 → 2 回目は何も変えない" test "$sk" = "$(snap "$TMP/v9-keep")"
+check "衝突 → .new を書き直さない" test -n "$mt"
+check "衝突 → .new の更新時刻も同じ" test "$mt" = "$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$TMP/v9-keep/.claude/skills/匠/SKILL.md.new" 2>/dev/null)"
+new "$TMP/v9-new" --update --edited new --yes </dev/null >"$TMP/new.log" 2>&1
+check "--edited new: 0" test $? -eq 0
+check "--edited new: 新しい版になる" sh -c "! grep -q '自分で足した節' '$TMP/v9-new/.claude/skills/匠/SKILL.md'"
+check "--edited new: 退避に手で直した版がある" sh -c "grep -rq '自分で足した節' '$TMP'/v9-new/.claude/backup-brain-kit-*/files"
+printf 'n\n' | BRAIN_KIT_INTERACTIVE=1 HOME="$TMP/v9-diff" bash "$KIT/install.sh" --update --diff --review 澪 --review-id mio --release 湊 --release-id minato >"$TMP/diff.log" 2>&1
+check "対話環境でも上書きしない" grep -q '自分で足した節' "$TMP/v9-diff/.claude/skills/匠/SKILL.md"
+check "--diff: 差分を出した" grep -q '^-手で直した。' "$TMP/diff.log"
+check "更新の 3 択は聞かない" sh -c "! grep -q '\[n\]' '$TMP/diff.log'"
 
 # ------------------------------------------------------------------ 5. --rollback
 section "--rollback（v9 → v10 → 戻す）"
@@ -240,6 +242,154 @@ check "heavy-lock が本体を走らせる" sh -c "'$BASH' '$HL' sh -c 'echo ran
 check "heavy-lock が本体の終了コードを返す" test "$rc" = 3
 check "heavy-lock が枠を返す" test ! -d "$TMP/hl/slot-1"
 check "heavy-lock が空きメモリを読める" sh -c "HEAVY_LOCK_FLOOR_GB=0 '$BASH' '$HL' true 2>&1 | grep -q '空き [0-9]'"
+
+# ------------------------------------------------------------------ 8. 3-way（次の版）
+section "3-way（次の版）"
+NEXT="$TMP/kit-next"
+mkdir -p "$NEXT"
+while IFS= read -r -d '' f; do
+  mkdir -p "$NEXT/$(dirname "$f")"
+  cp "$KIT/$f" "$NEXT/$f"
+done < <(git -C "$KIT" ls-files -z)
+python3 - "$NEXT" <<'PYNEXT'
+import os, sys
+k = sys.argv[1]
+for role in ("partner", "dev"):
+    with open(os.path.join(k, "claude/skills", role, "SKILL.md"), "a") as f:
+        f.write("\n次の版の末尾。\n")
+p = os.path.join(k, "claude/skills/review/SKILL.md")
+s = open(p).read()
+s = s.replace("---", "---\n次の版の行。", 1)
+open(p, "w").write(s)
+p = os.path.join(k, "kitfiles.tsv")
+s = open(p).readlines()
+open(p, "w").writelines(l for l in s if not l.startswith(("claude/brain-kit/bin/heavy-lock\t", "claude/brain-kit/automations/README.md\t", "brain-template/dev/README.md\t")))
+os.remove(os.path.join(k, "brain-template/dev/README.md"))
+PYNEXT
+next_update() { HOME="$1" bash "$NEXT/install.sh" --update --no-worktrees "${@:2}"; }
+for seed in base seed; do
+  H="$TMP/three-$seed"
+  mkdir -p "$H"
+  new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+  check "3-way $seed: install に base" test -f "$H/.claude/brain-kit/base/.claude/skills/aoi/SKILL.md"
+  check "3-way $seed: brain に base" test -f "$H/brain/.brain-kit/base/CLAUDE.md"
+  if [ "$seed" = seed ]; then
+    rm -rf "$H/.claude/brain-kit/base" "$H/brain/.brain-kit/base"
+    printf '\n持ち主の行。\n' >>"$H/.claude/skills/sora/SKILL.md"
+    owner0="$(cat "$H/.claude/skills/sora/SKILL.md")"
+    new "$H" --update --no-worktrees >"$H.seed" 2>&1
+    check "seed: 未変更ファイルの base を補う" test -f "$H/.claude/brain-kit/base/.claude/skills/aoi/SKILL.md"
+    check "seed: 不明な base は作らない" test ! -e "$H/.claude/brain-kit/base/.claude/skills/sora/SKILL.md"
+    check "seed: 持ち主を上書きしない" test "$owner0" = "$(cat "$H/.claude/skills/sora/SKILL.md")"
+    check "seed: 不明は衝突" test -f "$H/.claude/skills/sora/SKILL.md.new"
+    # 一致に戻ったときも base を補う
+    cp "$H/.claude/skills/sora/SKILL.md.new" "$H/.claude/skills/sora/SKILL.md"
+    rm "$H/.claude/skills/sora/SKILL.md.new"
+    new "$H" --update --no-worktrees >"$H.same" 2>&1
+    check "seed: same も base を補う" test -f "$H/.claude/brain-kit/base/.claude/skills/sora/SKILL.md"
+  fi
+  python3 - "$H" <<'PYOWNER'
+import os, sys
+h = sys.argv[1]
+for role in ("ren", "mio"):
+    p = os.path.join(h, ".claude/skills", role, "SKILL.md")
+    s = open(p).read()
+    s = ("持ち主の先頭。\n" + s) if role == "ren" else s.replace("---", "---\n持ち主の行。", 1)
+    open(p, "w").write(s)
+PYOWNER
+  printf '\n持ち主の末尾。\n' >>"$H/.claude/skills/sora/SKILL.md"
+  printf '\n持ち主の末尾。\n' >>"$H/.claude/brain-kit/automations/README.md"
+  rm "$H/brain/dev/README.md"
+  mkdir -p "$H/.claude/skills/my-agent" "$H/.claude/agents"
+  printf '持ち主の skill\n' >"$H/.claude/skills/my-agent/SKILL.md"
+  printf '持ち主の agent\n' >"$H/.claude/agents/my-agent.md"
+  cp "$H/.claude/brain-kit/manifest.json" "$H.manifest-before"
+  before="$(snap "$H")"
+  dirs0="$(find "$H/.claude/brain-kit" "$H/brain/.brain-kit" -type d | sort)"
+  backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  next_update "$H" --dry-run >"$H.dry" 2>&1
+  rc=$?; check "3-way $seed: dry-run が 0" test "$rc" -eq 0
+  [ "$rc" -eq 0 ] || cat "$H.dry"
+  check "3-way $seed: dry-run は何も変えない" test "$before" = "$(snap "$H")"
+  check "3-way $seed: dry-run も衝突の件数を出す" grep -q '衝突: 2 件' "$H.dry"
+  check "3-way $seed: dry-run は退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  for cls in '上げるもの（kit だけが変わった）' '持ち主だけが変えたもの' '両方が変えたもの' 'kit から外れたもの'; do
+    check "3-way $seed: dry-run $cls" grep -q "$cls" "$H.dry"
+  done
+  next_update "$H" >"$H.up" 2>&1
+  rc=$?; check "3-way $seed: update が 0" test "$rc" -eq 0
+  [ "$rc" -eq 0 ] || cat "$H.up"
+  check "3-way $seed: kit だけを更新" grep -q '次の版の末尾' "$H/.claude/skills/aoi/SKILL.md"
+  check "3-way $seed: 非重複でも持ち主を残す" grep -q '^持ち主の先頭。' "$H/.claude/skills/ren/SKILL.md"
+  check "3-way $seed: 非重複でも .new" test -f "$H/.claude/skills/ren/SKILL.md.new"
+  check "3-way $seed: 重複でも .new" test -f "$H/.claude/skills/mio/SKILL.md.new"
+  check "3-way $seed: 持ち主だけなら .new 無し" test ! -e "$H/.claude/skills/sora/SKILL.md.new"
+  check "3-way $seed: 持ち主だけならそのまま" grep -q '持ち主の末尾' "$H/.claude/skills/sora/SKILL.md"
+  check "3-way $seed: 外れた未変更ファイルは消す" test ! -e "$H/.claude/brain-kit/bin/heavy-lock"
+  check "3-way $seed: 外れた変更済みファイルは残す" grep -q '持ち主の末尾' "$H/.claude/brain-kit/automations/README.md"
+  check "3-way $seed: 外れた欠落ファイルは足さない" test ! -e "$H/brain/dev/README.md"
+  check "3-way $seed: 外れた base は消す" test ! -e "$H/.claude/brain-kit/base/.claude/brain-kit/bin/heavy-lock"
+  check "3-way $seed: 外れた変更済み base も消す" test ! -e "$H/.claude/brain-kit/base/.claude/brain-kit/automations/README.md"
+  check "3-way $seed: 外れた欠落ファイルの base も消す" test ! -e "$H/brain/.brain-kit/base/dev/README.md"
+  check "3-way $seed: 外れた manifest も消す" sh -c "! grep -q 'heavy-lock' '$H/.claude/brain-kit/manifest.json'"
+  check "3-way $seed: 残すものを表示" grep -q 'automations/README.md.*残す' "$H.up"
+  check "3-way $seed: 未登録 skill はそのまま" test "$(cat "$H/.claude/skills/my-agent/SKILL.md")" = '持ち主の skill'
+  check "3-way $seed: 未登録 agent はそのまま" test "$(cat "$H/.claude/agents/my-agent.md")" = '持ち主の agent'
+  check "3-way $seed: 機械マージは clean" sh -c "grep -q 'clean' '$H'/.claude/brain-kit/conflicts/*/README.md"
+  check "3-way $seed: 機械マージは衝突印" sh -c "grep -q '1 conflict markers' '$H'/.claude/brain-kit/conflicts/*/README.md"
+  check "3-way $seed: 最後に衝突の件数を必ず出す" sh -c "tail -n 5 '$H.up' | grep -q '衝突: 2 件'"
+  check "3-way $seed: 最後に .new の一覧を出す" sh -c "tail -n 5 '$H.up' | grep -q 'ren/SKILL.md.new' && tail -n 5 '$H.up' | grep -q 'mio/SKILL.md.new'"
+  check "3-way $seed: merged を保存" sh -c "ls '$H'/.claude/brain-kit/conflicts/*/files/claude/.claude/skills/ren/SKILL.md.merged"
+  python3 - "$H" <<'PYBASE'
+import hashlib, json, os, sys
+h = sys.argv[1]
+before = json.load(open(h + ".manifest-before"))["files"]
+after = json.load(open(os.path.join(h, ".claude/brain-kit/manifest.json")))["files"]
+for role in ("ren", "mio", "sora"):
+    key = ".claude/skills/" + role + "/SKILL.md"
+    assert before[key] == after[key]
+    base = open(os.path.join(h, ".claude/brain-kit/base", key), "rb").read()
+    assert hashlib.sha256(base).hexdigest() == before[key]["sha"]
+PYBASE
+  check "3-way $seed: 衝突・持ち主の manifest と base を保つ" test $? -eq 0
+  HOME="$H" bash "$NEXT/install.sh" --doctor >"$H.doctor" 2>&1
+  check "3-way $seed: doctor に持ち主の変更" grep -q '持ち主だけが変更' "$H.doctor"
+  check "3-way $seed: doctor に衝突" grep -q '衝突' "$H.doctor"
+  check "3-way $seed: doctor に .new" grep -q 'SKILL.md.new' "$H.doctor"
+  after="$(snap "$H")"
+  next_update "$H" >"$H.up2" 2>&1
+  check "3-way $seed: 再更新も冪等" test "$after" = "$(snap "$H")"
+  check "3-way $seed: 再更新でも衝突の件数を出す" sh -c "tail -n 5 '$H.up2' | grep -q '衝突: 2 件'"
+  new "$H" --rollback >"$H.rb" 2>&1
+  check "3-way $seed: rollback が 0" test $? -eq 0
+  check "3-way $seed: rollback はバイト単位で戻す" test "$before" = "$(snap "$H")"
+  check "3-way $seed: rollback で作った空ディレクトリも消す" test "$dirs0" = "$(find "$H/.claude/brain-kit" "$H/brain/.brain-kit" -type d | sort)"
+done
+
+# ------------------------------------------------------------------ 9. 前の .new が残ったまま、さらに次の版へ更新する
+# 決め: .new は「いまの kit の新しい版」を置く場所。中身が違えば今回の新しい版で置き換え、前の .new は退避に残す（止めない）。
+section "前の .new が残ったまま次の版へ"
+NEXT2="$TMP/kit-next2"
+mkdir -p "$NEXT2"
+(cd "$NEXT" && tar cf - .) | (cd "$NEXT2" && tar xf -)
+printf '\n次の次の版の末尾。\n' >>"$NEXT2/claude/skills/dev/SKILL.md"
+H="$TMP/three-base"
+next_update "$H" >"$H.up3" 2>&1
+check "前の .new: 1 回目の更新で .new" test -f "$H/.claude/skills/ren/SKILL.md.new"
+printf '\n持ち主が .new に書いた途中の行。\n' >>"$H/.claude/skills/ren/SKILL.md.new"
+ours="$(cat "$H/.claude/skills/ren/SKILL.md")"
+mio_new="$(cat "$H/.claude/skills/mio/SKILL.md.new")"
+HOME="$H" bash "$NEXT2/install.sh" --update --no-worktrees --dry-run >"$H.dry4" 2>&1
+check "前の .new: dry-run で置き換えると出す" grep -q 'ren/SKILL.md.new（前の更新の .new' "$H.dry4"
+HOME="$H" bash "$NEXT2/install.sh" --update --no-worktrees >"$H.up4" 2>&1
+check "前の .new: 2 回目の更新が 0" test $? -eq 0
+check "前の .new: 元のファイルはそのまま" test "$ours" = "$(cat "$H/.claude/skills/ren/SKILL.md")"
+check "前の .new: .new は今回の新しい版" grep -q '次の次の版の末尾' "$H/.claude/skills/ren/SKILL.md.new"
+check "前の .new: 前の .new は退避に残る" sh -c "grep -rq '持ち主が .new に書いた途中の行' '$H'/.claude/backup-brain-kit-*/files"
+check "前の .new: 置き換えたと最後に出す" sh -c "tail -n 5 '$H.up4' | grep -q 'ren/SKILL.md.new（前の更新の .new'"
+check "前の .new: 変わらない .new はそのまま" test "$mio_new" = "$(cat "$H/.claude/skills/mio/SKILL.md.new")"
+new "$H" --rollback >"$H.rb4" 2>&1
+check "前の .new: rollback で前の .new に戻る" grep -q '持ち主が .new に書いた途中の行' "$H/.claude/skills/ren/SKILL.md.new"
 
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

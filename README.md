@@ -121,7 +121,7 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 **Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` は macOS 標準の bash 3.2 でも動く書き方だけを使う。本体は `lib/kit.py`（Python 3.8 以上、標準ライブラリだけ）。bash 4 以降の機能・GNU 拡張・column は使っていない。任意の `heavy-lock` だけ awk を使う）。
 
-入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／古い／足りない／手で直した）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／kit だけの更新待ち／足りない／持ち主の変更／衝突）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
 
 ## 更新のしかた（すでに使っている人）
 
@@ -137,8 +137,10 @@ clone してあるなら `git pull && ./install.sh --update`。
 - **持ち主のものには触らない**：核・辞書・関係・任せる範囲・振り返り・日誌・決定・知識・プロジェクト・状況カード・報告・記録・規準・手順。新しい版で増えた骨格は、無いものだけ足す
 - **今の版を見分ける**：`~/brain/.brain-kit/config.json` があればそれ。v1〜v9 のように記録が無ければ、kit のファイルの形から判定し、最初の更新で記録を書く
 - **名前は引き継ぐ**：相棒と開発は今の名前の skill・領域をそのまま使う。新しく足すレビューとリリースの 2 人だけ名前を聞く（`--review <名前> --release <名前>`、英字でなければ `--review-id` `--release-id` も）
-- **手で直した kit のファイル**は上書きしない。**新しい版にする／今のままにする／差分を見る**の 3 択。対話が無いとき（`--yes`・パイプ）は今のままにして、最後に一覧を出す。今のままにした版は次の更新で聞き直さない
-- **`--dry-run`**：足すもの・上げるもの・触らないもの・手で直したもの、と差分を出す
+- **base と比較する**：最後に入れた kit の原文を、各 manifest の隣の `base/` に保存する。kit だけが変わったファイルは更新し、持ち主だけが変えたものは触らない
+- **両方が変わったら衝突**：元のファイルを残し、`<file>.new` と `~/.claude/brain-kit/conflicts/<日時>/` に差分・機械マージ候補を置く。候補は自動適用しない。`.new` と比較して編集し、済んだら `.new` を消す。明示的に kit 版を選ぶなら `--edited new`（退避あり）。既定と `--edited keep` は衝突を残す。衝突が 1 件でもあれば、更新（と `--dry-run`）の最後に件数と `.new` の一覧を必ず出す。前の更新の `.new` が残っていて新しい版と違えば、止めずに今回の新しい版で置き換える（前の `.new` は退避に残り、`--rollback` で戻る）
+- **kit から外れたもの**：未変更なら退避して削除。持ち主が変えたものは残し、管理の記録を外す
+- **`--dry-run`**：各分類と差分を出すだけ。base・`.new`・bundle・退避も書かない。差分だけ追加表示するなら `--diff`
 - **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--rollback` で直前の更新を戻す（上げたものを戻し、足したものを消し、作った worktree を外す。GitHub のラベルは消さない）。brain にはどちらもコミットが 1 つ残る
 - 最後に、上がった版の変更点（`CHANGELOG.md` の該当の節）と、新しく使えるもの（レビュー・リリース・工程表）の始め方を出す
 - 2 回目の `--update` は何も変えない
@@ -273,7 +275,7 @@ brain-kit/
 ├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）
 ├── VERSION / CHANGELOG.md    ← 版と変更点（--update の最後に出る）
 ├── migrations/fingerprints.json ← 版の記録が無い v1〜v9 を見分ける指紋（行ごとのハッシュだけ。tools/make-fingerprints.py が作る）
-├── tests/e2e.sh              ← サンドボックス HOME で 新規・v8/v9 → v10・2 回目・dry-run・3 択・rollback・doctor を実走
+├── tests/e2e.sh              ← サンドボックス HOME で 新規・v8/v9 → v10・2 回目・dry-run・3-way・rollback・doctor を実走
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
 ├── ORCA.md                   ← Orca を WSL に常駐させて Tailscale で繋ぐ手順
 ├── claude/
