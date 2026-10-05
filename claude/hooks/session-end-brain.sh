@@ -118,6 +118,8 @@ tags: [daily, claude-code]
 EOF
 fi
 
+# バッククォートは Markdown の記号。
+# shellcheck disable=SC2016
 {
   printf '\n## %s Claude Code セッション\n\n' "$TIME"
   printf -- '- 作業ディレクトリ: `%s`\n' "${SESSION_CWD:-unknown}"

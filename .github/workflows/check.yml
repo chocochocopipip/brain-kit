@@ -25,6 +25,17 @@ jobs:
             bash check.sh
           fi
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck の版
+        run: shellcheck --version
+      - name: lint の自己テストと検査
+        run: |
+          bash tests/lint.sh --self-test
+          bash tests/lint.sh
+
   e2e:
     strategy:
       fail-fast: false
@@ -37,6 +48,8 @@ jobs:
           fetch-depth: 0          # v8・v9 のコミットから古い入れ方を作る
       - name: 版
         run: /bin/bash --version | head -1; python3 --version; git --version
+      - name: bash 3.2 / BSD の移植性
+        run: bash tests/lint.sh --portability-only
       - name: 新規・v8/v9 → v10・v10 → v10・dry-run・3 択・rollback・doctor
         run: /bin/bash tests/e2e.sh   # macOS は標準の bash 3.2 と BSD の道具で走る
 
