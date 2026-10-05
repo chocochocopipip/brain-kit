@@ -1,0 +1,59 @@
+name: Bug report / 不具合
+description: Something in install, update, doctor, hooks or skills did not work / 導入・更新・doctor・フック・skill がうまく動かない
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste personal data.** Replace your user name, home path, persona names, project names and any credentials with placeholders before posting. Security problems go to [SECURITY.md](https://github.com/chocochocopipip/brain-kit/blob/main/SECURITY.md), not here.
+        **個人の情報は貼らない。**ユーザー名・ホームのパス・人格の名前・プロジェクト名・認証情報は伏せ字にしてから。セキュリティの問題はここではなく SECURITY.md へ。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 何が起きたか
+      description: What you ran, what you expected, what you got instead. / 何を実行し、何を期待し、実際どうなったか。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 再現の手順
+      placeholder: |
+        1. ./install.sh --update --dry-run
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output / 出力
+      description: The error and the output of `./install.sh --doctor` (redacted). / エラーと `./install.sh --doctor` の出力（伏せ字にして）。
+      render: text
+  - type: input
+    id: kit-version
+    attributes:
+      label: brain-kit version or commit / brain-kit の版かコミット
+      placeholder: "e.g. v10, or the output of git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version / Claude Code の版
+      placeholder: "output of claude --version"
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - WSL
+        - Other / その他
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: bash version / bash の版
+      placeholder: "output of bash --version | head -1"
