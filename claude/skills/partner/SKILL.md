@@ -139,9 +139,11 @@ Claude の Artifact（db の capability）で、中身は相棒が節目に書�
 **最初の 1 回**（持ち主が「工程表を作って」と言ったとき）：
 
 1. `~/.claude/brain-kit/dashboard/index.html` を Artifact として publish する。`capabilities` は
-   `{"db": {"rules": [{"path": "board", "read": "view", "write": "admin"}]}}`（読むのは誰でも、書くのは編集できる人だけ）
+   `{"db": {"rules": [{"path": "board", "read": "view", "write": "admin"}, {"path": "shots", "read": "view", "write": "admin"}, {"path": "decisions", "read": "view", "write": "admin"}]}}`（読むのは誰でも、書くのは編集できる人だけ）
 2. できた URL を `<brain>/.brain-kit/dashboard-url` に 1 行で書いてコミットする
 3. 下の「節目に書き込む」を 1 回やって、中身が出ることを確かめる
+
+v10 で公開済みの工程表は、`.brain-kit/dashboard-url` の同じ URL に、この新しい capabilities で 1 回だけ再公開する。
 
 **節目に書き込む**（PR が入った・起票した・判断が済んだ・朝いちばん、のとき）：
 
@@ -154,7 +156,35 @@ python3 ~/.claude/brain-kit/dashboard/collect.py --out /tmp/board.json   # GitHu
 - **持ち主の番**（`board/owner`）：`{"items": [{"text": "…", "ref": "owner/repo#N"}], "updated_at": "…"}`。
   持ち主の判断・確認・合図が要るものだけ。集計が拾う `question`・`needs-triage` に、相棒が知っているものを足す
 - **今日の予定**（`board/plan`）：`{"date": "YYYY-MM-DD", "items": [{"time": "HH:MM", "text": "…"}]}`。時刻は分かるものだけ。創作しない
-- 書くのは相棒だけ。ほかの人格は URL を読むだけ
+- 中身を書くのは相棒。判断ボタンの `answer` は持ち主が書く。ほかの人格は URL を読むだけ
+
+**見た目の確認（スクショ）**
+
+画面の見た目を変える PR では、PR の画面を PNG で撮り、確認してほしい所を短く添える。
+
+```bash
+python3 ~/.claude/brain-kit/dashboard/shot.py <png> --ref owner/repo#N --url <PR url> --caption "<見てほしい所>" --out /tmp/shot.json
+```
+
+- `ArtifactData` の `set`、collection `shots`、doc_id は `repo-N-1` など、`file_path` は `/tmp/shot.json`。ID は英数字と `_ - . ~ : @ +` だけ
+- 1 文書に画像 1 枚（`data` は画像の data URL）。claude.ai の表示では assets の URL や publish 同梱ファイルの画像が読み込まれなかったため、db から読む
+- db は 1 文書 256 KiB まで。`shot.py` が説明も含めて収まるまで縮める（既定は 4 KiB の余裕）。必要なら `--png-out` で縮小後の PNG も確認する
+- 最大 24 枚。マージ済み・閉じた PR のスクショは削除する
+- 機密を写さない。スクショは URL を見られる人なら誰でも見られる（`read: view`）。顧客名・金額・鍵など実データが写る画面は、伏せるか見本のデータで撮る
+
+**判断待ちのボタン**
+
+持ち主に選んでもらうとき、`ArtifactData` の `set` で collection `decisions`、doc_id `<id>` に置く。
+
+```json
+{"question":"どちらで進める？","ref":"owner/repo#N","url":"https://example.invalid/pr","note":"違いを短く書く","options":[{"key":"a","label":"案 A"},{"key":"b","label":"案 B"}],"asked_at":"2026-01-02T09:00:00+09:00"}
+```
+
+- `question` は 1 行、`note` は短く、選択肢は 2〜8 個（`key` は重複させない）。機密は載せない。`ref`・`url`・`note` は省略可
+- 毎回の節目に collection `decisions` を `list` する。`answer: {key, label, at}` が持ち主の選択。**相棒はボタンを押さず、`answer` も書かない**
+- 選択を受けて動くとき `taken_at`（ISO 時刻）を `update`。それまでは持ち主が選び直せる。終わったら `closed: true` を `update`（または削除）
+- 実際の決定はいつもどおり brain の `decisions/` に残す
+- 「持ち主の番」にも載せるのは相棒がそこに追加したときだけ。自動で重ねて載せる必要は無い
 
 ## 10. セッションを閉じるとき（持ち主が決めたときだけ）
 

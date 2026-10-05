@@ -391,5 +391,97 @@ check "前の .new: 変わらない .new はそのまま" test "$mio_new" = "$(c
 new "$H" --rollback >"$H.rb4" 2>&1
 check "前の .new: rollback で前の .new に戻る" grep -q '持ち主が .new に書いた途中の行' "$H/.claude/skills/ren/SKILL.md.new"
 
+# ------------------------------------------------------------------ 9. 工程表のスクショ（shot.py、標準ライブラリだけ）
+section "工程表: スクショを db の 1 文書に縮める"
+SHOT="$KIT/claude/brain-kit/dashboard/shot.py"
+SD="$TMP/shot"
+mkdir -p "$SD"
+# テスト用の PNG を作る（標準ライブラリだけ）: 大きくて縮みにくい RGB・RGBA・パレット、小さい RGB
+cat >"$SD/make.py" <<'PY'
+import os, random, struct, sys, zlib
+d = sys.argv[1]
+def chunk(t, b):
+    return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b) & 0xffffffff)
+def png(path, w, h, ctype, px, plte=None):
+    bpp = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        raw += px[y * w * bpp:(y + 1) * w * bpp]
+    out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, ctype, 0, 0, 0))
+    if plte:
+        out += chunk(b"PLTE", plte)
+    out += chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
+    open(path, "wb").write(out)
+r = random.Random(7)
+def noise(n, bits=8):
+    return bytes(r.getrandbits(bits) for _ in range(n))
+png(os.path.join(d, "big-rgb.png"), 1400, 900, 2, noise(1400 * 900 * 3))
+png(os.path.join(d, "big-rgba.png"), 900, 700, 6, noise(900 * 700 * 4))
+png(os.path.join(d, "big-pal.png"), 1200, 800, 3, noise(1200 * 800, 4), plte=noise(16 * 3))
+png(os.path.join(d, "small.png"), 40, 30, 2, bytes((x * 5) % 256 for x in range(40 * 30 * 3)))
+PY
+python3 "$SD/make.py" "$SD"
+# valid.py <doc.json> <上限> [元の png]: 文書が上限に収まり、data を戻すと PNG として読める（元より小さく、縦横比が同じ）
+cat >"$SD/valid.py" <<'PY'
+import base64, json, struct, sys, zlib
+doc_path, limit = sys.argv[1], int(sys.argv[2])
+raw = open(doc_path, "rb").read()
+assert len(raw) <= limit, "doc %d > %d" % (len(raw), limit)
+doc = json.loads(raw.decode("utf-8"))
+pre = "data:image/png;base64,"
+assert doc["data"].startswith(pre)
+b = base64.b64decode(doc["data"][len(pre):], validate=True)
+assert b[:8] == b"\x89PNG\r\n\x1a\n"
+i, idat, ihdr = 8, b"", None
+while i < len(b):
+    n = struct.unpack(">I", b[i:i + 4])[0]
+    t, body, crc = b[i + 4:i + 8], b[i + 8:i + 8 + n], struct.unpack(">I", b[i + 8 + n:i + 12 + n])[0]
+    assert zlib.crc32(t + body) & 0xffffffff == crc, "crc"
+    if t == b"IHDR":
+        ihdr = struct.unpack(">IIBBBBB", body)
+    elif t == b"IDAT":
+        idat += body
+    i += 12 + n
+    if t == b"IEND":
+        break
+w, h, depth, ctype, _, _, interlace = ihdr
+assert depth == 8 and interlace == 0
+bpp = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+assert len(zlib.decompress(idat)) == h * (1 + w * bpp), "IDAT size"
+assert doc["w"] == w and doc["h"] == h
+if len(sys.argv) > 3:
+    sw, sh = struct.unpack(">II", open(sys.argv[3], "rb").read()[16:24])
+    assert w < sw and h < sh, "not shrunk"
+    assert abs(w / float(h) - sw / float(sh)) < 0.02, "aspect"
+PY
+cat >"$SD/same.py" <<'PY'
+import base64, json, sys
+d = json.load(open(sys.argv[1]))
+assert base64.b64decode(d["data"].split(",", 1)[1]) == open(sys.argv[2], "rb").read()
+PY
+cat >"$SD/meta.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ref"] == "example/app#1" and d["caption"] == "test" and d.get("taken_at")
+PY
+LIM=262144
+check "shot.py: 元の PNG が 256KB を超えている（テストの前提）" test "$(wc -c <"$SD/big-rgb.png")" -gt "$LIM"
+for f in big-rgb big-rgba big-pal; do
+  python3 "$SHOT" "$SD/$f.png" --out "$SD/$f.json" --ref "example/app#1" --caption "test" >"$SD/$f.log" 2>&1
+  check "shot.py: $f が 0 で終わる" test $? -eq 0
+  check "shot.py: $f が 1 文書（256KB）に収まり、PNG として読め、縮んでいる" python3 "$SD/valid.py" "$SD/$f.json" "$LIM" "$SD/$f.png"
+done
+python3 "$SHOT" "$SD/big-rgb.png" --out "$SD/tight.json" --max-bytes 60000 >/dev/null 2>&1
+check "shot.py: --max-bytes で上限を変えられる" python3 "$SD/valid.py" "$SD/tight.json" 60000 "$SD/big-rgb.png"
+python3 "$SHOT" "$SD/small.png" --out "$SD/small.json" >/dev/null 2>&1
+check "shot.py: 小さい画像も 0 で終わる" test $? -eq 0
+check "shot.py: 小さい画像はそのまま通る（バイト一致）" python3 "$SD/same.py" "$SD/small.json" "$SD/small.png"
+check "shot.py: ref・caption・taken_at が文書に入る" python3 "$SD/meta.py" "$SD/big-rgb.json"
+check "shot.py: PNG でないものは 0 以外で止まる" sh -c "! python3 '$SHOT' '$SD/make.py' --out '$SD/bad.json' 2>/dev/null"
+check "shot.py: 収まらない上限は 0 以外で止まる" sh -c "! python3 '$SHOT' '$SD/big-rgb.png' --out '$SD/none.json' --max-bytes 100 2>/dev/null"
+DASH="$KIT/claude/brain-kit/dashboard/index.html"
+check "工程表: スクショの段（shots）と判断のボタン（decisions）を読む" sh -c "grep -q 'collection(\"shots\")' '$DASH' && grep -q 'collection(\"decisions\")' '$DASH'"
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

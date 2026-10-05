@@ -32,7 +32,7 @@ Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で�
 |---|---|---|
 | **Claude Code 設定** | 「作業前に brain を読め、決定は brain に書け」という規律と、四人格の skill、セッション終了時に日次ノートへ自動追記するフック | `claude/` |
 | **brain** | Obsidian vault。`daily/` `projects/` `decisions/` `knowledge/` と、相棒の領域 `<相棒名>/`、開発 `dev/`・レビュー `review/`・リリース `release/` の領域 | `brain-template/` |
-| **工程表** | 起票 → 判断待ち → 開発 → PR → リリースの列 → 本番、の本数と一覧・持ち主の番・今日の予定（brain-kit Dashboard。Claude の Artifact） | `claude/brain-kit/dashboard/` |
+| **工程表** | 起票 → 判断待ち → 開発 → PR → リリースの列 → 本番、の本数と一覧・持ち主の番・今日の予定・見た目の確認・判断ボタン（brain-kit Dashboard。Claude の Artifact） | `claude/brain-kit/dashboard/` |
 | **Orca** | Claude Code を母艦（WSL）で常駐・並列に動かし、外から繋ぐ。無くても上の2層は動く | `ORCA.md` |
 
 ## 導入
@@ -201,6 +201,8 @@ Claude の Artifact（`db` の capability）で、中身は相棒が節目に書
 
 - 相棒に「工程表を作って」と言うと、`~/.claude/brain-kit/dashboard/index.html` を Artifact として publish し、URL を `~/brain/.brain-kit/dashboard-url` に残す
 - 節目（PR が入った・起票した・判断が済んだ・朝）に、相棒が `collect.py`（`gh` で `--repos` のリポジトリを読むだけ）で集め、Artifact の `board/current` に置く。持ち主の番と今日の予定は相棒が書く
+- 見た目を変える PR はスクショを `shot.py` で 1 文書に縮め、db の `shots` に置く。「見た目の確認」で拡大して見られる
+- 判断ボタンは db の `decisions`。持ち主の選択（`answer`）を相棒が節目に読み、受け取り・完了を記録する。v10 の公開済み工程表は新しい db ルールで同じ URL に再公開する
 - 段はラベルで決まる（`collect.py` の先頭に表）。手順は相棒の skill の「工程表」節
 
 ### 見回りと重いテスト（任意）
@@ -285,7 +287,7 @@ brain-kit/
 │   ├── settings.codex.json   ← Codex plugin の marketplace と plugin キー（--codex のときだけマージ）
 │   ├── hooks/session-end-brain.sh, brain-digest.js
 │   ├── skills/partner/ dev/ review/ release/ setup/ grilling/   ← 4 人は install 時に名前（id）が付く
-│   └── brain-kit/            ← ~/.claude/brain-kit/ に置く: dashboard/（工程表と collect.py）automations/ bin/heavy-lock
+│   └── brain-kit/            ← ~/.claude/brain-kit/ に置く: dashboard/（工程表と collect.py・shot.py）automations/ bin/heavy-lock
 └── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ review/ release/ はそのまま）
 ```
 
