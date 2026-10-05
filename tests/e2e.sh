@@ -701,6 +701,18 @@ for groups in ([], [{"hooks": [{"command": "echo old", "timeout": 30}]}]):
     write(p, {"hooks": {"Stop": groups}})
     r2 = plan(False, {"settings": r["record"]})
     assert r2["conflict"] and not r2["changed"] and not r2["add"] and r2["record"] == record
+# 同じイベントで command が 2 つ変わったら対応を推測しない（記録はキー順で保存されるので z, a の順でも試す）。
+oz = {"hooks": [{"command": "echo z", "timeout": 1}]}
+oa = {"hooks": [{"command": "echo a", "timeout": 1}]}
+oa_owner = {"hooks": [{"command": "echo a", "timeout": 9}]}
+nz = {"hooks": [{"command": "echo z-v2", "timeout": 1}]}
+na = {"hooks": [{"command": "echo a-v2", "timeout": 1}]}
+rec2 = {"hooks.Stop": {"echo z": ns["settings_sha"](oz), "echo a": ns["settings_sha"](oa)}}
+rec2 = json.loads(json.dumps(rec2, sort_keys=True))
+for _ in range(2):
+    r = run({"hooks": {"Stop": [oz, oa_owner]}}, {"hooks": {"Stop": [nz, na]}}, rec2)
+    assert not r["changed"] and not r["add"] and not r["update"] and len(r["conflict"]) == 4
+    assert r["record"] == rec2
 # 最初以外の hook に同じ command があっても、先に見つかった group を現在値とする。
 ours = {"hooks": [{"command": "echo owner"}, {"command": "echo old"}]}
 r = run({"hooks": {"Stop": [ours, old]}}, {"hooks": {"Stop": [new]}}, record)

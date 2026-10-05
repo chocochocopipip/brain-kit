@@ -561,11 +561,21 @@ def plan_settings(codex=False, manifest=None):
                                  "ours": None if old is absent else old, "recorded": rec,
                                  "theirs": None if new is absent else new})
 
-    # 同じイベントで消えた command と増えた command を記録順・kit 順に対応付ける。
+    # 同じイベントで消えた command と増えた command が 1 つずつなら、command の変更として対応付ける。
+    # 複数あると対応が決まらないので、どれも触らずに衝突として出す（古い記録は残し、新しいものは足さない）。
     paired = set()
     for part in dict.fromkeys(e[0] for e in record if e[0].startswith("hooks.")):
         removed = [e for e in record if e[0] == part and e not in theirs]
         added = [e for e in theirs if e[0] == part and e not in record and current(e) is absent]
+        if not removed or not added:
+            continue
+        if len(removed) > 1 or len(added) > 1:
+            paired.update(removed + added)
+            for e in removed:
+                conflict(e, current(e), record[e], absent, "command の変更が複数あり対応が決まらない")
+            for e in added:
+                conflict(e, absent, None, theirs[e], "command の変更が複数あり対応が決まらない")
+            continue
         for old_entry, new_entry in zip(removed, added):
             paired.update((old_entry, new_entry))
             old, new, rec = current(old_entry), theirs[new_entry], record[old_entry]
