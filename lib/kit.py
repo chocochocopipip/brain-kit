@@ -490,6 +490,16 @@ def settings_entries(obj):
     return entries
 
 
+def settings_has(obj, entry):
+    """settings の JSON に kit の項目（イベントと command／キー）があるか。"""
+    part, key = entry
+    if part.startswith("hooks."):
+        return any(h.get("command") == key for g in obj.get("hooks", {}).get(part[6:], []) for h in g.get("hooks", []))
+    if part == "statusLine":
+        return part in obj
+    return key in obj.get(part, {})
+
+
 def settings_name(entry):
     part, key = entry
     return part + (": " + key[:60] if part.startswith("hooks.") else "." + key if key else "")
@@ -1648,6 +1658,9 @@ def cmd_resolve(args):
         record = manifests["claude"].setdefault("settings", {})
         # 更新が覚えた衝突も含める（持ち主が項目を手で消すと、今の計画では「足す」に見えるため）
         entries = pending | {tuple(c["entry"]) for c in sett["conflict"] + after["conflict"]}
+        # --from で消した kit の項目も、持ち主が決めたものとして記録する（次の更新で足し直さない）
+        before_obj, result_obj = json.loads(current or "{}"), json.loads(result)
+        entries |= {e for e in after["theirs"] if settings_has(before_obj, e) and not settings_has(result_obj, e)}
         manifests["claude"].pop("settings_conflicts", None)
         for part, key in sorted(entries):
             value = after["theirs"].get((part, key))

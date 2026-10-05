@@ -1311,5 +1311,41 @@ for method in inplace keep; do
   check "解消 brain $method: 作業ツリーに残りが無い" test -z "$(git -C "$H/brain" status --porcelain)"
 done
 
+# --from で kit の項目を消して解消したら、次の更新で足し直さない（kit の新しい版で増え、まだ記録の無い項目でも）
+NEXTS2="$TMP/kit-next-s2"
+mkdir -p "$NEXTS2"
+(cd "$NEXTS" && tar cf - .) | (cd "$NEXTS2" && tar xf -)
+python3 - "$NEXTS2" <<'PY'
+import json, sys
+p = sys.argv[1] + "/claude/settings.snippet.json"
+s = json.load(open(p))
+s["enabledPlugins"]["later-plugin@example-market"] = True
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=2)
+PY
+H="$TMP/settings-from-delete"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30                 # 衝突を作る
+s["enabledPlugins"]["later-plugin@example-market"] = True          # 持ち主が先に入れていた plugin
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS/install.sh" --update --no-worktrees >"$H.up" 2>&1
+check "--from で消した項目: 衝突がある" grep -q 'settings.json の衝突' "$H.up"
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+del s["enabledPlugins"]["later-plugin@example-market"]
+json.dump(s, open(h + ".merged.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS2/install.sh" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resolve" 2>&1
+check "--from で消した項目: 解消が 0" test $? -eq 0
+HOME="$H" bash "$NEXTS2/install.sh" --update --no-worktrees >"$H.up2" 2>&1
+check "--from で消した項目: 次の更新で足し直さない" cmp "$H.merged.json" "$H/.claude/settings.json"
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
