@@ -727,5 +727,375 @@ assert not r["changed"] and r["new"] is None and not os.path.exists(p)
 PY
 check "settings: 各種類の削除・補完・持ち主の編集・command 衝突・未作成" test $? -eq 0
 
+# ------------------------------------------------------------------ 14. 持ち主の道具の一覧と名前の重なり
+section "相棒に渡す一覧と名前の重なり"
+H="$TMP/inventory"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+mkdir -p "$H/.claude/skills/my-agent" "$H/.claude/agents"
+printf '持ち主の skill\n' >"$H/.claude/skills/my-agent/SKILL.md"
+printf '持ち主の agent\n' >"$H/.claude/agents/my-agent.md"
+python3 - "$H" <<'PY'
+import json, sys
+p = sys.argv[1] + "/.claude/settings.json"
+s = json.load(open(p))
+s["hooks"]["Stop"][0]["hooks"].append({"command": "echo owner-tool"})
+s["hooks"]["OwnerEvent"] = [{"hooks": [{"command": "echo owner-event"}]}]
+s["enabledPlugins"]["owner-plugin@example-market"] = True
+s["extraKnownMarketplaces"] = {"owner-market": {"source": {"source": "github", "repo": "example/market"}}}
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=4)
+PY
+before="$(snap "$H")"
+new "$H" --update --no-worktrees >"$H.inventory" 2>&1
+check "一覧: 一覧だけなら資料も変更も無い" test "$before" = "$(snap "$H")"
+printf '持ち主のレビュー\n' >"$H/.claude/agents/MIO.md"
+printf '\n持ち主の末尾。\n' >>"$H/.claude/skills/ren/SKILL.md"
+cp "$H/.claude/settings.json" "$H.settings-before"
+next_update "$H" >"$H.up" 2>&1
+check "一覧: 衝突と一覧を作る更新が 0" test $? -eq 0
+python3 - "$H" <<'PY'
+import glob, sys
+h = sys.argv[1]
+s = open(glob.glob(h + "/.claude/brain-kit/conflicts/*/README.md")[0]).read()
+inv = s.split("## 持ち主が足した agent と道具（kit の外。中身は読んでいない）\n", 1)[1].split("## 名前の重なり", 1)[0]
+assert "skills: 1 件（my-agent）" in inv
+for name in ("my-agent.md", "MIO.md", "hooks.Stop: echo owner-tool", "hooks.OwnerEvent: echo owner-event", "owner-plugin@example-market", "owner-market"):
+    assert name in inv, name
+collisions = s.split("## 名前の重なり", 1)[1]
+assert "agents/MIO.md" in collisions and "MIO-own" in collisions
+assert "## 解き方" in s and "--resolve --keep" in s and "settings.json" in s
+assert "持ち主の skill" not in inv and "持ち主のレビュー" not in inv
+PY
+check "一覧: kit を除いた道具・command と大小文字を問わない重なり・解き方" test $? -eq 0
+check "一覧: skill の内容を保つ" test "$(cat "$H/.claude/skills/my-agent/SKILL.md")" = '持ち主の skill'
+check "一覧: agent の内容を保つ" test "$(cat "$H/.claude/agents/my-agent.md")" = '持ち主の agent'
+check "一覧: 重なった agent の内容を保つ" test "$(cat "$H/.claude/agents/MIO.md")" = '持ち主のレビュー'
+check "一覧: 設定のバイトを保つ" cmp "$H.settings-before" "$H/.claude/settings.json"
+check "一覧: 最後にも重なりと資料の場所" sh -c "tail -n 3 '$H.up' | grep -q '名前の重なり: 1 件' && tail -n 1 '$H.up' | grep -q '衝突の資料:'"
+after="$(snap "$H")"
+next_update "$H" >"$H.up2" 2>&1
+check "一覧: 同じ衝突資料を再利用" test "$after" = "$(snap "$H")"
+
+# ------------------------------------------------------------------ 15. 所有ディレクトリには入れない
+section "所有ディレクトリとの重なり"
+mkdir -p "$NEXT/claude/skills/extra"
+printf '追加の kit skill\n' >"$NEXT/claude/skills/extra/SKILL.md"
+printf 'claude/skills/extra/SKILL.md\t~/.claude/skills/extra/SKILL.md\n' >>"$NEXT/kitfiles.tsv"
+for kind in without with; do
+  H="$TMP/collision-$kind"
+  mkdir -p "$H"
+  new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+  mkdir -p "$H/.claude/skills/extra"
+  printf '持ち主の道具\n' >"$H/.claude/skills/extra/tool.md"
+  if [ "$kind" = with ]; then printf '持ち主の skill\n' >"$H/.claude/skills/extra/SKILL.md"; fi
+  before="$(snap "$H")"
+  backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  next_update "$H" --dry-run >"$H.dry" 2>&1
+  check "重なり $kind: dry-run に対象と提案" grep -q 'extra/SKILL.md: 持ち主の方を別名に移すか、kit の方を使わないか' "$H.dry"
+  check "重なり $kind: dry-run は書かない" test "$before" = "$(snap "$H")"
+  check "重なり $kind: dry-run は退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  next_update "$H" >"$H.up" 2>&1
+  check "重なり $kind: 更新が 0" test $? -eq 0
+  check "重なり $kind: 最後に重なりと提案" sh -c "tail -n 3 '$H.up' | grep -q 'extra/SKILL.md: 持ち主の方を別名に移すか、kit の方を使わないか'"
+  python3 - "$H" "$kind" <<'PY'
+import glob, json, os, sys
+h, kind = sys.argv[1:]
+key = ".claude/skills/extra/SKILL.md"
+p = h + "/" + key
+if kind == "with":
+    assert open(p).read() == "持ち主の skill\n"
+else:
+    assert not os.path.exists(p)
+assert open(os.path.dirname(p) + "/tool.md").read() == "持ち主の道具\n"
+assert not os.path.exists(p + ".new")
+assert not os.path.exists(h + "/.claude/brain-kit/base/" + key)
+assert key not in json.load(open(h + "/.claude/brain-kit/manifest.json"))["files"]
+s = open(glob.glob(h + "/.claude/brain-kit/conflicts/*/README.md")[0]).read()
+assert "## 名前の重なり" in s and "extra/SKILL.md: 持ち主の方を別名に移すか、kit の方を使わないか" in s
+PY
+  check "重なり $kind: 所有ファイル・base・manifest に書かず、単独でも資料に残す" test $? -eq 0
+  after="$(snap "$H")"
+  next_update "$H" >"$H.up2" 2>&1
+  check "重なり $kind: 再更新は資料も同じ" test "$after" = "$(snap "$H")"
+  mv "$H/.claude/skills/extra" "$H/.claude/skills/extra-own"
+  next_update "$H" >"$H.moved" 2>&1
+  check "重なり $kind: 持ち主が移したあと kit を足せる" cmp "$NEXT/claude/skills/extra/SKILL.md" "$H/.claude/skills/extra/SKILL.md"
+done
+HOME="$H" python3 - "$KIT" <<'PY' >"$H.id" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+p = os.path.join(ns["CLAUDE"], "skills", "occupied")
+os.makedirs(p)
+open(p + "/tool.md", "w").write("持ち主の道具\n")
+args = argparse.Namespace(review="Review", review_id="occupied", yes=True)
+ns["choose_persona"]("review", args, set(), {"files": {}})
+PY
+check "人格 id: SKILL.md の無い所有ディレクトリも終了 2" test $? -eq 2
+check "人格 id: 別 id の指定を案内" grep -q -- '--review-id <別の id>' "$H.id"
+
+# ------------------------------------------------------------------ 16. ファイルの解消と拒否・戻す順序
+section "ファイルの解消"
+next_resolve() { HOME="$1" bash "$NEXT/install.sh" --resolve "${@:2}"; }
+for method in from inplace keep; do
+  H="$TMP/resolve-$method"
+  mkdir -p "$H"
+  new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+  target="$H/.claude/skills/mio/SKILL.md"
+  python3 - "$target" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("---", "---\n持ち主の行。", 1)
+open(p, "w").write(s)
+PY
+  before="$(snap "$H")"
+  next_update "$H" >"$H.up" 2>&1
+  cp "$target.new" "$H.theirs"
+  printf '持ち主の追記。\n' >"$H.merged"
+  cat "$target.new" >>"$H.merged"
+  if [ "$method" = inplace ]; then cp "$H.merged" "$target"; fi
+  after_update="$(snap "$H")"
+  backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  if [ "$method" = from ]; then
+    for refusal in owner same markers stale both missing; do
+      case "$refusal" in
+        owner) ARGS=("$H/brain/Aoi/00_核.md") ;;
+        same) ARGS=("$H/.claude/skills/sora/SKILL.md") ;;
+        markers) ARGS=("$target" --from "$H/.claude/brain-kit/conflicts/"*/files/claude/.claude/skills/mio/SKILL.md.merged) ;;
+        stale) printf '別の版\n' >"$target.new"; ARGS=("$target") ;;
+        both) ARGS=(--keep "$target" --from "$H.merged") ;;
+        missing) ARGS=("$target" --from "$H.absent") ;;
+      esac
+      refusal_before="$(snap "$H")"
+      next_resolve "$H" "${ARGS[@]}" >"$H.refusal" 2>&1
+      check "解消の拒否 $refusal: 終了 2" test $? -eq 2
+      check "解消の拒否 $refusal: 何も書かない" test "$refusal_before" = "$(snap "$H")"
+      check "解消の拒否 $refusal: 退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+      if [ "$refusal" = stale ]; then cp "$H.theirs" "$target.new"; fi
+    done
+    ARGS=("$target" --from "$H.merged")
+  elif [ "$method" = inplace ]; then
+    ARGS=("$target")
+  else
+    ARGS=(--keep "$target")
+    cp "$target" "$H.merged"
+  fi
+  next_resolve "$H" "${ARGS[@]}" --dry-run >"$H.dry" 2>&1
+  check "解消 $method: dry-run が 0" test $? -eq 0
+  check "解消 $method: dry-run は書かない" test "$after_update" = "$(snap "$H")"
+  check "解消 $method: dry-run は退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  next_resolve "$H" "${ARGS[@]}" >"$H.resolve" 2>&1
+  check "解消 $method: 実行が 0" test $? -eq 0
+  check "解消 $method: 結果が一致" cmp "$H.merged" "$target"
+  check "解消 $method: .new を消す" test ! -e "$target.new"
+  check "解消 $method: base が kit の版" cmp "$H.theirs" "$H/.claude/brain-kit/base/.claude/skills/mio/SKILL.md"
+  python3 - "$H" <<'PY'
+import hashlib, json, sys
+h = sys.argv[1]
+def digest(p):
+    return hashlib.sha256(open(p, "rb").read()).hexdigest()
+r = json.load(open(h + "/.claude/brain-kit/manifest.json"))["files"][".claude/skills/mio/SKILL.md"]
+assert r == {"sha": digest(h + ".theirs"), "merged": digest(h + ".merged")}
+PY
+  check "解消 $method: sha と merged を記録" test $? -eq 0
+  after="$(snap "$H")"
+  next_update "$H" >"$H.up2" 2>&1
+  check "解消 $method: 次の更新は結果も記録も変えない" test "$after" = "$(snap "$H")"
+  check "解消 $method: 次の更新は衝突を出さない" sh -c "! grep -q '衝突:' '$H.up2'"
+  new "$H" --rollback >"$H.rb1" 2>&1
+  check "解消 $method: 最初の rollback は解消前のバイトに戻す" test "$after_update" = "$(snap "$H")"
+  if [ "$method" != inplace ]; then
+    new "$H" --rollback >"$H.rb2" 2>&1
+    check "解消 $method: 次の rollback は更新前のバイトに戻す" test "$before" = "$(snap "$H")"
+  fi
+done
+
+# ------------------------------------------------------------------ 17. settings の解消
+section "settings の解消"
+H="$TMP/settings"
+s_update "$H" >"$H.up3" 2>&1
+for method in inplace keep from; do
+  cp "$H/.claude/settings.json" "$H.resolve-before"
+  cp "$H/.claude/brain-kit/manifest.json" "$H.resolve-manifest"
+  before="$(snap "$H")"
+  backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  ARGS=("$H/.claude/settings.json")
+  if [ "$method" = keep ]; then ARGS=(--keep "$H/.claude/settings.json"); fi
+  if [ "$method" = from ]; then
+    python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 45
+json.dump(s, open(h + ".merged.json", "w"), ensure_ascii=False, indent=4)
+PY
+    ARGS+=(--from "$H.merged.json")
+    printf '[]\n' >"$H.invalid.json"
+    HOME="$H" bash "$NEXTS/install.sh" --resolve "$H/.claude/settings.json" --from "$H.invalid.json" >"$H.invalid" 2>&1
+    check "settings 解消: 配列は終了 2" test $? -eq 2
+    check "settings 解消: 不正な JSON では書かない" test "$before" = "$(snap "$H")"
+  fi
+  HOME="$H" bash "$NEXTS/install.sh" --resolve "${ARGS[@]}" --dry-run >"$H.resolve-dry" 2>&1
+  check "settings 解消 $method: dry-run が 0" test $? -eq 0
+  check "settings 解消 $method: dry-run は書かない" test "$before" = "$(snap "$H")"
+  check "settings 解消 $method: dry-run は退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+  HOME="$H" bash "$NEXTS/install.sh" --resolve "${ARGS[@]}" >"$H.resolve" 2>&1
+  check "settings 解消 $method: 実行が 0" test $? -eq 0
+  if [ "$method" = from ]; then
+    check "settings 解消 $method: 指定した JSON のバイトを保つ" cmp "$H.merged.json" "$H/.claude/settings.json"
+  else
+    check "settings 解消 $method: 持ち主の JSON はそのまま" cmp "$H.resolve-before" "$H/.claude/settings.json"
+  fi
+  python3 - "$H" "$NEXTS" <<'PY'
+import hashlib, json, sys
+h, k = sys.argv[1:]
+before = json.load(open(h + ".resolve-manifest"))
+after = json.load(open(h + "/.claude/brain-kit/manifest.json"))
+v = json.load(open(k + "/claude/settings.snippet.json"))["hooks"]["Stop"][0]
+key = v["hooks"][0]["command"]
+before["settings"]["hooks.Stop"][key] = hashlib.sha256(json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+assert after == before
+PY
+  check "settings 解消 $method: 衝突した項目だけ kit の sha を記録" test $? -eq 0
+  after="$(snap "$H")"
+  s_update "$H" >"$H.resolved-up" 2>&1
+  check "settings 解消 $method: 再更新で衝突しない" sh -c "! grep -q 'settings.json の衝突:' '$H.resolved-up'"
+  check "settings 解消 $method: 再更新で何も変わらない" test "$after" = "$(snap "$H")"
+  HOME="$H" bash "$NEXTS/install.sh" --resolve "$H/.claude/settings.json" >"$H.no-conflict" 2>&1
+  check "settings 解消 $method: 衝突無しは終了 2" test $? -eq 2
+  check "settings 解消 $method: 衝突無しでは書かない" test "$after" = "$(snap "$H")"
+  new "$H" --rollback >"$H.rb-resolve" 2>&1
+  check "settings 解消 $method: rollback は設定と manifest をバイト単位で戻す" test "$before" = "$(snap "$H")"
+done
+
+# ------------------------------------------------------------------ 18. 改名したフックの解消と記録の境界
+section "フックの改名の解消"
+H="$TMP/resolve-command"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+p = sys.argv[1] + "/.claude/settings.json"
+s = json.load(open(p))
+s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] = 99
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=4)
+PY
+# 更新前に解消しても、無関係な kit の変更まで記録しない。
+cp "$H/.claude/settings.json" "$H.ours"
+cp "$H/.claude/brain-kit/manifest.json" "$H.manifest"
+HOME="$H" bash "$NEXTS/install.sh" --resolve --keep "$H/.claude/settings.json" >"$H.resolve" 2>&1
+check "command 解消: 実行が 0" test $? -eq 0
+check "command 解消: 持ち主の JSON を保つ" cmp "$H.ours" "$H/.claude/settings.json"
+python3 - "$H" "$NEXTS" <<'PY'
+import hashlib, json, sys
+h, k = sys.argv[1:]
+before = json.load(open(h + ".manifest"))
+after = json.load(open(h + "/.claude/brain-kit/manifest.json"))
+v = json.load(open(k + "/claude/settings.snippet.json"))["hooks"]["UserPromptSubmit"][0]
+key = v["hooks"][0]["command"]
+before["settings"]["hooks.UserPromptSubmit"] = {key: hashlib.sha256(json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
+assert before == after
+PY
+check "command 解消: 古い command の記録を外し、新しい command だけ記録" test $? -eq 0
+s_update "$H" >"$H.up" 2>&1
+check "command 解消: 再更新で衝突無し" sh -c "! grep -q 'settings.json の衝突:' '$H.up'"
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+a = json.load(open(h + ".ours"))
+b = json.load(open(h + "/.claude/settings.json"))
+assert a["hooks"]["UserPromptSubmit"] == b["hooks"]["UserPromptSubmit"]
+assert b["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] == 120
+PY
+check "command 解消: 新 command は足さず、無関係な kit 変更は更新できる" test $? -eq 0
+
+# ------------------------------------------------------------------ 19. 同じ秒の退避と、所有ファイルを読まないこと
+section "退避の順序と読み取りの境界"
+HOME="$TMP/order" python3 - "$KIT" <<'PY' >"$TMP/order.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+g["STAMP"] = "20300101-010101"
+p = os.path.join(g["CLAUDE"], "order.md")
+for old in (False, True):
+    entries = []
+    for i in range(12):
+        backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
+        g["put"](p, str(i), backup)
+        directory = backup.close()
+        if old:
+            meta = g["load_json"](directory + "/meta.json")
+            del meta["created"]
+            g["write_text"](directory + "/meta.json", g["dump_json"](meta))
+        entries.append(directory)
+    assert entries[-1].endswith("-12") if not old else entries[-1].endswith("-24")
+    for i in range(11, -1, -1):
+        g["cmd_rollback"](argparse.Namespace(dry_run=False))
+        assert g["load_json"](entries[i] + "/meta.json")["rolled_back"]
+        assert g["read_text"](p) == (str(i - 1) if i else None)
+PY
+check "退避: 同じ秒の 12 件を新旧の記録とも新しい順に戻す" test $? -eq 0
+HOME="$TMP/collision-with" python3 - "$NEXT" <<'PY' >"$TMP/no-read.log" 2>&1
+import builtins, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["build_plan"].__globals__
+brain = os.path.join(g["HOME"], "brain")
+cfg = g["load_json"](g["config_path"](brain))
+manifests = g["load_manifests"](brain)
+# extra は kit の一覧にあるが、所有ディレクトリとして未登録に戻して確かめる。
+del manifests["claude"]["files"][".claude/skills/extra/SKILL.md"]
+original = builtins.open
+forbidden = [os.path.join(g["CLAUDE"], "skills", "extra"), os.path.join(g["CLAUDE"], "skills", "extra-own"),
+             os.path.join(g["CLAUDE"], "agents"), os.path.join(brain, "Aoi", "00_核.md")]
+def guarded(path, *args, **kw):
+    assert not any(str(path) == p or str(path).startswith(p + os.sep) for p in forbidden), path
+    return original(path, *args, **kw)
+builtins.open = guarded
+import io
+old_io = io.open
+io.open = guarded
+try:
+    items = g["build_plan"](cfg, manifests, False, {})
+    assert next(i for i in items if i.dst.endswith("/extra/SKILL.md")).state == "collision"
+    inv = g["owner_inventory"](cfg, manifests, items, manifests["claude"]["settings"])
+    assert "extra-own" in inv["skills"]
+finally:
+    builtins.open = original
+    io.open = old_io
+PY
+check "一覧と重なり: 所有ファイルの中身を開かない" test $? -eq 0
+
+# ------------------------------------------------------------------ 20. brain と実行ファイル・相対パス
+section "brain と実行ファイルの解消"
+printf '\n次の版の規約。\n' >>"$NEXT/brain-template/README.md"
+printf '\n# 次の版のフック。\n' >>"$NEXT/claude/hooks/session-end-brain.sh"
+for area in brain exec; do
+  H="$TMP/resolve-$area"
+  mkdir -p "$H"
+  new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+  if [ "$area" = brain ]; then rel=brain/README.md; else rel=.claude/hooks/session-end-brain.sh; fi
+  printf '\n# 持ち主の追記。\n' >>"$H/$rel"
+  next_update "$H" >"$H.up" 2>&1
+  before="$(snap "$H")"
+  c0="$(commits "$H")"
+  cp "$H/$rel.new" "$H/result.txt"
+  printf '\n# 持ち主の追記。\n' >>"$H/result.txt"
+  if [ "$area" = brain ]; then
+    # shellcheck disable=SC2088  # kit.py が ~ を展開することを確かめる
+    HOME="$H/." bash "$NEXT/install.sh" --resolve '~/brain/README.md' --from "$H/result.txt" >"$H.resolve" 2>&1
+  else
+    (cd "$H" && HOME="$H/." bash "$NEXT/install.sh" --resolve "$rel" --from result.txt) >"$H.resolve" 2>&1
+  fi
+  check "解消 $area: 正規化した HOME と対象で実行が 0" test $? -eq 0
+  check "解消 $area: 内容が一致" cmp "$H/result.txt" "$H/$rel"
+  if [ "$area" = brain ]; then
+    check "解消 brain: コミットが 1 つ増える" test "$(commits "$H")" -eq "$((c0 + 1))"
+    check "解消 brain: base は kit の版" grep -q '次の版の規約' "$H/brain/.brain-kit/base/README.md"
+  else
+    check "解消 exec: 実行権限を保つ" test -x "$H/$rel"
+  fi
+  new "$H" --rollback >"$H.rb" 2>&1
+  check "解消 $area: rollback でファイル・.new・base・manifest を戻す" test "$before" = "$(snap "$H")"
+done
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

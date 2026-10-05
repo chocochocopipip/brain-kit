@@ -14,7 +14,11 @@
 #                                     （--review <名前> --release <名前> でも渡せる）
 #                                     両方が変わったファイルは残し、.new と衝突資料を置く。
 #                                     kit 版に置き換えるなら --edited new（退避あり）
-#   ./install.sh --rollback           直前の更新（か install）を退避から戻す。--dry-run で中身だけ
+#                                     持ち主の道具の名前と重なりも資料に出す（中身は読まない）
+#   ./install.sh --resolve <file> [--from <merged file>]   解消結果を記録する。省略時は今の内容
+#   ./install.sh --resolve --keep <file>                 今の内容を保って解消する
+#                                     settings.json も指定できる。--dry-run で書く前に確認する
+#   ./install.sh --rollback           直前の resolve・更新・install を退避から戻す。--dry-run で中身だけ
 #   ./install.sh --doctor             何も変えず、版・人格・古いもの・手で直したもの・CLI・Orca・gh を表で出す
 #
 #   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
@@ -30,25 +34,31 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ACTION=install; MODE=""; CODEX=""; YES=0
+ACTION=install; MODE=""; CODEX=""; YES=0; TARGET=""
 PYARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --update)   ACTION=update; shift ;;
+    --resolve)  ACTION=resolve; shift ;;
     --rollback) ACTION=rollback; shift ;;
     --doctor)   ACTION=doctor; shift ;;
     --mode)     [ $# -ge 2 ] || { echo "error: --mode に値が要る" >&2; exit 2; }; MODE="$2"; shift 2 ;;
     --codex)    CODEX=yes; PYARGS+=(--codex); shift ;;
     --no-codex) CODEX=no; shift ;;
     --yes|-y)   YES=1; PYARGS+=(--yes); shift ;;
-    --partner|--dev|--review|--release|--partner-id|--dev-id|--review-id|--release-id|--user|--projects|--repos|--brain|--edited)
+    --partner|--dev|--review|--release|--partner-id|--dev-id|--review-id|--release-id|--user|--projects|--repos|--brain|--edited|--from)
       [ $# -ge 2 ] || { echo "error: $1 に値が要る" >&2; exit 2; }
       PYARGS+=("$1" "$2"); shift 2 ;;
-    --brain-merge|--no-worktrees|--dry-run|--diff)
+    --brain-merge|--no-worktrees|--dry-run|--diff|--keep)
       PYARGS+=("$1"); shift ;;
-    -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
+    -h|--help)  sed -n '2,33p' "$0"; exit 0 ;;
+    -*) echo "使えない引数: $1" >&2; exit 2 ;;
+    *)
+      if [ "$ACTION" != resolve ] || [ -n "$TARGET" ]; then
+        echo "使えない引数: $1" >&2; exit 2
+      fi
+      TARGET="$1"; PYARGS+=(--target "$1"); shift ;;
   esac
 done
 
@@ -63,6 +73,7 @@ case "$ACTION" in
   doctor)   kit doctor; exit $? ;;
   rollback) kit rollback; exit $? ;;
   update)   need git; kit update; exit $? ;;
+  resolve)  need git; kit resolve; exit $? ;;
 esac
 
 need git
