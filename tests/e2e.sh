@@ -17,7 +17,7 @@ export GIT_COMMITTER_NAME=kit-test GIT_COMMITTER_EMAIL=kit-test@example.invalid
 SAFE_PATH="$TMP/bin"
 mkdir -p "$SAFE_PATH"
 ln -s "$BASH" "$SAFE_PATH/bash"    # このテストを走らせている bash（macOS なら /bin/bash の 3.2）を使う
-for c in sh python3 git env mktemp cat sed grep tr cp rm mkdir ls find sort diff head tail wc chmod dirname basename date hostname uname printf test true false tar ln mv awk cut xargs touch rmdir stat id sleep readlink tee uniq less; do
+for c in sh python3 git env mktemp cmp cat sed grep tr cp rm mkdir ls find sort diff head tail wc chmod dirname basename date hostname uname printf test true false tar ln mv awk cut xargs touch rmdir stat id sleep readlink tee uniq less; do
   p="$(command -v "$c" 2>/dev/null || true)"
   [ -n "$p" ] && [ ! -e "$SAFE_PATH/$c" ] && ln -s "$p" "$SAFE_PATH/$c"
 done
@@ -391,7 +391,7 @@ check "前の .new: 変わらない .new はそのまま" test "$mio_new" = "$(c
 new "$H" --rollback >"$H.rb4" 2>&1
 check "前の .new: rollback で前の .new に戻る" grep -q '持ち主が .new に書いた途中の行' "$H/.claude/skills/ren/SKILL.md.new"
 
-# ------------------------------------------------------------------ 9. 工程表のスクショ（shot.py、標準ライブラリだけ）
+# ------------------------------------------------------------------ 10. 工程表のスクショ（shot.py、標準ライブラリだけ）
 section "工程表: スクショを db の 1 文書に縮める"
 SHOT="$KIT/claude/brain-kit/dashboard/shot.py"
 SD="$TMP/shot"
@@ -482,6 +482,250 @@ check "shot.py: PNG でないものは 0 以外で止まる" sh -c "! python3 '$
 check "shot.py: 収まらない上限は 0 以外で止まる" sh -c "! python3 '$SHOT' '$SD/big-rgb.png' --out '$SD/none.json' --max-bytes 100 2>/dev/null"
 DASH="$KIT/claude/brain-kit/dashboard/index.html"
 check "工程表: スクショの段（shots）と判断のボタン（decisions）を読む" sh -c "grep -q 'collection(\"shots\")' '$DASH' && grep -q 'collection(\"decisions\")' '$DASH'"
+
+# ------------------------------------------------------------------ 11. settings の所有記録と旧形式からの補完
+section "settings の所有記録と補完"
+H="$TMP/settings"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+check "settings: install が 0" test $? -eq 0
+python3 - "$H" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1] + "/.claude/brain-kit/manifest.json"))["settings"]
+assert m["hooks.SessionEnd"] and m["statusLine"]
+assert m["enabledPlugins"]["pr-review-toolkit@claude-plugins-official"]
+assert "permissions" not in m
+PY
+check "settings: install で所有項目を記録" test $? -eq 0
+# npm はサンドボックスに無い。旧形式の Codex 設定を手で足し、フラグ無しの補完・保持を確かめる。
+python3 - "$H" "$KIT" <<'PY'
+import json, sys
+h, k = sys.argv[1:]
+p = h + "/.claude/brain-kit/manifest.json"
+m = json.load(open(p)); del m["settings"]
+json.dump(m, open(p, "w"), ensure_ascii=False, indent=2)
+p = h + "/.claude/settings.json"
+s = json.load(open(p))
+s["hooks"]["SessionEnd"].insert(0, {"hooks": [{"type": "command", "command": "echo owner-before"}]})
+s["model"] = "x"
+c = json.load(open(k + "/claude/settings.codex.json"))
+for part in ("enabledPlugins", "extraKnownMarketplaces"):
+    s.setdefault(part, {}).update(c[part])
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=4)
+PY
+cp "$H/.claude/settings.json" "$H.seed-before"
+new "$H" --update --no-worktrees >"$H.seed" 2>&1
+check "settings: 補完が 0" test $? -eq 0
+check "settings: 補完はバイトを保つ" cmp "$H.seed-before" "$H/.claude/settings.json"
+python3 - "$H" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1] + "/.claude/brain-kit/manifest.json"))["settings"]
+assert m["hooks.SessionEnd"] and m["statusLine"]
+assert m["extraKnownMarketplaces"]["openai-codex"]
+assert m["enabledPlugins"]["codex@openai-codex"]
+assert "echo owner-before" not in m["hooks.SessionEnd"]
+PY
+check "settings: 所有記録を補完し Codex も保持" test $? -eq 0
+before="$(snap "$H")"
+new "$H" --update --no-worktrees >"$H.seed2" 2>&1
+check "settings: 補完後の再更新は冪等" test "$before" = "$(snap "$H")"
+
+# ------------------------------------------------------------------ 12. settings の次の版・衝突資料・戻し
+section "settings の次の版"
+NEXTS="$TMP/kit-next-s"
+mkdir -p "$NEXTS"
+while IFS= read -r -d '' f; do
+  mkdir -p "$NEXTS/$(dirname "$f")"
+  cp "$KIT/$f" "$NEXTS/$f"
+done < <(git -C "$KIT" ls-files -z)
+python3 - "$NEXTS" "$H" <<'PY'
+import json, sys
+k, h = sys.argv[1:]
+p = k + "/claude/settings.snippet.json"
+s = json.load(open(p))
+s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 20
+s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] += " # v2"
+for event in ("TeammateIdle", "PostCompact"):
+    del s["hooks"][event]
+s["hooks"]["Notification"] = [{"hooks": [{"type": "command", "command": "echo notification"}]}]
+s["statusLine"]["command"] += " # v2"
+s["enabledPlugins"]["example-plugin@claude-plugins-official"] = True
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=2)
+p = h + "/.claude/settings.json"
+s = json.load(open(p))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30
+s["hooks"]["PostCompact"][0]["hooks"][0]["timeout"] = 11
+s["hooks"]["Stop"].append({"hooks": [{"type": "command", "command": "echo owner-after"}]})
+s["hooks"]["PreCompact"] = [{"hooks": [{"type": "command", "command": "echo owner-event"}]}]
+s["enabledPlugins"]["owner-plugin@example-market"] = False
+json.dump(s, open(p, "w"), ensure_ascii=False, indent=4)
+PY
+cp "$H/.claude/settings.json" "$H.before"
+cp "$H/.claude/brain-kit/manifest.json" "$H.manifest-before"
+s_update() { HOME="$1" bash "$NEXTS/install.sh" --update --no-worktrees "${@:2}"; }
+before="$(snap "$H")"
+backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+s_update "$H" --dry-run >"$H.dry" 2>&1
+check "settings: dry-run が 0" test $? -eq 0
+check "settings: dry-run は書かない" test "$before" = "$(snap "$H")"
+check "settings: dry-run は退避を作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+for cls in 'に足すもの' 'で上げるもの' 'から外すもの' 'の衝突（触らない）' 'で残すもの'; do
+  check "settings: dry-run $cls" grep -q "settings.json $cls" "$H.dry"
+done
+check "settings: dry-run の最後に衝突件数" grep -q 'settings.json の衝突: 1 件' "$H.dry"
+s_update "$H" >"$H.up" 2>&1
+check "settings: 更新が 0" test $? -eq 0
+python3 - "$H" "$NEXTS" <<'PY'
+import hashlib, json, sys
+h, k = sys.argv[1:]
+before = json.load(open(h + ".before"))
+after = json.load(open(h + "/.claude/settings.json"))
+kit = json.load(open(k + "/claude/settings.snippet.json"))
+bm = json.load(open(h + ".manifest-before"))["settings"]
+am = json.load(open(h + "/.claude/brain-kit/manifest.json"))["settings"]
+def digest(v):
+    return hashlib.sha256(json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+assert after["hooks"]["SessionEnd"][1] == kit["hooks"]["SessionEnd"][0]
+assert after["hooks"]["SessionEnd"][0] == before["hooks"]["SessionEnd"][0]
+assert after["hooks"]["Stop"] == before["hooks"]["Stop"]
+assert after["hooks"]["UserPromptSubmit"] == kit["hooks"]["UserPromptSubmit"]
+assert "TeammateIdle" not in after["hooks"]
+assert after["hooks"]["PostCompact"] == before["hooks"]["PostCompact"]
+assert after["hooks"]["Notification"] == kit["hooks"]["Notification"]
+assert after["statusLine"] == kit["statusLine"]
+assert after["enabledPlugins"]["example-plugin@claude-plugins-official"] is True
+assert after["hooks"]["PreCompact"] == before["hooks"]["PreCompact"]
+assert after["model"] == before["model"] == "x"
+assert after["enabledPlugins"]["owner-plugin@example-market"] is False
+assert list(after) == list(before)
+for part in ("hooks", "enabledPlugins", "extraKnownMarketplaces"):
+    assert [key for key in after[part] if key in before[part]] == [key for key in before[part] if key in after[part]]
+assert am["hooks.Stop"] == bm["hooks.Stop"]
+assert "hooks.TeammateIdle" not in am and "hooks.PostCompact" not in am
+for event in ("SessionEnd", "UserPromptSubmit", "Notification"):
+    group = kit["hooks"][event][0]
+    assert am["hooks." + event] == {group["hooks"][0]["command"]: digest(group)}
+assert am["statusLine"] == digest(kit["statusLine"])
+assert am["extraKnownMarketplaces"] == bm["extraKnownMarketplaces"]
+assert am["enabledPlugins"]["codex@openai-codex"] == bm["enabledPlugins"]["codex@openai-codex"]
+PY
+check "settings: 更新・削除・位置・持ち主の値と順序・所有記録" test $? -eq 0
+check "settings: 衝突を最後に表示" grep -q 'settings.json の衝突: 1 件' "$H.up"
+check "settings: 変更済みの削除対象は残すと表示" grep -q 'settings.json で残すもの' "$H.up"
+check "settings: 単独の衝突でも資料を作る" sh -c "grep -q '^## settings.json' '$H'/.claude/brain-kit/conflicts/*/README.md"
+python3 - "$H" <<'PY'
+import glob, json, sys
+h = sys.argv[1]
+s = open(glob.glob(h + "/.claude/brain-kit/conflicts/*/README.md")[0]).read()
+assert '"timeout": 30' in s and '"timeout": 20' in s
+m = json.load(open(h + ".manifest-before"))["settings"]["hooks.Stop"]
+assert next(iter(m.values())) in s
+PY
+check "settings: 資料に現在・記録 sha・kit の JSON" test $? -eq 0
+after="$(snap "$H")"
+backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+s_update "$H" >"$H.up2" 2>&1
+check "settings: 同じ版で再更新が 0" test $? -eq 0
+check "settings: 再更新は資料も含め冪等" test "$after" = "$(snap "$H")"
+check "settings: 再更新は退避を増やさない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+new "$H" --rollback >"$H.rb" 2>&1
+check "settings: rollback が 0" test $? -eq 0
+check "settings: rollback は元のバイトに戻す" cmp "$H.before" "$H/.claude/settings.json"
+check "settings: rollback は資料・manifest も戻す" test "$before" = "$(snap "$H")"
+
+# ------------------------------------------------------------------ 13. settings の削除・未登録・command 変更の境界
+section "settings の項目判定の境界"
+python3 - "$KIT" "$TMP" <<'PY'
+import json, os, runpy, sys
+kit, tmp = sys.argv[1:]
+ns = runpy.run_path(kit + "/lib/kit.py")
+plan = ns["plan_settings"]
+g = plan.__globals__
+k = tmp + "/settings-cases"
+os.makedirs(k + "/claude")
+g["KIT"] = k
+g["CLAUDE"] = k + "/claude"
+p = k + "/claude/settings.json"
+def write(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f)
+write(k + "/claude/settings.codex.json", {})
+def run(ours, theirs, record):
+    write(p, ours)
+    write(k + "/claude/settings.snippet.json", theirs)
+    return plan(False, {"settings": record})
+for part in ("hooks.Stop", "enabledPlugins", "extraKnownMarketplaces", "statusLine"):
+    def value(n):
+        return {"hooks": [{"command": "echo kit", "timeout": n}]} if part.startswith("hooks.") else {"value": n}
+    def obj(n):
+        if n is None:
+            return {}
+        if part.startswith("hooks."):
+            return {"hooks": {"Stop": [value(n)]}}
+        return {part: value(n) if part == "statusLine" else {"example": value(n)}}
+    def rec(n):
+        v = ns["settings_sha"](value(n))
+        return {part: v if part == "statusLine" else {"echo kit" if part.startswith("hooks.") else "example": v}}
+    # 記録なしの一致は書き換えず補完。持ち主の statusLine は黙って残す。
+    r = run(obj(1), obj(1), {})
+    assert not r["changed"] and r["record"] == rec(1), part
+    r = run(obj(2), obj(1), {})
+    assert not r["changed"] and not r["record"], part
+    assert bool(r["conflict"]) == (part != "statusLine"), part
+    # 持ち主の削除は再追加せず、kit の変更だけを衝突にする。
+    r = run({}, obj(1), rec(1))
+    assert not r["changed"] and not r["conflict"] and r["record"] == rec(1), part
+    r = run({}, obj(2), rec(1))
+    assert not r["changed"] and r["conflict"] and r["record"] == rec(1), part
+    r = run({}, {}, rec(1))
+    assert not r["changed"] and not r["record"], part
+    # 持ち主だけの編集と、両者が同じ値にした場合。
+    r = run(obj(2), obj(1), rec(1))
+    assert not r["changed"] and not r["conflict"] and r["record"] == rec(1), part
+    r = run(obj(2), obj(2), rec(1))
+    assert not r["changed"] and r["record"] == rec(2), part
+    r = run(obj(1), {}, rec(1))
+    assert r["remove"] and not r["record"], part
+    assert "hooks" not in json.loads(r["new"]) if part.startswith("hooks.") else True
+    r = run(obj(2), {}, rec(1))
+    assert not r["changed"] and r["keep"] and not r["record"], part
+old = {"hooks": [{"command": "echo old", "timeout": 10}]}
+new = {"hooks": [{"command": "echo new", "timeout": 20}]}
+record = {"hooks.Stop": {"echo old": ns["settings_sha"](old)}}
+for groups in ([], [{"hooks": [{"command": "echo old", "timeout": 30}]}]):
+    r = run({"hooks": {"Stop": groups}}, {"hooks": {"Stop": [new]}}, record)
+    assert r["conflict"] and not r["changed"] and not r["add"]
+    assert r["record"] == record
+    # 記録を保存して 2 回目: 持ち主が消したフックを足さず、衝突を出し続ける
+    write(p, {"hooks": {"Stop": groups}})
+    r2 = plan(False, {"settings": r["record"]})
+    assert r2["conflict"] and not r2["changed"] and not r2["add"] and r2["record"] == record
+# 同じイベントで command が 2 つ変わったら対応を推測しない（記録はキー順で保存されるので z, a の順でも試す）。
+oz = {"hooks": [{"command": "echo z", "timeout": 1}]}
+oa = {"hooks": [{"command": "echo a", "timeout": 1}]}
+oa_owner = {"hooks": [{"command": "echo a", "timeout": 9}]}
+nz = {"hooks": [{"command": "echo z-v2", "timeout": 1}]}
+na = {"hooks": [{"command": "echo a-v2", "timeout": 1}]}
+rec2 = {"hooks.Stop": {"echo z": ns["settings_sha"](oz), "echo a": ns["settings_sha"](oa)}}
+rec2 = json.loads(json.dumps(rec2, sort_keys=True))
+for _ in range(2):
+    r = run({"hooks": {"Stop": [oz, oa_owner]}}, {"hooks": {"Stop": [nz, na]}}, rec2)
+    assert not r["changed"] and not r["add"] and not r["update"] and len(r["conflict"]) == 4
+    assert r["record"] == rec2
+# 最初以外の hook に同じ command があっても、先に見つかった group を現在値とする。
+ours = {"hooks": [{"command": "echo owner"}, {"command": "echo old"}]}
+r = run({"hooks": {"Stop": [ours, old]}}, {"hooks": {"Stop": [new]}}, record)
+assert r["conflict"] and not r["changed"]
+# permissions は所有記録に入れず、既にある値は保つ。
+r = run({"permissions": {}}, {"permissions": {"allow": ["Bash(ls:*)"]}}, {})
+assert not r["changed"] and not r["record"]
+os.remove(p)
+write(k + "/claude/settings.snippet.json", {})
+r = plan()
+assert not r["changed"] and r["new"] is None and not os.path.exists(p)
+PY
+check "settings: 各種類の削除・補完・持ち主の編集・command 衝突・未作成" test $? -eq 0
 
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

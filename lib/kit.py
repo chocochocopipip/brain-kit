@@ -468,38 +468,30 @@ def choose_persona(role, args, used_ids, cmanifest, fixed=None):
 
 
 # ------------------------------------------------------------------ settings.json
-def merge_settings_obj(cur, snip):
-    added = []
-    snip = dict(snip)
-    snip.pop("_comment", None)
-    hooks = cur.setdefault("hooks", {})
-    for ev, groups in snip.get("hooks", {}).items():
-        have_ = hooks.setdefault(ev, [])
-        existing = {h.get("command") for g in have_ for h in g.get("hooks", [])}
-        for g in groups:
-            cmds = {h.get("command") for h in g.get("hooks", [])}
-            if cmds & existing:
-                continue
-            have_.append(g)
-            added.append("hooks." + ev)
-    if "statusLine" not in cur and "statusLine" in snip:
-        cur["statusLine"] = snip["statusLine"]
-        added.append("statusLine")
-    for key in ("extraKnownMarketplaces", "enabledPlugins"):
-        if key not in snip:
-            continue
-        dst = cur.setdefault(key, {})
-        for k, v in snip[key].items():
-            if k not in dst:
-                dst[k] = v
-                added.append("%s.%s" % (key, k))
-    if "permissions" not in cur and "permissions" in snip:
-        cur["permissions"] = snip["permissions"]
-        added.append("permissions(最小例)")
-    return added
+def settings_sha(value):
+    return sha(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
 
 
-def plan_settings(codex=False):
+def settings_entries(obj):
+    """kit の項目を、イベントと command／キーで識別する。"""
+    entries = {}
+    for event, groups in obj.get("hooks", {}).items():
+        for group in groups:
+            entries[("hooks." + event, group["hooks"][0]["command"])] = group
+    if "statusLine" in obj:
+        entries[("statusLine", "")] = obj["statusLine"]
+    for part in ("enabledPlugins", "extraKnownMarketplaces"):
+        for key, value in obj.get(part, {}).items():
+            entries[(part, key)] = value
+    return entries
+
+
+def settings_name(entry):
+    part, key = entry
+    return part + (": " + key[:60] if part.startswith("hooks.") else "." + key if key else "")
+
+
+def plan_settings(codex=False, manifest=None):
     path = os.path.join(CLAUDE, "settings.json")
     raw = read_text(path)
     cur = {}
@@ -508,11 +500,141 @@ def plan_settings(codex=False):
             cur = json.loads(raw)
         except ValueError as e:
             die("%s が JSON として読めない: %s" % (path, e))
-    added = []
-    for snip in ["settings.snippet.json"] + (["settings.codex.json"] if codex else []):
-        added += merge_settings_obj(cur, json.load(io.open(os.path.join(KIT, "claude", snip), encoding="utf-8")))
-    new = json.dumps(cur, ensure_ascii=False, indent=2) + "\n"
-    return path, raw, new, added
+    manifest = manifest or {}
+    record = {}
+    for part, values in manifest.get("settings", {}).items():
+        if part == "statusLine":
+            record[(part, "")] = values
+        else:
+            for key, value in values.items():
+                record[(part, key)] = value
+    absent = object()
+
+    def current(entry):
+        part, key = entry
+        if part.startswith("hooks."):
+            for group in cur.get("hooks", {}).get(part[6:], []):
+                if any(h.get("command") == key for h in group.get("hooks", [])):
+                    return group
+            return absent
+        if part == "statusLine":
+            return cur.get(part, absent)
+        return cur.get(part, {}).get(key, absent)
+
+    snip = load_json(os.path.join(KIT, "claude/settings.snippet.json"))
+    theirs = settings_entries(snip)
+    extra = settings_entries(load_json(os.path.join(KIT, "claude/settings.codex.json")))
+    if codex or any(e in record for e in extra) or (
+            "settings" not in manifest and any(current(e) is not absent for e in extra)):
+        theirs.update(extra)
+    plan = {"path": path, "raw": raw, "record": {}, "add": [], "update": [],
+            "remove": [], "keep": [], "conflict": []}
+    owned = dict(record)
+
+    def change(entry, value, old):
+        part, key = entry
+        if part.startswith("hooks."):
+            event = part[6:]
+            groups = cur.setdefault("hooks", {}).setdefault(event, [])
+            if old is absent:
+                groups.append(value)
+            else:
+                index = next(i for i, g in enumerate(groups) if g is old)
+                if value is absent:
+                    groups.pop(index)
+                    if not groups:
+                        del cur["hooks"][event]
+                    if not cur["hooks"]:
+                        del cur["hooks"]
+                else:
+                    groups[index] = value
+        else:
+            dst = cur if part == "statusLine" else cur.setdefault(part, {})
+            key = part if part == "statusLine" else key
+            if value is absent:
+                del dst[key]
+            else:
+                dst[key] = value
+
+    def conflict(entry, old, rec, new, reason="両方が変えた"):
+        plan["conflict"].append({"name": settings_name(entry), "reason": reason,
+                                 "ours": None if old is absent else old, "recorded": rec,
+                                 "theirs": None if new is absent else new})
+
+    # 同じイベントで消えた command と増えた command が 1 つずつなら、command の変更として対応付ける。
+    # 複数あると対応が決まらないので、どれも触らずに衝突として出す（古い記録は残し、新しいものは足さない）。
+    paired = set()
+    for part in dict.fromkeys(e[0] for e in record if e[0].startswith("hooks.")):
+        removed = [e for e in record if e[0] == part and e not in theirs]
+        added = [e for e in theirs if e[0] == part and e not in record and current(e) is absent]
+        if not removed or not added:
+            continue
+        if len(removed) > 1 or len(added) > 1:
+            paired.update(removed + added)
+            for e in removed:
+                conflict(e, current(e), record[e], absent, "command の変更が複数あり対応が決まらない")
+            for e in added:
+                conflict(e, absent, None, theirs[e], "command の変更が複数あり対応が決まらない")
+            continue
+        for old_entry, new_entry in zip(removed, added):
+            paired.update((old_entry, new_entry))
+            old, new, rec = current(old_entry), theirs[new_entry], record[old_entry]
+            if old is not absent and settings_sha(old) == rec:
+                change(old_entry, new, old)
+                owned.pop(old_entry)
+                owned[new_entry] = settings_sha(new)
+                plan["update"].append(settings_name(new_entry))
+            else:
+                # 古い記録は残す（消すと次の更新で新しい command を未登録として足してしまう）。
+                conflict(old_entry, old, rec, new,
+                         "持ち主が消した／kit が変えた" if old is absent else "持ち主が変えた／command が変わった")
+
+    for entry in dict.fromkeys(list(theirs) + list(record)):
+        if entry in paired:
+            continue
+        old, new, rec = current(entry), theirs.get(entry, absent), record.get(entry)
+        old_sha = settings_sha(old) if old is not absent else None
+        new_sha = settings_sha(new) if new is not absent else None
+        name = settings_name(entry)
+        if rec is None:
+            if old is absent:
+                change(entry, new, old)
+                plan["add"].append(name)
+                owned[entry] = new_sha
+            elif old_sha == new_sha:
+                owned[entry] = new_sha
+            elif entry[0] != "statusLine":
+                conflict(entry, old, rec, new, "未登録の項目と kit が違う")
+        elif new is absent:
+            owned.pop(entry)
+            if old is not absent:
+                if old_sha == rec:
+                    change(entry, absent, old)
+                    plan["remove"].append(name)
+                else:
+                    plan["keep"].append(name)
+        elif old is absent:
+            if new_sha != rec:
+                conflict(entry, old, rec, new, "持ち主が消した／kit が変えた")
+        elif old_sha == new_sha:
+            owned[entry] = new_sha
+        elif old_sha == rec:
+            change(entry, new, old)
+            owned[entry] = new_sha
+            plan["update"].append(name)
+        elif new_sha != rec:
+            conflict(entry, old, rec, new)
+    if "permissions" not in cur and "permissions" in snip:
+        cur["permissions"] = snip["permissions"]
+        plan["add"].append("permissions(最小例)")
+    for (part, key), value in owned.items():
+        if part == "statusLine":
+            plan["record"][part] = value
+        else:
+            plan["record"].setdefault(part, {})[key] = value
+    plan["changed"] = bool(plan["add"] or plan["update"] or plan["remove"])
+    plan["new"] = json.dumps(cur, ensure_ascii=False, indent=2) + "\n" if plan["changed"] else raw
+    return plan
 
 
 # ------------------------------------------------------------------ 計画（何を足す・上げる・触らない）
@@ -825,9 +947,9 @@ def apply_items(items, cfg, backup, args, mode):
     return written, kept
 
 
-def write_conflicts(items, cfg, backup):
+def write_conflicts(items, cfg, backup, settings=()):
     """同じ衝突は既存の bundle を再利用する。候補は実ファイルへ戻さない。"""
-    if not items:
+    if not items and not settings:
         return None
     files = {}
     notes = ["# 更新の衝突\n"]
@@ -864,6 +986,12 @@ def write_conflicts(items, cfg, backup):
             notes.append("\nbase 既知。git merge-file: %s\n" % result)
             for name, text in (("ours", it.cur), ("theirs", it.new)):
                 notes.append("\n### base → %s\n\n```diff\n%s```\n" % (name, diff_text(it.base, text, it.dst)))
+    if settings:
+        notes.append("\n## settings.json\n")
+        for entry in settings:
+            notes.append("\n### %s\n\n%s\n" % (entry["name"], entry["reason"]))
+            for title, key in (("現在（ours）", "ours"), ("記録した sha", "recorded"), ("kit（theirs）", "theirs")):
+                notes.append("\n%s\n\n```json\n%s```\n" % (title, dump_json(entry[key])))
     files["README.md"] = "".join(notes)
     root = os.path.join(KIT_STATE, "conflicts")
     if os.path.isdir(root):
@@ -992,11 +1120,18 @@ def print_plan(items, sett, wts, dry, verbose_diff):
     keep = len(rows("owner", "keep"))
     print("  変わらないもの（kit、最新）: %d 件" % same)
     print("  触らないもの（持ち主のもの。核・辞書・関係・日誌・決定・知識・プロジェクト・記録など）: %d 件＋brain の中身すべて" % keep)
-    if sett[3]:
-        print("  settings.json に足すもの: %s" % ", ".join(sett[3]))
+    for state, title in (("add", "に足すもの"), ("update", "で上げるもの（kit だけが変わった）"),
+                         ("remove", "から外すもの（kit から外れた、変えていない）"),
+                         ("conflict", "の衝突（触らない）"), ("keep", "で残すもの（kit から外れた、持ち主が変えた）")):
+        if sett[state]:
+            print("  settings.json %s: %d 件" % (title, len(sett[state])))
+            for entry in sett[state]:
+                print("    " + (entry["name"] + "（" + entry["reason"] + "）" if state == "conflict" else entry))
     for r, path, b, what in wts:
         print("  worktree %s: %s（ブランチ %s）" % ("足す" if what == "add" else "作らない（別のものが在る）", tilde(path), b))
     if verbose_diff:
+        if sett["changed"]:
+            sys.stdout.write(diff_text(sett["raw"], sett["new"], sett["path"]))
         for it in items:
             if it.kind == "kit" and it.state in ("upgrade", "edited", "conflict", "owner", "dropped"):
                 print()
@@ -1064,10 +1199,11 @@ def cmd_install(args):
     make_cards(cfg, repos, backup)
 
     say("[3/6] settings.json にマージ（丸ごと上書きしない）")
-    spath, sraw, snew, sadded = plan_settings(args.codex)
-    if sadded:
-        put(spath, snew, backup)
-    print("  追加: %s" % (", ".join(sadded) if sadded else "なし（すべて既にあった）"))
+    sett = plan_settings(args.codex, manifests["claude"])
+    if sett["changed"]:
+        put(sett["path"], sett["new"], backup)
+    manifests["claude"]["settings"] = sett["record"]
+    print("  追加: %s" % (", ".join(sett["add"]) if sett["add"] else "なし（すべて既にあった）"))
 
     update_manifests(items, cfg, manifests)
     write_state(cfg, manifests, backup)
@@ -1206,7 +1342,7 @@ def cmd_update(args):
     manifests = load_manifests(cfg["brain"])
     fps = load_fingerprints() if legacy else {}
     items = build_plan(cfg, manifests, legacy, fps)
-    sett = plan_settings(args.codex)
+    sett = plan_settings(args.codex, manifests["claude"])
     wts = [] if args.no_worktrees else plan_worktrees(cfg, WORKTREE_ROLES)
     print_plan(items, sett, wts, dry, args.diff or dry)
     if dry:
@@ -1219,18 +1355,20 @@ def cmd_update(args):
             for it in conf:
                 it.new_replaced = os.path.exists(it.dst + ".new") and read_text(it.dst + ".new") != it.new
             print_conflicts(conf, None)
+        print_settings_conflicts(sett, None)
         return
 
     backup = Backup("update", {"brain": cfg["brain"], "from": v_from, "to": VERSION})
     written, kept = apply_items(items, cfg, backup, args, "update")
-    bundle = write_conflicts(kept, cfg, backup)
-    if sett[3]:
-        put(sett[0], sett[2], backup)
+    bundle = write_conflicts(kept, cfg, backup, sett["conflict"])
+    if sett["changed"]:
+        put(sett["path"], sett["new"], backup)
+    manifests["claude"]["settings"] = sett["record"]
     # 版の記録（無ければ最初の更新で書く）
     cfg["version"] = VERSION
     cfg["updated_at"] = TODAY
     cfg.setdefault("history", []).append({"date": TODAY, "from": v_from, "to": VERSION, "how": "update"})
-    if v_from == VERSION and not written and not sett[3] and not [w for w in wts if w[3] == "add"] \
+    if v_from == VERSION and not written and not sett["changed"] and not [w for w in wts if w[3] == "add"] \
             and os.path.exists(config_path(cfg["brain"])):
         cfg["history"].pop()            # 何も変わらない 2 回目の更新は記録も増やさない
         cfg["updated_at"] = (load_json(config_path(cfg["brain"])) or {}).get("updated_at", TODAY)
@@ -1269,6 +1407,16 @@ def cmd_update(args):
             print("新しく使えるもの:")
             print_new_roles(cfg, new_roles)
     print_conflicts(kept, bundle)
+    print_settings_conflicts(sett, bundle)
+
+
+def print_settings_conflicts(sett, bundle):
+    if sett["conflict"]:
+        print("settings.json の衝突: %d 件（そのまま。kit の版は資料に）" % len(sett["conflict"]))
+        for entry in sett["conflict"]:
+            print("  %s（%s）" % (entry["name"], entry["reason"]))
+        if bundle:
+            print("衝突の資料: %s" % tilde(bundle))
 
 
 def print_conflicts(kept, bundle):
