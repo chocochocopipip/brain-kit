@@ -1365,5 +1365,31 @@ check "--from で消した項目: 解消が 0" test $? -eq 0
 HOME="$H" bash "$NEXTS2/install.sh" --update --no-worktrees >"$H.up2" 2>&1
 check "--from で消した項目: 次の更新で足し直さない" cmp "$H.merged.json" "$H/.claude/settings.json"
 
+# settings.json が symlink なら、--from では指す先に書かない。その場で直した形・--keep は記録だけする
+H="$TMP/settings-link"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS/install.sh" --update --no-worktrees >"$H.up" 2>&1
+mkdir -p "$H/brain/dotfiles"
+mv "$H/.claude/settings.json" "$H/brain/dotfiles/settings.json"
+ln -s "$H/brain/dotfiles/settings.json" "$H/.claude/settings.json"
+printf '{}\n' >"$H.merged.json"
+before="$(snap "$H")"
+HOME="$H" bash "$NEXTS/install.sh" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resolve" 2>&1
+check "settings の symlink: --from は終了 2" test $? -eq 2
+check "settings の symlink: --from は指す先に書かない" test "$before" = "$(snap "$H")"
+cp "$H/brain/dotfiles/settings.json" "$H.target-before"
+HOME="$H" bash "$NEXTS/install.sh" --resolve --keep "$H/.claude/settings.json" >"$H.keep" 2>&1
+check "settings の symlink: --keep は 0" test $? -eq 0
+check "settings の symlink: --keep は指す先をそのまま" cmp "$H.target-before" "$H/brain/dotfiles/settings.json"
+check "settings の symlink: symlink のまま" test -L "$H/.claude/settings.json"
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

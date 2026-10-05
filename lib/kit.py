@@ -1637,6 +1637,9 @@ def cmd_resolve(args):
         target = settings_path
     it = None
     if settings:
+        if os.path.islink(target) and args.from_file:
+            # dotfiles などで symlink にしている人もいるので、書かない形（その場で直す・--keep）は受け付ける
+            die("settings.json は symlink。--from では書かない。指す先をその場で直して --resolve <file> か --keep を使う", 2)
         if not os.path.isfile(target):
             die("settings.json が無い。--resolve は今ある settings.json の衝突だけを扱う（作り直すなら --update）", 2)
         sett = plan_settings(args.codex, manifests["claude"])
