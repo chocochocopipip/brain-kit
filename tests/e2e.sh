@@ -952,6 +952,7 @@ before = json.load(open(h + ".resolve-manifest"))
 after = json.load(open(h + "/.claude/brain-kit/manifest.json"))
 v = json.load(open(k + "/claude/settings.snippet.json"))["hooks"]["Stop"][0]
 key = v["hooks"][0]["command"]
+before.pop("settings_conflicts", None)   # 更新が覚えた衝突は解消で外れる
 before["settings"]["hooks.Stop"][key] = hashlib.sha256(json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 assert after == before
 PY
@@ -1147,6 +1148,81 @@ check "版の記録なし: 解消は終了 2" test $? -eq 2
 check "版の記録なし: 先に --update を案内" grep -q -- '--update' "$H.resolve"
 check "版の記録なし: 何も書かない" test "$before" = "$(snap "$H")"
 check "版の記録なし: 退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+
+# ------------------------------------------------------------------ 20. 手で消した settings の項目の解消・退避の meta の書きかけ
+section "手で消した settings の項目と退避の meta"
+H="$TMP/settings-deleted"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+m = json.load(open(h + "/.claude/brain-kit/manifest.json"))
+del m["settings"]["enabledPlugins"]["pr-review-toolkit@claude-plugins-official"]
+json.dump(m, open(h + "/.claude/brain-kit/manifest.json", "w"), ensure_ascii=False, indent=2, sort_keys=True)
+s = json.load(open(h + "/.claude/settings.json"))
+s["enabledPlugins"]["pr-review-toolkit@claude-plugins-official"] = False
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "手で消した項目: 未登録の違いは衝突" grep -q 'settings.json の衝突: 1 件' "$H.up"
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+del s["enabledPlugins"]["pr-review-toolkit@claude-plugins-official"]
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+cp "$H/.claude/settings.json" "$H.edited"
+new "$H" --resolve "$H/.claude/settings.json" >"$H.resolve" 2>&1
+check "手で消した項目: 解消が 0" test $? -eq 0
+new "$H" --update --no-worktrees >"$H.up2" 2>&1
+check "手で消した項目: 次の更新で足し直さない" cmp "$H.edited" "$H/.claude/settings.json"
+check "手で消した項目: 次の更新で衝突しない" sh -c "! grep -q 'settings.json の衝突' '$H.up2'"
+
+# 解消の途中で meta.json の書き直しが書きかけで落ちても、前の meta は残り、--rollback が拾う
+H="$TMP/resolve-journal"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+target="$H/.claude/skills/mio/SKILL.md"
+python3 - "$target" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("---", "---\n持ち主の行。", 1)
+open(p, "w").write(s)
+PY
+next_update "$H" >"$H.up" 2>&1
+after_update="$(snap "$H")"
+cat "$target.new" >"$H.merged"
+printf '持ち主の追記。\n' >>"$H.merged"
+HOME="$H" python3 - "$NEXT" "$target" "$H.merged" <<'PY'
+import io, runpy, sys
+kit, target, merged = sys.argv[1:]
+ns = runpy.run_path(kit + "/lib/kit.py")
+g = ns["cmd_resolve"].__globals__
+real = io.open
+count = [0]
+def fake_open(path, mode="r", *a, **kw):
+    if "w" in mode and "meta.json" in str(path):
+        count[0] += 1
+        if count[0] == 2:
+            real(path, mode, *a, **kw).close()   # 開いて中身を消したところで落ちる
+            raise OSError("書きかけで落ちた（テスト）")
+    return real(path, mode, *a, **kw)
+g["io"].open = fake_open
+try:
+    ns["main"](["resolve", "--target", target, "--from", merged])
+except OSError:
+    pass
+else:
+    sys.exit(1)
+finally:
+    g["io"].open = real
+PY
+check "meta の書きかけ: 解消は途中で止まる" test $? -eq 0
+check "meta の書きかけ: 対象は書き換わっている" cmp "$H.merged" "$target"
+new "$H" --rollback >"$H.rb" 2>&1
+check "meta の書きかけ: rollback は途中の解消を戻す" test "$after_update" = "$(snap "$H")"
 
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

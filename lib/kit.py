@@ -874,12 +874,22 @@ class Backup(object):
 
     def _journal(self):
         """書き換えの前に meta.json を書く。途中で落ちても --rollback がこの退避を拾えるように。"""
-        write_text(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
+        write_atomic(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
 
     def close(self):
         if self.opened:
-            write_text(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
+            self._journal()
         return self.dir if self.opened else None
+
+
+def write_atomic(path, text):
+    """隣の一時ファイルに書いてから置き換える。書きかけで落ちても前の内容が残る。"""
+    tmp = path + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def put(path, text, backup, exe=False):
@@ -1482,6 +1492,12 @@ def cmd_update(args):
     if sett["changed"]:
         put(sett["path"], sett["new"], backup)
     manifests["claude"]["settings"] = sett["record"]
+    # 衝突した項目を覚えておく（持ち主が手で消したあとの --resolve でも、どの項目だったか分かるように）
+    pending = sorted({tuple(c["entry"]) for c in sett["conflict"]})
+    if pending:
+        manifests["claude"]["settings_conflicts"] = [list(e) for e in pending]
+    else:
+        manifests["claude"].pop("settings_conflicts", None)
     # 版の記録（無ければ最初の更新で書く）
     cfg["version"] = VERSION
     cfg["updated_at"] = TODAY
@@ -1589,7 +1605,8 @@ def cmd_resolve(args):
     if settings:
         sett = plan_settings(args.codex, manifests["claude"])
         current = sett["raw"]
-        if not sett["conflict"] and not args.from_file:
+        pending = {tuple(e) for e in manifests["claude"].get("settings_conflicts", [])}
+        if not sett["conflict"] and not pending and not args.from_file:
             die("settings.json に衝突は無い", 2)
     else:
         items = build_plan(cfg, manifests, legacy, load_fingerprints() if legacy else {}, mode="update")
@@ -1611,7 +1628,9 @@ def cmd_resolve(args):
         # 書く前の衝突も残しておき、--from で一致した項目も受け入れた版を記録する。
         after = plan_settings(args.codex, manifests["claude"], text=result)
         record = manifests["claude"].setdefault("settings", {})
-        entries = {tuple(c["entry"]) for c in sett["conflict"] + after["conflict"]}
+        # 更新が覚えた衝突も含める（持ち主が項目を手で消すと、今の計画では「足す」に見えるため）
+        entries = pending | {tuple(c["entry"]) for c in sett["conflict"] + after["conflict"]}
+        manifests["claude"].pop("settings_conflicts", None)
         for part, key in sorted(entries):
             value = after["theirs"].get((part, key))
             if (part, key) in after["theirs"]:
@@ -1734,7 +1753,7 @@ def cmd_rollback(args):
         commit_brain({"brain": brain}, restored + removed, "brain-kit: 更新を戻した（%s）" % d)
     meta["rolled_back"] = True
     meta["rolled_back_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-    write_text(os.path.join(bdir, "meta.json"), dump_json(meta))
+    write_atomic(os.path.join(bdir, "meta.json"), dump_json(meta))
     print("戻した: %d 件、消した: %d 件、残した: %d 件。ラベルは消さない（GitHub 側はそのまま）。" % (len(restored), len(removed), len(left)))
 
 
