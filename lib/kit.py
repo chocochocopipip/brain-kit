@@ -1675,7 +1675,10 @@ def cmd_resolve(args):
         entries = pending | {tuple(c["entry"]) for c in sett["conflict"] + after["conflict"]}
         # --from で変えた・消した kit の項目も、持ち主が決めたものとして記録する（次の更新で戻さない）
         before_obj, result_obj = json.loads(current or "{}"), json.loads(result)
-        entries |= {e for e in after["theirs"] if settings_get(before_obj, e) != settings_get(result_obj, e)}
+        recorded = [(part, "") if part == "statusLine" else (part, key)
+                    for part, values in record.items() for key in ([""] if part == "statusLine" else values)]
+        entries |= {e for e in list(after["theirs"]) + recorded
+                    if settings_get(before_obj, e) != settings_get(result_obj, e)}
         manifests["claude"].pop("settings_conflicts", None)
         for part, key in sorted(entries):
             value = after["theirs"].get((part, key))

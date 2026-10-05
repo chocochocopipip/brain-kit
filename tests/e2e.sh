@@ -1433,5 +1433,35 @@ assert json.load(open(h + "/.claude/settings.json"))["statusLine"] == json.load(
 PY
 check "--from で戻した項目: 次の更新で kit の値に戻さない" test $? -eq 0
 
+# 新しい kit で外れたフックを --from で残すと決めたら、次の更新で消さない
+H="$TMP/settings-from-retired"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["Stop"][0]["hooks"][0]["timeout"] = 30                 # 衝突（解消の入口）
+s["hooks"]["TeammateIdle"][0]["hooks"][0]["timeout"] = 30         # 持ち主だけの変更
+json.dump(s, open(h + "/.claude/settings.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS3/install.sh" --update --no-worktrees >"$H.up" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+s = json.load(open(h + "/.claude/settings.json"))
+s["hooks"]["TeammateIdle"][0]["hooks"][0]["timeout"] = 10         # 入れたときの値で残すと決めた
+json.dump(s, open(h + ".merged.json", "w"), ensure_ascii=False, indent=2)
+PY
+HOME="$H" bash "$NEXTS/install.sh" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resolve" 2>&1
+check "--from で残した外れた項目: 解消が 0" test $? -eq 0
+HOME="$H" bash "$NEXTS/install.sh" --update --no-worktrees >"$H.up2" 2>&1
+python3 - "$H" <<'PY'
+import json, sys
+h = sys.argv[1]
+assert json.load(open(h + "/.claude/settings.json"))["hooks"]["TeammateIdle"] == json.load(open(h + ".merged.json"))["hooks"]["TeammateIdle"]
+PY
+check "--from で残した外れた項目: 次の更新で消さない" test $? -eq 0
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
