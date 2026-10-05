@@ -879,6 +879,22 @@ PY
       check "解消の拒否 $refusal: 退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
       if [ "$refusal" = stale ]; then cp "$H.theirs" "$target.new"; fi
     done
+    # 別の名前の symlink で kit のファイルを指しても、kit のファイルとしては扱わない
+    ln -s "$target" "$H/brain/link.md"
+    refusal_before="$(snap "$H")"
+    next_resolve "$H" "$H/brain/link.md" --from "$H.merged" >"$H.refusal" 2>&1
+    check "解消の拒否 symlink: 終了 2" test $? -eq 2
+    check "解消の拒否 symlink: 何も書かない" test "$refusal_before" = "$(snap "$H")"
+    rm "$H/brain/link.md"
+    # kit のファイルの場所が symlink なら、指す先（持ち主のもの）に書かない
+    mv "$target" "$H/brain/owner-note.md"
+    ln -s "$H/brain/owner-note.md" "$target"
+    refusal_before="$(snap "$H")"
+    next_resolve "$H" "$target" --from "$H.merged" >"$H.refusal" 2>&1
+    check "解消の拒否 symlink の kit: 終了 2" test $? -eq 2
+    check "解消の拒否 symlink の kit: 何も書かない" test "$refusal_before" = "$(snap "$H")"
+    rm "$target"
+    mv "$H/brain/owner-note.md" "$target"
     ARGS=("$target" --from "$H.merged")
   elif [ "$method" = inplace ]; then
     ARGS=("$target")

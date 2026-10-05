@@ -1626,9 +1626,11 @@ def cmd_resolve(args):
         # 版の記録が無い入れ方で一部だけ記録すると、次の更新が kit の skill を持ち主のものと取り違える
         die("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する", 2)
     manifests = load_manifests(cfg["brain"])
-    # macOS の /var → /private/var のように、cwd と HOME で同じ場所の書き方が違っても見つける
+    # macOS の /var → /private/var のように、cwd と HOME でディレクトリの書き方が違っても見つける。
+    # ファイル名の symlink はたどらない（別のファイルを kit のファイルとして扱わない）
     def same(a, b):
-        return os.path.realpath(a) == os.path.realpath(b)
+        return (os.path.realpath(os.path.dirname(a)), os.path.basename(a)) == \
+            (os.path.realpath(os.path.dirname(b)), os.path.basename(b))
     settings_path = os.path.join(CLAUDE, "settings.json")
     settings = same(target, settings_path)
     if settings:
@@ -1652,6 +1654,8 @@ def cmd_resolve(args):
             die("衝突ではない: %s" % tilde(target), 2)
         if os.path.exists(target + ".new") and read_text(target + ".new") != it.new:
             die(".new が今の kit と違う版。先に --update を実行する", 2)
+        if os.path.islink(it.dst):
+            die("%s は symlink。指す先は kit のものではないので、--resolve では書かない" % tilde(it.dst), 2)
         current = it.cur
         target = it.dst
     result = read_text(os.path.abspath(os.path.expanduser(args.from_file))) if args.from_file else current
