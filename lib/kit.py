@@ -1616,6 +1616,8 @@ def cmd_resolve(args):
     settings = target == os.path.abspath(os.path.join(CLAUDE, "settings.json"))
     it = None
     if settings:
+        if not os.path.isfile(target):
+            die("settings.json が無い。--resolve は今ある settings.json の衝突だけを扱う（作り直すなら --update）", 2)
         sett = plan_settings(args.codex, manifests["claude"])
         current = sett["raw"]
         pending = {tuple(e) for e in manifests["claude"].get("settings_conflicts", [])}

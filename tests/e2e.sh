@@ -1269,5 +1269,16 @@ assert [c["entry"] for c in r["conflict"]] == [("enabledPlugins", "codex@example
 PY
 check "解消待ち: 記録の値に戻しても・command 変更でも・外れても・--codex 無しでも動かさない" test $? -eq 0
 
+# settings.json が無ければ --resolve で作らない（書きかけの新しいファイルを残さない）
+H="$TMP/settings-absent"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+rm "$H/.claude/settings.json"
+printf '{}\n' >"$H.merged.json"
+before="$(snap "$H")"
+new "$H" --resolve "$H/.claude/settings.json" --from "$H.merged.json" >"$H.resolve" 2>&1
+check "settings.json が無い: 解消は終了 2" test $? -eq 2
+check "settings.json が無い: 作らない" test "$before" = "$(snap "$H")"
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
