@@ -575,8 +575,7 @@ def plan_settings(codex=False, manifest=None):
                 owned[new_entry] = settings_sha(new)
                 plan["update"].append(settings_name(new_entry))
             else:
-                if old is absent:
-                    owned.pop(old_entry)
+                # 古い記録は残す（消すと次の更新で新しい command を未登録として足してしまう）。
                 conflict(old_entry, old, rec, new,
                          "持ち主が消した／kit が変えた" if old is absent else "持ち主が変えた／command が変わった")
 

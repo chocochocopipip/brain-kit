@@ -696,7 +696,11 @@ record = {"hooks.Stop": {"echo old": ns["settings_sha"](old)}}
 for groups in ([], [{"hooks": [{"command": "echo old", "timeout": 30}]}]):
     r = run({"hooks": {"Stop": groups}}, {"hooks": {"Stop": [new]}}, record)
     assert r["conflict"] and not r["changed"] and not r["add"]
-    assert r["record"] == (record if groups else {})
+    assert r["record"] == record
+    # 記録を保存して 2 回目: 持ち主が消したフックを足さず、衝突を出し続ける
+    write(p, {"hooks": {"Stop": groups}})
+    r2 = plan(False, {"settings": r["record"]})
+    assert r2["conflict"] and not r2["changed"] and not r2["add"] and r2["record"] == record
 # 最初以外の hook に同じ command があっても、先に見つかった group を現在値とする。
 ours = {"hooks": [{"command": "echo owner"}, {"command": "echo old"}]}
 r = run({"hooks": {"Stop": [ours, old]}}, {"hooks": {"Stop": [new]}}, record)
