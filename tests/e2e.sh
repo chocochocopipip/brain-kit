@@ -1097,5 +1097,56 @@ for area in brain exec; do
   check "解消 $area: rollback でファイル・.new・base・manifest を戻す" test "$before" = "$(snap "$H")"
 done
 
+# ------------------------------------------------------------------ 19. 解消の途中で落ちたとき・版の記録が無い入れ方
+section "解消の途中失敗と版の記録なし"
+H="$TMP/resolve-crash"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --yes --no-worktrees >"$H.install" 2>&1
+target="$H/.claude/skills/mio/SKILL.md"
+python3 - "$target" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("---", "---\n持ち主の行。", 1)
+open(p, "w").write(s)
+PY
+next_update "$H" >"$H.up" 2>&1
+after_update="$(snap "$H")"
+cat "$target.new" >"$H.merged"
+printf '持ち主の追記。\n' >>"$H.merged"
+# manifest を書く直前で落とす（対象・.new・base は書き換え済み）
+HOME="$H" python3 - "$NEXT" "$target" "$H.merged" <<'PY'
+import runpy, sys
+kit, target, merged = sys.argv[1:]
+ns = runpy.run_path(kit + "/lib/kit.py")
+g = ns["cmd_resolve"].__globals__
+orig = g["put"]
+def put(path, text, backup, exe=False):
+    if path == g["CLAUDE_MANIFEST"]:
+        raise OSError("書けない（テスト）")
+    return orig(path, text, backup, exe)
+g["put"] = put
+try:
+    ns["main"](["resolve", "--target", target, "--from", merged])
+except OSError:
+    pass
+else:
+    sys.exit(1)
+PY
+check "途中失敗: 解消は途中で止まる" test $? -eq 0
+check "途中失敗: 対象は書き換わっている" cmp "$H.merged" "$target"
+new "$H" --rollback >"$H.rb" 2>&1
+check "途中失敗: rollback は途中の解消を先に戻す" test "$after_update" = "$(snap "$H")"
+check "途中失敗: .new も戻る" test -f "$target.new"
+
+H="$TMP/resolve-legacy"
+old_install "$V9" "$H" --partner 葵 --dev 蓮 --yes
+before="$(snap "$H")"
+backups="$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+HOME="$H" bash "$KIT/install.sh" --resolve "$H/.claude/hooks/session-end-brain.sh" >"$H.resolve" 2>&1
+check "版の記録なし: 解消は終了 2" test $? -eq 2
+check "版の記録なし: 先に --update を案内" grep -q -- '--update' "$H.resolve"
+check "版の記録なし: 何も書かない" test "$before" = "$(snap "$H")"
+check "版の記録なし: 退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
+
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

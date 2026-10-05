@@ -860,14 +860,21 @@ class Backup(object):
             os.makedirs(os.path.dirname(dst))
         shutil.copy2(path, dst)
         self.meta["overwritten"].append(path)
+        self._journal()
 
     def added(self, path, text):
         self._open()
         self.meta["added"][path] = sha(text)
+        self._journal()
 
     def worktree(self, path, branch, new_branch):
         self._open()
         self.meta["worktrees"].append({"path": path, "branch": branch, "new_branch": new_branch})
+        self._journal()
+
+    def _journal(self):
+        """書き換えの前に meta.json を書く。途中で落ちても --rollback がこの退避を拾えるように。"""
+        write_text(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
 
     def close(self):
         if self.opened:
@@ -1573,6 +1580,9 @@ def cmd_resolve(args):
     cfg, _, _, legacy = resolve_config(args, cman)
     if cfg is None:
         die("brain-kit が入っていない。先に install か --update を実行する", 2)
+    if legacy:
+        # 版の記録が無い入れ方で一部だけ記録すると、次の更新が kit の skill を持ち主のものと取り違える
+        die("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する", 2)
     manifests = load_manifests(cfg["brain"])
     settings = target == os.path.abspath(os.path.join(CLAUDE, "settings.json"))
     it = None
