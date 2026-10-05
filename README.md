@@ -139,6 +139,7 @@ clone してあるなら `git pull && ./install.sh --update`。
 - **名前は引き継ぐ**：相棒と開発は今の名前の skill・領域をそのまま使う。新しく足すレビューとリリースの 2 人だけ名前を聞く（`--review <名前> --release <名前>`、英字でなければ `--review-id` `--release-id` も）
 - **base と比較する**：最後に入れた kit の原文を、各 manifest の隣の `base/` に保存する。kit だけが変わったファイルは更新し、持ち主だけが変えたものは触らない
 - **両方が変わったら衝突**：元のファイルを残し、`<file>.new` と `~/.claude/brain-kit/conflicts/<日時>/` に差分・機械マージ候補を置く。候補は自動適用しない。`.new` と比較して編集し、済んだら `.new` を消す。明示的に kit 版を選ぶなら `--edited new`（退避あり）。既定と `--edited keep` は衝突を残す。衝突が 1 件でもあれば、更新（と `--dry-run`）の最後に件数と `.new` の一覧を必ず出す。前の更新の `.new` が残っていて新しい版と違えば、止めずに今回の新しい版で置き換える（前の `.new` は退避に残り、`--rollback` で戻る）
+- **settings.json も項目ごとに比較する**：最後に入れた JSON の sha を機械側の manifest に記録する。フックの command 変更も元の位置で更新し、持ち主が編集・削除した項目と kit の変更が重なれば触らず、件数と現在・記録 sha・kit の JSON を衝突資料に出す。既存の Codex 設定は `--codex` 無しでも保持する。`--dry-run` で追加・更新・削除・衝突・残す項目を確認でき、`--rollback` で設定も元のバイトに戻る
 - **kit から外れたもの**：未変更なら退避して削除。持ち主が変えたものは残し、管理の記録を外す
 - **`--dry-run`**：各分類と差分を出すだけ。base・`.new`・bundle・退避も書かない。差分だけ追加表示するなら `--diff`
 - **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--rollback` で直前の更新を戻す（上げたものを戻し、足したものを消し、作った worktree を外す。GitHub のラベルは消さない）。brain にはどちらもコミットが 1 つ残る
@@ -227,7 +228,7 @@ Claude の Artifact（`db` の capability）で、中身は相棒が節目に書
 | `~/brain`（brain-kit が前の版で入っている） | `install.sh` は止まって `--update` を案内する（上の「更新のしかた」）。 |
 | `~/brain`（brain-kit ではない自前の vault） | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があり**中身が違うとき**だけ `<名前>.brain-kit.md` として横に置く（同一なら何もしない）。git リポジトリなら足した分だけコミット。途中で落ちても同じコマンドで再実行すれば続きから進む |
 | `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
-| `~/.claude/settings.json` | 丸ごと上書きしない。hooks はイベントごとに**同じ command が無ければ追加**。既存の Orca 中継フックや自前のフックはそのまま残る。`statusLine` は無いときだけ、`permissions` は無いときだけ最小例。`enabledPlugins` / `extraKnownMarketplaces` は無いキーだけ |
+| `~/.claude/settings.json` | 丸ごと上書きせず、kit のフック・plugin／marketplace キー・kit が入れた `statusLine` を項目ごとに記録。kit だけの変更は同じ位置で更新し、未変更の廃止項目は削除。持ち主の項目と順序は保ち、両方の変更は衝突として残す。`permissions` は無いときだけ最小例を足し、以後は触らない |
 | Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |
 | Tailscale / Claude Code / gh / node | あればバージョンを表示してスキップ、無ければ入れる |
 
