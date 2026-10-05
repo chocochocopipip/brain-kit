@@ -1091,7 +1091,9 @@ for area in brain exec; do
     # shellcheck disable=SC2088  # kit.py が ~ を展開することを確かめる
     HOME="$H/." bash "$NEXT/install.sh" --resolve '~/brain/README.md' --from "$H/result.txt" >"$H.resolve" 2>&1
   else
-    (cd "$H" && HOME="$H/." bash "$NEXT/install.sh" --resolve "$rel" --from result.txt) >"$H.resolve" 2>&1
+    # HOME を symlink 越しに渡し、cwd は実体の側（macOS の /var と /private/var と同じずれ）
+    ln -s "$H" "$H-link"
+    (cd "$H" && HOME="$H-link" bash "$NEXT/install.sh" --resolve "$rel" --from result.txt) >"$H.resolve" 2>&1
   fi
   check "解消 $area: 正規化した HOME と対象で実行が 0" test $? -eq 0
   check "解消 $area: 内容が一致" cmp "$H/result.txt" "$H/$rel"

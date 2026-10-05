@@ -1626,7 +1626,13 @@ def cmd_resolve(args):
         # 版の記録が無い入れ方で一部だけ記録すると、次の更新が kit の skill を持ち主のものと取り違える
         die("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する", 2)
     manifests = load_manifests(cfg["brain"])
-    settings = target == os.path.abspath(os.path.join(CLAUDE, "settings.json"))
+    # macOS の /var → /private/var のように、cwd と HOME で同じ場所の書き方が違っても見つける
+    def same(a, b):
+        return os.path.realpath(a) == os.path.realpath(b)
+    settings_path = os.path.join(CLAUDE, "settings.json")
+    settings = same(target, settings_path)
+    if settings:
+        target = settings_path
     it = None
     if settings:
         if not os.path.isfile(target):
@@ -1638,7 +1644,7 @@ def cmd_resolve(args):
             die("settings.json に衝突は無い", 2)
     else:
         items = build_plan(cfg, manifests, legacy, load_fingerprints() if legacy else {}, mode="update")
-        it = next((i for i in items if i.kind == "kit" and os.path.abspath(i.dst) == target), None)
+        it = next((i for i in items if i.kind == "kit" and same(i.dst, target)), None)
         if it is None:
             die("kit のファイルではない。持ち主のファイルは kit では解消しない: %s" % tilde(target), 2)
         if it.state in ("add", "dropped", "collision") or not (
@@ -1647,6 +1653,7 @@ def cmd_resolve(args):
         if os.path.exists(target + ".new") and read_text(target + ".new") != it.new:
             die(".new が今の kit と違う版。先に --update を実行する", 2)
         current = it.cur
+        target = it.dst
     result = read_text(os.path.abspath(os.path.expanduser(args.from_file))) if args.from_file else current
     if result is None:
         die("解消結果を UTF-8 で読めない", 2)
