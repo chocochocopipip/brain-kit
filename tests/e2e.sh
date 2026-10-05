@@ -311,6 +311,7 @@ PYOWNER
   rc=$?; check "3-way $seed: dry-run が 0" test "$rc" -eq 0
   [ "$rc" -eq 0 ] || cat "$H.dry"
   check "3-way $seed: dry-run は何も変えない" test "$before" = "$(snap "$H")"
+  check "3-way $seed: dry-run も衝突の件数を出す" grep -q '衝突: 2 件' "$H.dry"
   check "3-way $seed: dry-run は退避も作らない" test "$backups" = "$(find "$H/.claude" -name 'backup-brain-kit-*' | sort)"
   for cls in '上げるもの（kit だけが変わった）' '持ち主だけが変えたもの' '両方が変えたもの' 'kit から外れたもの'; do
     check "3-way $seed: dry-run $cls" grep -q "$cls" "$H.dry"
@@ -336,6 +337,8 @@ PYOWNER
   check "3-way $seed: 未登録 agent はそのまま" test "$(cat "$H/.claude/agents/my-agent.md")" = '持ち主の agent'
   check "3-way $seed: 機械マージは clean" sh -c "grep -q 'clean' '$H'/.claude/brain-kit/conflicts/*/README.md"
   check "3-way $seed: 機械マージは衝突印" sh -c "grep -q '1 conflict markers' '$H'/.claude/brain-kit/conflicts/*/README.md"
+  check "3-way $seed: 最後に衝突の件数を必ず出す" sh -c "tail -n 5 '$H.up' | grep -q '衝突: 2 件'"
+  check "3-way $seed: 最後に .new の一覧を出す" sh -c "tail -n 5 '$H.up' | grep -q 'ren/SKILL.md.new' && tail -n 5 '$H.up' | grep -q 'mio/SKILL.md.new'"
   check "3-way $seed: merged を保存" sh -c "ls '$H'/.claude/brain-kit/conflicts/*/files/claude/.claude/skills/ren/SKILL.md.merged"
   python3 - "$H" <<'PYBASE'
 import hashlib, json, os, sys
@@ -356,11 +359,37 @@ PYBASE
   after="$(snap "$H")"
   next_update "$H" >"$H.up2" 2>&1
   check "3-way $seed: 再更新も冪等" test "$after" = "$(snap "$H")"
+  check "3-way $seed: 再更新でも衝突の件数を出す" sh -c "tail -n 5 '$H.up2' | grep -q '衝突: 2 件'"
   new "$H" --rollback >"$H.rb" 2>&1
   check "3-way $seed: rollback が 0" test $? -eq 0
   check "3-way $seed: rollback はバイト単位で戻す" test "$before" = "$(snap "$H")"
   check "3-way $seed: rollback で作った空ディレクトリも消す" test "$dirs0" = "$(find "$H/.claude/brain-kit" "$H/brain/.brain-kit" -type d | sort)"
 done
+
+# ------------------------------------------------------------------ 9. 前の .new が残ったまま、さらに次の版へ更新する
+# 決め: .new は「いまの kit の新しい版」を置く場所。中身が違えば今回の新しい版で置き換え、前の .new は退避に残す（止めない）。
+section "前の .new が残ったまま次の版へ"
+NEXT2="$TMP/kit-next2"
+mkdir -p "$NEXT2"
+(cd "$NEXT" && tar cf - .) | (cd "$NEXT2" && tar xf -)
+printf '\n次の次の版の末尾。\n' >>"$NEXT2/claude/skills/dev/SKILL.md"
+H="$TMP/three-base"
+next_update "$H" >"$H.up3" 2>&1
+check "前の .new: 1 回目の更新で .new" test -f "$H/.claude/skills/ren/SKILL.md.new"
+printf '\n持ち主が .new に書いた途中の行。\n' >>"$H/.claude/skills/ren/SKILL.md.new"
+ours="$(cat "$H/.claude/skills/ren/SKILL.md")"
+mio_new="$(cat "$H/.claude/skills/mio/SKILL.md.new")"
+HOME="$H" bash "$NEXT2/install.sh" --update --no-worktrees --dry-run >"$H.dry4" 2>&1
+check "前の .new: dry-run で置き換えると出す" grep -q 'ren/SKILL.md.new（前の更新の .new' "$H.dry4"
+HOME="$H" bash "$NEXT2/install.sh" --update --no-worktrees >"$H.up4" 2>&1
+check "前の .new: 2 回目の更新が 0" test $? -eq 0
+check "前の .new: 元のファイルはそのまま" test "$ours" = "$(cat "$H/.claude/skills/ren/SKILL.md")"
+check "前の .new: .new は今回の新しい版" grep -q '次の次の版の末尾' "$H/.claude/skills/ren/SKILL.md.new"
+check "前の .new: 前の .new は退避に残る" sh -c "grep -rq '持ち主が .new に書いた途中の行' '$H'/.claude/backup-brain-kit-*/files"
+check "前の .new: 置き換えたと最後に出す" sh -c "tail -n 5 '$H.up4' | grep -q 'ren/SKILL.md.new（前の更新の .new'"
+check "前の .new: 変わらない .new はそのまま" test "$mio_new" = "$(cat "$H/.claude/skills/mio/SKILL.md.new")"
+new "$H" --rollback >"$H.rb4" 2>&1
+check "前の .new: rollback で前の .new に戻る" grep -q '持ち主が .new に書いた途中の行' "$H/.claude/skills/ren/SKILL.md.new"
 
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]

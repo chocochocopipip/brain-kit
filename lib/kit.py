@@ -812,7 +812,9 @@ def apply_items(items, cfg, backup, args, mode):
                 written.append(it)
             else:
                 kept.append(it)
+                # 前の更新の .new が残っていて中身が違えば、今回の新しい版で置き換える（前のものは退避に残る）
                 if mode == "update" and read_text(it.dst + ".new") != it.new:
+                    it.new_replaced = os.path.exists(it.dst + ".new")
                     put(it.dst + ".new", it.new, backup, it.exe)
         elif it.state == "same" and it.exe and not os.access(it.dst, os.X_OK):
             backup.save(it.dst)
@@ -1212,6 +1214,11 @@ def cmd_update(args):
             ensure_labels(cfg, True)
         print()
         print("--dry-run なので何も変えていない。上げるなら --dry-run を外して同じコマンド。")
+        if getattr(args, "edited", None) != "new":
+            conf = [it for it in items if it.kind == "kit" and it.state == "conflict"]
+            for it in conf:
+                it.new_replaced = os.path.exists(it.dst + ".new") and read_text(it.dst + ".new") != it.new
+            print_conflicts(conf, None)
         return
 
     backup = Backup("update", {"brain": cfg["brain"], "from": v_from, "to": VERSION})
@@ -1249,12 +1256,6 @@ def cmd_update(args):
     else:
         print("変わったもの: %d 件（kit %d、持ち主の領域の骨格 %d、ほかは記録・衝突資料など）"
               % (changed, len([i for i in written if i.kind == "kit"]), len([i for i in written if i.kind == "owner"])))
-    if kept:
-        print("衝突したもの（元のファイルはそのまま）:")
-        for it in kept:
-            print("  %s → %s.new" % (tilde(it.dst), tilde(it.dst)))
-        print("衝突 bundle: %s" % tilde(bundle))
-        print("<file>.new と比較して編集し、.new を消す。kit 版にするなら --update --edited new。")
     if bdir:
         print("退避: %s（戻すなら ./install.sh --rollback）" % tilde(bdir))
     if v_from != VERSION:
@@ -1267,6 +1268,21 @@ def cmd_update(args):
             print()
             print("新しく使えるもの:")
             print_new_roles(cfg, new_roles)
+    print_conflicts(kept, bundle)
+
+
+def print_conflicts(kept, bundle):
+    """衝突が 1 件でもあれば、更新の最後に必ず件数と .new の一覧を出す（黙って終わらない）。"""
+    if not kept:
+        return
+    print()
+    print("衝突: %d 件（元のファイルはそのまま。新しい版は隣の .new）" % len(kept))
+    for it in kept:
+        note = "（前の更新の .new を今回の新しい版で置き換える。前のものは退避）" if getattr(it, "new_replaced", False) else ""
+        print("  %s.new%s" % (tilde(it.dst), note))
+    if bundle:
+        print("衝突の資料: %s" % tilde(bundle))
+    print("<file> と <file>.new を比べて直し、済んだら .new を消す。kit の版にするなら --update --edited new（退避あり）。")
 
 
 def print_new_roles(cfg, roles):
