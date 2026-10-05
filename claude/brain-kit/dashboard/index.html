@@ -47,6 +47,24 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
 .notice { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 16px; color: var(--muted); }
 .notice code { font-family: var(--mono); font-size: .85em; color: var(--ink); }
 .err { color: var(--warn); font-size: .85rem; }
+.decision-list, .shot-grid { display: grid; gap: 14px; }
+.decision, .shot { min-width: 0; overflow-wrap: anywhere; }
+.decision + .decision { border-top: 1px solid var(--line); padding-top: 14px; }
+.decision p, .shot p { margin: 6px 0; }
+.decision .ref, .shot .ref { white-space: normal; overflow-wrap: anywhere; }
+.options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; overflow-wrap: anywhere; max-width: 100%; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.options button[aria-pressed="true"] { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); font-weight: 700; }
+button:disabled { cursor: default; opacity: .65; }
+.shot-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); }
+.shot { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.thumbnail { display: block; width: 100%; padding: 0; overflow: hidden; background: var(--bg); }
+.thumbnail img { display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain; }
+dialog { max-width: calc(100vw - 64px); max-height: 85vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 16px; }
+dialog::backdrop { background: rgba(0, 0, 0, .65); }
+dialog img { display: block; max-width: none; margin-top: 12px; }
+.dialog-close { position: sticky; top: 0; left: 0; }
 @media (max-width: 760px) {
   .flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .stage:nth-child(4) { border-left: 0; }
@@ -63,6 +81,12 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
 
   <nav class="flow" id="flow" aria-label="段ごとの本数"></nav>
 
+  <section class="box owner" aria-labelledby="decisions-h">
+    <h2 id="decisions-h">決めること <span class="c" id="decisions-c"></span></h2>
+    <p class="empty" id="decision-access" hidden></p>
+    <div class="decision-list" id="decisions"></div>
+  </section>
+
   <div class="cols">
     <section class="box owner" aria-labelledby="owner-h">
       <h2 id="owner-h">持ち主の番 <span class="c" id="owner-c"></span></h2>
@@ -74,6 +98,15 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
     </section>
   </div>
 
+  <section class="box" aria-labelledby="shots-h">
+    <h2 id="shots-h">見た目の確認 <span class="c" id="shots-c"></span></h2>
+    <div class="shot-grid" id="shots"></div>
+  </section>
+  <dialog id="shot-dialog" aria-label="スクショの拡大表示">
+    <button class="dialog-close" id="shot-close" type="button">閉じる</button>
+    <img id="shot-full" alt="">
+  </dialog>
+
   <div class="notice" id="notice" hidden></div>
   <div class="stages" id="stages"></div>
 </div>
@@ -82,7 +115,9 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
 (function () {
   "use strict";
   var STAGES = [["filed", "起票"], ["decide", "判断待ち"], ["dev", "開発"], ["review", "PR（レビュー中）"], ["release", "リリースの列"], ["prod", "本番"]];
-  var state = { board: null, owner: null, plan: null };
+  var state = { board: null, owner: null, plan: null, decisions: [], shots: [] };
+  var database = null, readOnly = false, pending = Object.create(null), errors = Object.create(null);
+  var queryErrors = { decisions: false, shots: false };
 
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function fmt(iso) {
@@ -107,7 +142,90 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
     rows.forEach(function (r) { ul.appendChild(r); });
   }
 
+  function reference(doc) {
+    var link = el(typeof doc.url === "string" && /^https:\/\//.test(doc.url) ? "a" : "span", "ref", doc.ref || "");
+    if (link.tagName === "A") { link.href = doc.url; link.target = "_blank"; link.rel = "noopener"; }
+    return link;
+  }
+  function renderDecisions() {
+    var wrap = document.getElementById("decisions"); wrap.textContent = "";
+    var access = document.getElementById("decision-access");
+    access.hidden = !readOnly;
+    access.textContent = readOnly ? "この表示では選べない。選べるのは持ち主・編集できる人だけ。" : "";
+    var rows = state.decisions.filter(function (row) { return row.data.closed !== true; }).sort(function (a, b) {
+      var x = a.data.asked_at || "", y = b.data.asked_at || ""; return x < y ? -1 : x > y ? 1 : 0;
+    });
+    document.getElementById("decisions-c").textContent = rows.length + " 件";
+    if (queryErrors.decisions) wrap.appendChild(el("p", "err", "判断待ちを読めなかった。開き直して確かめる。"));
+    if (!rows.length) wrap.appendChild(el("p", "empty", "いま選んでもらうものは無い"));
+    rows.forEach(function (row) {
+      var d = row.data, item = el("div", "decision"), choices = el("div", "options");
+      item.appendChild(el("p", null, d.question || ""));
+      if (d.ref) item.appendChild(reference(d));
+      if (d.note) item.appendChild(el("p", "meta", d.note));
+      var options = (Array.isArray(d.options) ? d.options : []).filter(function (o) {
+        return o && typeof o.key === "string" && o.key.length && typeof o.label === "string" && o.label.length;
+      }).slice(0, 8);
+      options.forEach(function (o) {
+        var button = el("button", null, o.label); button.type = "button";
+        button.setAttribute("aria-pressed", d.answer && d.answer.key === o.key ? "true" : "false");
+        button.disabled = readOnly || !!d.taken_at || !!pending[row.id] || !database;
+        button.addEventListener("click", function () {
+          if (readOnly || d.taken_at || pending[row.id] || !database) return;
+          pending[row.id] = true; delete errors[row.id]; renderDecisions();
+          var answer = { key: o.key, label: o.label, at: new Date().toISOString() };
+          Promise.resolve().then(function () {
+            return database.doc("decisions/" + row.id).update({ answer: answer });
+          }).then(null, function (err) {
+            errors[row.id] = "選択を保存できなかった。しばらくして試す。";
+            if (err && err.code === "invalid_argument") readOnly = true;
+          }).then(function () { delete pending[row.id]; renderDecisions(); });
+        });
+        choices.appendChild(button);
+      });
+      item.appendChild(choices);
+      if (d.answer) item.appendChild(el("p", "meta", "選んだ: " + (d.answer.label || "") + "（" + fmt(d.answer.at) + "）" + (d.taken_at ? "・受け取り済み" : "")));
+      else if (d.taken_at) item.appendChild(el("p", "meta", "受け取り済み"));
+      if (errors[row.id]) { var error = el("p", "err", errors[row.id]); error.setAttribute("role", "alert"); item.appendChild(error); }
+      wrap.appendChild(item);
+    });
+  }
+  function renderShots() {
+    var wrap = document.getElementById("shots"); wrap.textContent = "";
+    document.getElementById("shots-c").textContent = state.shots.length + " 件";
+    if (queryErrors.shots) wrap.appendChild(el("p", "err", "スクショを読めなかった。開き直して確かめる。"));
+    if (!state.shots.length) wrap.appendChild(el("p", "empty", "まだ無い。相棒が PR の画面を撮って置く（shot.py）"));
+    state.shots.forEach(function (row) {
+      var d = row.data, card = el("div", "shot");
+      if (typeof d.data === "string" && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/=]+$/.test(d.data)) {
+        var button = el("button", "thumbnail"), img = el("img");
+        button.type = "button"; button.setAttribute("aria-label", "拡大: " + (d.caption || d.ref || "スクショ"));
+        img.src = d.data; img.loading = "lazy"; img.alt = d.caption || d.ref || "スクショ";
+        if (typeof d.w === "number" && d.w > 0 && isFinite(d.w)) img.setAttribute("width", String(Math.floor(d.w)));
+        if (typeof d.h === "number" && d.h > 0 && isFinite(d.h)) img.setAttribute("height", String(Math.floor(d.h)));
+        button.appendChild(img);
+        button.addEventListener("click", function () {
+          var full = document.getElementById("shot-full"); full.src = d.data; full.alt = img.alt;
+          document.getElementById("shot-dialog").showModal();
+        });
+        card.appendChild(button);
+      } else card.appendChild(el("p", "empty", "画像を表示できない"));
+      if (d.caption) card.appendChild(el("p", null, d.caption));
+      if (d.ref) card.appendChild(reference(d));
+      card.appendChild(el("p", "meta", fmt(d.taken_at)));
+      wrap.appendChild(card);
+    });
+  }
+  var dialog = document.getElementById("shot-dialog");
+  document.getElementById("shot-close").addEventListener("click", function () { dialog.close(); });
+  dialog.addEventListener("click", function (event) {
+    var bounds = dialog.getBoundingClientRect();
+    if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) dialog.close();
+  });
+  dialog.addEventListener("close", function () { document.getElementById("shot-full").removeAttribute("src"); });
+
   function render() {
+    renderDecisions(); renderShots();
     var b = state.board || {}, items = Array.isArray(b.items) ? b.items : [];
     var counts = {};
     STAGES.forEach(function (s) { counts[s[0]] = 0; });
@@ -160,15 +278,34 @@ li a:hover, li a:focus-visible { color: var(--accent); text-decoration: underlin
     });
   }
 
-  function notice(html) { var n = document.getElementById("notice"); n.hidden = !html; n.innerHTML = html || ""; }
+  function notice(text) { var n = document.getElementById("notice"); n.hidden = !text; n.textContent = text || ""; }
 
   render();
-  notice("中身は相棒が書き込む。まだ空なら、相棒に「工程表を更新して」と言う（<code>collect.py</code> で集めて <code>board/current</code> に置く）。");
+  notice("中身は相棒が書き込む。まだ空なら、相棒に「工程表を更新して」と言う（collect.py で集めて board/current に置く）。");
 
   var use = window.claude && window.claude.use;
   if (!use) return;
+  Promise.resolve().then(function () { return window.claude.use("user"); }).then(function (user) {
+    if (user && typeof user.canEdit === "function") return Promise.resolve(user.canEdit()).then(function (allowed) {
+      if (allowed === false) { readOnly = true; renderDecisions(); }
+    });
+  }).catch(function () {});
   window.claude.use("db").then(function (db) {
     if (!db) { notice("この表示では保存された中身を読めない。claude.ai で開くと出る。"); return; }
+    database = db;
+    function watchCollection(query, key) {
+      query.onSnapshot(function (snap) {
+        var rows = [];
+        (snap.docs || []).forEach(function (doc) { rows.push({ id: doc.id, data: doc.data() || {} }); });   // 届く中身は凍っている。書き換えない
+        state[key] = rows; queryErrors[key] = false;
+        if (key === "decisions") renderDecisions(); else renderShots();
+      }, function () {
+        queryErrors[key] = true;
+        if (key === "decisions") renderDecisions(); else renderShots();
+      });
+    }
+    watchCollection(db.collection("decisions"), "decisions");
+    watchCollection(db.collection("shots").orderBy("taken_at", "desc").limit(24), "shots");
     function watch(path, key) {
       db.doc(path).onSnapshot(function (snap) {
         state[key] = snap.exists ? snap.data() : null;
