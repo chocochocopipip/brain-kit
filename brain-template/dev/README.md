@@ -46,15 +46,26 @@ tags: [dev, 規約]
 `状況/_テンプレート.md` を写して作る。**リポジトリを初めて触ったときに作る。**
 触っていないリポジトリのカードは作らない（空のカードは嘘をつく）。
 
-## 人格ごとにワークツリーを分ける（任意・慣れてから）
+## 人格ごとのワークツリー
 
-Orca はワークツリー単位でエージェントを並べるため、人格を分けたければワークツリーを分ける。
-`~/brain`（main、全部見える）／`~/brain-<相棒名>`（相棒のブランチ、`dev/` を隠す）／`~/brain-dev`（<開発担当名> のブランチ、`<相棒名>/` を隠す）。
-隠すのは相手の人格領域だけ。`knowledge/` `decisions/` `projects/` `daily/` は共通。
+install（と、4 人格を足す `--update`）が作る。Orca はワークツリー単位でエージェントを並べる。
+
+| ワークツリー | ブランチ | 誰 | 隠すもの |
+|---|---|---|---|
+| `<brain>` | main | 相棒（全部見える） | なし |
+| `<brain>-<開発id>` | `<開発id>` | <開発担当名> | `<相棒名>/` |
+| `<brain>-<レビューid>` | `<レビューid>` | <レビュー担当名> | `<相棒名>/` |
+| `<brain>-<リリースid>` | `<リリースid>` | <リリース担当名> | `<相棒名>/` |
+
+隠すのは相棒の人格領域だけ。`knowledge/` `decisions/` `projects/` `daily/` は共通。
+書いたら自分のワークツリーでコミットし、`git -C <brain> merge --no-edit <自分の id>` で main に取り込む。
+起動は `~/.claude/brain-kit/bin/start-<id>`（そのワークツリーで main を取り込んでから `claude` を立てる）。
+
+手で作るなら（`--no-worktrees` で入れたとき）：
 
 ```bash
-git worktree add ~/brain-dev -b <開発担当名>
-cd ~/brain-dev
+git -C <brain> worktree add <brain>-<開発id> -b <開発id>
+cd <brain>-<開発id>
 git sparse-checkout init --no-cone          # これを先に。忘れると cone モードで壊れる
 printf '/*\n!/<相棒名>/\n' | git sparse-checkout set --stdin
 ```

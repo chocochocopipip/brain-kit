@@ -12,6 +12,15 @@
 ./check.sh <自分のユーザー名> <プロジェクト名> <相棒の名前> <dev エージェントの名前> <店名> <人名> ...
 ```
 
+語が多いなら、**リポジトリの外の**ファイルに 1 行 1 語で書いて渡す（既定は `~/.config/brain-kit/check-words.txt`）:
+
+```bash
+BRAIN_KIT_CHECK_WORDS_FILE=~/.config/brain-kit/check-words.txt ./check.sh
+```
+
+GitHub で公開しているなら、同じ中身を secret `BRAIN_KIT_CHECK_WORDS` に入れる。`.github/workflows/check.yml` が PR ごとに流し、当たれば落ちる
+（ログには「ファイル:行」だけが出て、語そのものは出ない）。BRAIN_KIT_CHECK_WORDS が無いと組み込みパターンだけで通り、警告が出る。
+
 check.sh は引数の語に加えて、次を**常に**探す:
 
 - メールアドレスらしき文字列
@@ -25,6 +34,7 @@ check.sh は引数の語に加えて、次を**常に**探す:
 ## 2. 中身が「型」だけであること
 
 - `brain-template/<相棒名>/00_核.md` `01_辞書.md` `02_関係.md` が**見出しだけ**で、本文が空
+- `brain-template/partner/03_任せる範囲.md` `review/規準.md` `release/手順.md` が**一般的な既定だけ**（実在のリポジトリ・過去の PR 番号・店・人が出てこない）
 - `brain-template/dev/状況/` に `_テンプレート.md` 以外のカードが無い
 - `brain-template/dev/報告/` `daily/` `decisions/` `knowledge/` `projects/` が `.gitkeep` だけ
 - `claude/skills/*/SKILL.md` に、実在の人・店・リポジトリが出てこない
@@ -43,7 +53,10 @@ check.sh は引数の語に加えて、次を**常に**探す:
 
 ```bash
 ./check.sh <固有名詞...>     # 0 件
+bash tests/e2e.sh             # 新規・更新・戻しの実走（macOS なら /bin/bash で）
 git status                    # clean
 ```
+
+kit のファイルを変えたら `kitfiles.tsv` を見直す（kit のものか、持ち主のものか）。版を上げたら `VERSION` と `CHANGELOG.md` の節を足す。
 
 README の「確認済み」に、実行した日付と結果を書き足す。

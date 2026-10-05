@@ -1,0 +1,33 @@
+# brain-kit が「kit のもの」として持つファイルの一覧（--update で新しい版に上がる）。
+# ここに無い brain-template/ のファイルは「持ち主のもの」: 無ければ足すだけで、在るものには触らない。
+#
+# 列: src（このリポジトリ内。gen: は生成）<TAB> dst <TAB> flags
+#   dst の書き方: ~/ = $HOME、{brain} = brain の場所、{<役>.id} {<役>.name}（役 = partner dev review release）
+#   flags: render = 置き換えの印を埋める / skill:<役> = name: 行をその役の id にする / exec = 実行権限
+claude/CLAUDE.md	~/.claude/CLAUDE.md
+claude/skills/partner/SKILL.md	~/.claude/skills/{partner.id}/SKILL.md	render,skill:partner
+claude/skills/dev/SKILL.md	~/.claude/skills/{dev.id}/SKILL.md	render,skill:dev
+claude/skills/review/SKILL.md	~/.claude/skills/{review.id}/SKILL.md	render,skill:review
+claude/skills/release/SKILL.md	~/.claude/skills/{release.id}/SKILL.md	render,skill:release
+claude/skills/setup/SKILL.md	~/.claude/skills/setup/SKILL.md	render
+claude/skills/grilling/SKILL.md	~/.claude/skills/grilling/SKILL.md
+claude/hooks/session-end-brain.sh	~/.claude/hooks/session-end-brain.sh	exec
+claude/hooks/brain-digest.js	~/.claude/hooks/brain-digest.js	exec
+gen:start:partner	~/.claude/brain-kit/bin/start-{partner.id}	exec
+gen:start:dev	~/.claude/brain-kit/bin/start-{dev.id}	exec
+gen:start:review	~/.claude/brain-kit/bin/start-{review.id}	exec
+gen:start:release	~/.claude/brain-kit/bin/start-{release.id}	exec
+claude/brain-kit/bin/heavy-lock	~/.claude/brain-kit/bin/heavy-lock	exec
+claude/brain-kit/dashboard/index.html	~/.claude/brain-kit/dashboard/index.html	
+claude/brain-kit/dashboard/collect.py	~/.claude/brain-kit/dashboard/collect.py	exec
+claude/brain-kit/automations/README.md	~/.claude/brain-kit/automations/README.md	render
+claude/brain-kit/automations/precheck.sh	~/.claude/brain-kit/automations/precheck.sh	render,exec
+brain-template/CLAUDE.md	{brain}/CLAUDE.md	render
+brain-template/README.md	{brain}/README.md	render
+brain-template/dev/README.md	{brain}/dev/README.md	render
+brain-template/dev/状況/_テンプレート.md	{brain}/dev/状況/_テンプレート.md
+brain-template/review/README.md	{brain}/review/README.md	render
+brain-template/review/記録/README.md	{brain}/review/記録/README.md	render
+brain-template/review/評価/README.md	{brain}/review/評価/README.md	render
+brain-template/release/README.md	{brain}/release/README.md	render
+brain-template/release/記録/README.md	{brain}/release/記録/README.md	render

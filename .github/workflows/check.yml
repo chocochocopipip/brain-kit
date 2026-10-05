@@ -1,0 +1,55 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  leaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check.sh（組み込みパターン＋固有名詞の語）
+        env:
+          WORDS: ${{ secrets.BRAIN_KIT_CHECK_WORDS }}
+        run: |
+          if [ -n "$WORDS" ]; then
+            printf '%s\n' "$WORDS" > "$RUNNER_TEMP/words.txt"
+            BRAIN_KIT_CHECK_WORDS_FILE="$RUNNER_TEMP/words.txt" bash check.sh
+          else
+            echo "::warning::secret BRAIN_KIT_CHECK_WORDS が無い。固有名詞の語は確かめていない（組み込みパターンだけ）"
+            bash check.sh
+          fi
+
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # v8・v9 のコミットから古い入れ方を作る
+      - name: 版
+        run: /bin/bash --version | head -1; python3 --version; git --version
+      - name: 新規・v8/v9 → v10・v10 → v10・dry-run・3 択・rollback・doctor
+        run: /bin/bash tests/e2e.sh   # macOS は標準の bash 3.2 と BSD の道具で走る
+
+  bash32:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: bash 3.2（コンテナ）で e2e と check.sh
+        run: |
+          docker run --rm -v "$PWD":/w -w /w bash:3.2 sh -c '
+            apk add --no-cache python3 git >/dev/null &&
+            git config --global --add safe.directory "*" &&
+            bash --version | head -1 &&
+            bash tests/e2e.sh && bash check.sh'
