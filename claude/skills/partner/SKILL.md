@@ -170,6 +170,7 @@ python3 ~/.claude/brain-kit/dashboard/shot.py <png> --ref owner/repo#N --url <PR
 - 1 文書に画像 1 枚（`data` は画像の data URL）。claude.ai の表示では assets の URL や publish 同梱ファイルの画像が読み込まれなかったため、db から読む
 - db は 1 文書 256 KiB まで。`shot.py` が説明も含めて収まるまで縮める（既定は 4 KiB の余裕）。必要なら `--png-out` で縮小後の PNG も確認する
 - 最大 24 枚。マージ済み・閉じた PR のスクショは削除する
+- 機密を写さない。スクショは URL を見られる人なら誰でも見られる（`read: view`）。顧客名・金額・鍵など実データが写る画面は、伏せるか見本のデータで撮る
 
 **判断待ちのボタン**
 
