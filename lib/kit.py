@@ -277,7 +277,9 @@ def owner_files(cfg):
             if src_rel in kits:
                 continue
             flags = ["render"] if name.endswith(".md") else []
-            rows.append((src_rel, os.path.join(cfg["brain"], *(out_parts + [name])), flags))
+            # npm は .gitignore という名前をパッケージに入れないので、点なしで持って書くときに戻す
+            out_name = ".gitignore" if not parts and name == "gitignore" else name
+            rows.append((src_rel, os.path.join(cfg["brain"], *(out_parts + [out_name])), flags))
     return rows
 
 

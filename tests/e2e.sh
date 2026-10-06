@@ -15,6 +15,7 @@ trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=kit-test GIT_AUTHOR_EMAIL=kit-test@example.invalid
 export GIT_COMMITTER_NAME=kit-test GIT_COMMITTER_EMAIL=kit-test@example.invalid
 # gh と claude を見えなくする（ラベル作成・要約を走らせない）
+NPM="$(command -v npm 2>/dev/null || true)"   # tarball の節だけで使う（PATH を絞る前に探す）
 SAFE_PATH="$TMP/bin"
 mkdir -p "$SAFE_PATH"
 ln -s "$BASH" "$SAFE_PATH/bash"    # このテストを走らせている bash（macOS なら /bin/bash の 3.2）を使う
@@ -83,6 +84,7 @@ mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --repos "example/app" --projects "app" --yes </dev/null >"$H.log" 2>&1
 check "install が 0 で終わる" test $? -eq 0
 check "config に今の版" grep -q "\"version\": $KV" "$H/brain/.brain-kit/config.json"
+check "brain に .gitignore がある（点なしの gitignore から）" test -f "$H/brain/.gitignore"
 for s in aoi ren mio sora setup grilling; do check "skill $s" test -f "$H/.claude/skills/$s/SKILL.md"; done
 check "skill の name: が id" grep -q '^name: mio$' "$H/.claude/skills/mio/SKILL.md"
 check "相棒の領域 Aoi/" test -f "$H/brain/Aoi/00_核.md"
@@ -1464,6 +1466,29 @@ h = sys.argv[1]
 assert json.load(open(h + "/.claude/settings.json"))["hooks"]["TeammateIdle"] == json.load(open(h + ".merged.json"))["hooks"]["TeammateIdle"]
 PY
 check "--from で残した外れた項目: 次の更新で消さない" test $? -eq 0
+
+# ------------------------------------------------------------------ npm の tarball から入れる
+section "npm の tarball から新規"
+if [ -n "$NPM" ]; then
+  mkdir -p "$TMP/pack"
+  (cd "$KIT" && PATH="$(dirname "$NPM"):$PATH" "$NPM" pack --silent --pack-destination "$TMP/pack" >/dev/null 2>&1)
+  check "npm pack が tarball を作る" sh -c "ls '$TMP/pack'/brain-kit-*.tgz"
+  # PATH を絞っているので gzip が無い。python3 で展開する
+  python3 -c 'import glob, sys, tarfile; tarfile.open(glob.glob(sys.argv[1] + "/brain-kit-*.tgz")[0]).extractall(sys.argv[1])' "$TMP/pack"
+  check "tarball を展開できる（install.sh がある）" test -f "$TMP/pack/package/install.sh"
+  check "tarball に tests は入らない" test ! -e "$TMP/pack/package/tests"
+  H="$TMP/from-npm"; mkdir -p "$H"
+  HOME="$H" bash "$TMP/pack/package/install.sh" --partner Aoi --dev Ren --review Mio --release Sora --user Ken \
+    --repos "example/app" --projects "app" --yes </dev/null >"$H.log" 2>&1
+  rc=$?
+  check "tarball からの install が 0 で終わる" test "$rc" -eq 0
+  [ "$rc" -eq 0 ] || tail -n 20 "$H.log"
+  check "tarball から入れた brain に .gitignore がある" test -f "$H/brain/.gitignore"
+  check "tarball から入れた brain の .gitignore は kit と同じ" cmp -s "$KIT/brain-template/gitignore" "$H/brain/.gitignore"
+  check "tarball から入れた brain に点なしの gitignore は無い" test ! -e "$H/brain/gitignore"
+else
+  printf '  skip npm が無い\n'
+fi
 
 printf '\n%d ok, %d NG\n' "$pass" "$fail"
 [ "$fail" = 0 ]
