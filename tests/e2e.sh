@@ -7,6 +7,7 @@
 # 何も外に出さない: gh は PATH から外し（ラベルは飛ばす）、HOME は一時ディレクトリ。
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KV="$(tr -d '[:space:]' <"$KIT/VERSION")"   # 今の版（VERSION）
 V8=ed99c56
 V9=bc98adc
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/brain-kit-e2e.XXXXXX")"
@@ -81,7 +82,7 @@ H="$TMP/new-en"
 mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --repos "example/app" --projects "app" --yes </dev/null >"$H.log" 2>&1
 check "install が 0 で終わる" test $? -eq 0
-check "config に版 10" grep -q '"version": 10' "$H/brain/.brain-kit/config.json"
+check "config に今の版" grep -q "\"version\": $KV" "$H/brain/.brain-kit/config.json"
 for s in aoi ren mio sora setup grilling; do check "skill $s" test -f "$H/.claude/skills/$s/SKILL.md"; done
 check "skill の name: が id" grep -q '^name: mio$' "$H/.claude/skills/mio/SKILL.md"
 check "相棒の領域 Aoi/" test -f "$H/brain/Aoi/00_核.md"
@@ -97,7 +98,7 @@ check "印が残っていない（~/.claude）" sh -c "! grep -r -e '<相棒名>
 check "印が残っていない（brain）" sh -c "! grep -r -e '<相棒名>' -e '<開発担当名>' -e '<レビュー担当名>' -e '<リリース担当名>' '$H/brain' --include=*.md"
 new "$H" --doctor >"$H.doctor" 2>&1
 check "--doctor が 0" test $? -eq 0
-check "--doctor に版" grep -q 'v10' "$H.doctor"
+check "--doctor に版" grep -q "v$KV" "$H.doctor"
 before="$(snap "$H")"; c0="$(commits "$H")"
 new "$H" --update </dev/null >"$H.up" 2>&1
 check "v10 → v10 が 0" test $? -eq 0
@@ -150,12 +151,13 @@ check "開発の skill は同じ名前のまま" test -f "$H9/.claude/skills/匠
 check "新しい skill mio" test -f "$H9/.claude/skills/mio/SKILL.md"
 check "新しい skill minato" test -f "$H9/.claude/skills/minato/SKILL.md"
 check "レビューの領域を足した" test -d "$H9/brain/review"
-check "版の記録を書いた" grep -q '"version": 10' "$H9/brain/.brain-kit/config.json"
+check "版の記録を書いた" grep -q "\"version\": $KV" "$H9/brain/.brain-kit/config.json"
 check "v9 の名前を記録" grep -q '"name": "光"' "$H9/brain/.brain-kit/config.json"
 check "開発ラベルは v9 の名前のまま" grep -q '"label": "匠"' "$H9/brain/.brain-kit/config.json"
 check "リポジトリを状況カードから拾う" grep -q 'example/app' "$H9/brain/.brain-kit/config.json"
 check "退避を作った" sh -c "ls -d '$H9'/.claude/backup-brain-kit-* >/dev/null"
 check "CHANGELOG を出した" grep -q '## v10' "$H9.up"
+check "CHANGELOG に今の版の節" grep -q "## v$KV" "$H9.up"
 check "新しく使えるものを出した" grep -q '新しく使えるもの' "$H9.up"
 check "worktree（mio）" test -d "$H9/brain-mio"
 s1="$(snap "$H9")"; c1="$(commits "$H9")"
@@ -213,7 +215,7 @@ check "--rollback で更新前に戻る（~/.claude と brain）" test "$r0" = "
 check "--rollback で worktree を外す" test ! -e "$H/brain-review"
 check "もう戻すものは無い" sh -c "! HOME='$H' bash '$KIT/install.sh' --rollback </dev/null"
 new "$H" --update --yes </dev/null >"$H.up2" 2>&1
-check "戻したあと、もう一度更新できる" grep -q '"version": 10' "$H/brain/.brain-kit/config.json"
+check "戻したあと、もう一度更新できる" grep -q "\"version\": $KV" "$H/brain/.brain-kit/config.json"
 
 # ------------------------------------------------------------------ 6. v8 → v10（英語の名前）
 section "v8 → v10（英語の名前）"

@@ -2,7 +2,7 @@
 
 更新（`./install.sh --update`）の最後に、上がった版より新しい節だけが出る。版は `VERSION`、brain には `.brain-kit/config.json` に記録される。
 
-## 次の版（作業中）
+## v11
 
 - 衝突資料に持ち主の agent・道具の名前と重なり・改名案を追加。所有ディレクトリには新しい kit の skill を書かず、dry-run と更新の最後にも知らせる
 - `--resolve` でマージ結果・今の編集・今のままを記録。settings.json も衝突項目だけ受け入れた kit の sha を記録し、次の更新で再衝突させない
