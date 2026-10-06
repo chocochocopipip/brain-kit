@@ -128,7 +128,12 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
 ```bash
 npx github:chocochocopipip/brain-kit --update --dry-run    # 何が変わるかを見る（何も変えない）
 npx github:chocochocopipip/brain-kit --update              # 上げる
-npx github:chocochocopipip/brain-kit --rollback            # 直前の更新を戻す
+npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か更新を戻す
+./install.sh --resolve <file> --from <merged file> --dry-run
+./install.sh --resolve <file> --from <merged file>
+./install.sh --resolve <file>                            # 今の編集済みファイル
+./install.sh --resolve --keep <file>                     # 今の内容を保つ
+./install.sh --resolve ~/.claude/settings.json --from <merged file>
 ```
 
 clone してあるなら `git pull && ./install.sh --update`。
@@ -138,11 +143,14 @@ clone してあるなら `git pull && ./install.sh --update`。
 - **今の版を見分ける**：`~/brain/.brain-kit/config.json` があればそれ。v1〜v9 のように記録が無ければ、kit のファイルの形から判定し、最初の更新で記録を書く
 - **名前は引き継ぐ**：相棒と開発は今の名前の skill・領域をそのまま使う。新しく足すレビューとリリースの 2 人だけ名前を聞く（`--review <名前> --release <名前>`、英字でなければ `--review-id` `--release-id` も）
 - **base と比較する**：最後に入れた kit の原文を、各 manifest の隣の `base/` に保存する。kit だけが変わったファイルは更新し、持ち主だけが変えたものは触らない
-- **両方が変わったら衝突**：元のファイルを残し、`<file>.new` と `~/.claude/brain-kit/conflicts/<日時>/` に差分・機械マージ候補を置く。候補は自動適用しない。`.new` と比較して編集し、済んだら `.new` を消す。明示的に kit 版を選ぶなら `--edited new`（退避あり）。既定と `--edited keep` は衝突を残す。衝突が 1 件でもあれば、更新（と `--dry-run`）の最後に件数と `.new` の一覧を必ず出す。前の更新の `.new` が残っていて新しい版と違えば、止めずに今回の新しい版で置き換える（前の `.new` は退避に残り、`--rollback` で戻る）
+- **両方が変わったら衝突**：元のファイルを残し、`<file>.new` と `~/.claude/brain-kit/conflicts/<日時>/` に差分・機械マージ候補を置く。候補は自動適用しない。相棒と計画を確認し、`--resolve` で編集結果を記録する（`.new` も退避して消す）。明示的に kit 版を選ぶなら `--edited new`（退避あり）。既定と `--edited keep` は衝突を残す。衝突が 1 件でもあれば、更新（と `--dry-run`）の最後に件数と `.new` の一覧を必ず出す。前の更新の `.new` が残っていて新しい版と違えば、止めずに今回の新しい版で置き換える（前の `.new` は退避に残り、`--rollback` で戻る）
 - **settings.json も項目ごとに比較する**：最後に入れた JSON の sha を機械側の manifest に記録する。フックの command 変更も元の位置で更新し、持ち主が編集・削除した項目と kit の変更が重なれば触らず、件数と現在・記録 sha・kit の JSON を衝突資料に出す。既存の Codex 設定は `--codex` 無しでも保持する。`--dry-run` で追加・更新・削除・衝突・残す項目を確認でき、`--rollback` で設定も元のバイトに戻る
+- **相棒への引き継ぎ**：資料には持ち主が足した skills・agents・hooks・plugins・marketplaces の名前と、kit の人格・skill との名前の重なり・改名案も載る。中身は読まない。相棒が意味を合わせ、ファイルごとに残す変更・取り込む直し・コマンドを示し、全体の計画への持ち主の OK を待つ。役割・権限・削除・お金・本番・迷うものは持ち主が決める
+- **所有ディレクトリとの重なり**：記録のある環境では、kit 未登録の skill ディレクトリに書かない。持ち主が別名に移したあと再更新すれば kit の skill を追加できる。名前だけの重なりは更新を止めず、最後に件数・一覧・資料の場所を出す
+- **解消を記録する**：`--resolve <file> --from <merged file>`、`--resolve <file>`（今の編集結果）、`--resolve --keep <file>` の 3 通り。`~/.claude/settings.json` も同じ形で指定でき、衝突した項目だけ記録する。どれも `--dry-run` で差分と記録を確認できる。ファイルの base は kit の版、解消結果は別の sha として記録するため、同じ kit の次の更新では持ち主の変更として残る
 - **kit から外れたもの**：未変更なら退避して削除。持ち主が変えたものは残し、管理の記録を外す
-- **`--dry-run`**：各分類と差分を出すだけ。base・`.new`・bundle・退避も書かない。差分だけ追加表示するなら `--diff`
-- **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--rollback` で直前の更新を戻す（上げたものを戻し、足したものを消し、作った worktree を外す。GitHub のラベルは消さない）。brain にはどちらもコミットが 1 つ残る
+- **`--dry-run`**：各分類と差分、持ち主の道具の件数・名前と重なりを出すだけ。base・`.new`・bundle・退避も書かない。差分だけ追加表示するなら `--diff`
+- **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--resolve` も 1 回ごとに退避する。`--rollback` は最後の解消から順に戻し、その次に更新を戻す（ファイル・`.new`・base・manifest・settings.json も元のバイトに戻る。上げたものを戻し、足したものを消し、作った worktree を外す。GitHub のラベルは消さない）。brain にはどちらもコミットが 1 つ残る
 - 最後に、上がった版の変更点（`CHANGELOG.md` の該当の節）と、新しく使えるもの（レビュー・リリース・工程表）の始め方を出す
 - 2 回目の `--update` は何も変えない
 
@@ -228,6 +236,7 @@ Claude の Artifact（`db` の capability）で、中身は相棒が節目に書
 | `~/brain`（brain-kit が前の版で入っている） | `install.sh` は止まって `--update` を案内する（上の「更新のしかた」）。 |
 | `~/brain`（brain-kit ではない自前の vault） | `install.sh` は止まる。`--brain-merge`（対話なら「骨格を足す？」）で**無いディレクトリ・無いファイルだけ**足す。既存ファイルは一切上書きしない。`README.md` `CLAUDE.md` など同名の `.md` があり**中身が違うとき**だけ `<名前>.brain-kit.md` として横に置く（同一なら何もしない）。git リポジトリなら足した分だけコミット。途中で落ちても同じコマンドで再実行すれば続きから進む |
 | `~/.claude/CLAUDE.md` `skills/*` `hooks/*` | `~/.claude/backup-brain-kit-<日時>/` に退避してから、上書きするか 1 つずつ聞く（`--yes` で上書き） |
+| 更新時の kit 未登録 skill・agent・道具 | 名前だけを一覧に出し、中身は読まない。所有 skill ディレクトリには書かず、改名案を資料に残す。 |
 | `~/.claude/settings.json` | 丸ごと上書きせず、kit のフック・plugin／marketplace キー・kit が入れた `statusLine` を項目ごとに記録。kit だけの変更は同じ位置で更新し、未変更の廃止項目は削除。持ち主の項目と順序は保ち、両方の変更は衝突として残す。`permissions` は無いときだけ最小例を足し、以後は触らない |
 | Orca（`/opt/Orca/orca-ide` か `orca-ide` コマンド） | `setup-base.sh` はダウンロードと apt を飛ばし、バージョンを表示して `ldd` の不足だけ確認。systemd unit は無ければ作る、あって内容が違えば中身と差分を表示して置き換えるか聞く（`--yes` では既存を維持、`--replace-units` で置き換え。置き換え時は `.bak` を残す） |
 | Tailscale / Claude Code / gh / node | あればバージョンを表示してスキップ、無ければ入れる |

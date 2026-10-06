@@ -4,6 +4,7 @@
 
   kit.py install  [名前などの引数]      新しく入れる
   kit.py update   [--dry-run] [...]    kit のものだけを新しい版に上げる（持ち主のものには触らない）
+  kit.py resolve  --target <file>     確認した解消結果を退避して記録する
   kit.py rollback                      直前の更新（か install）を戻す
   kit.py doctor                        何も変えずに状態を表で出す
 
@@ -276,7 +277,9 @@ def owner_files(cfg):
             if src_rel in kits:
                 continue
             flags = ["render"] if name.endswith(".md") else []
-            rows.append((src_rel, os.path.join(cfg["brain"], *(out_parts + [name])), flags))
+            # npm は .gitignore という名前をパッケージに入れないので、点なしで持って書くときに戻す
+            out_name = ".gitignore" if not parts and name == "gitignore" else name
+            rows.append((src_rel, os.path.join(cfg["brain"], *(out_parts + [out_name])), flags))
     return rows
 
 
@@ -428,10 +431,13 @@ def legacy_marks(cfg):
 # ------------------------------------------------------------------ 名前を決める
 def id_taken_by_other(pid, cfg_manifest):
     """~/.claude/skills/<id> が kit のもの以外で既に使われているか。"""
-    p = os.path.join(CLAUDE, "skills", pid, "SKILL.md")
-    if not os.path.exists(p):
-        return False
-    return os.path.join(".claude", "skills", pid, "SKILL.md") not in (cfg_manifest.get("files") or {})
+    p = os.path.join(CLAUDE, "skills", pid)
+    return os.path.isdir(p) and bool(os.listdir(p)) and not claude_dir_owned("skills", pid, cfg_manifest)
+
+
+def claude_dir_owned(part, name, manifest):
+    prefix = ".claude/%s/%s/" % (part, name)
+    return any(key.startswith(prefix) for key in manifest.get("files", {}))
 
 
 def choose_persona(role, args, used_ids, cmanifest, fixed=None):
@@ -486,20 +492,33 @@ def settings_entries(obj):
     return entries
 
 
+def settings_get(obj, entry):
+    """settings の JSON から kit の項目（イベントと command／キー）の値を取る。無ければ None。"""
+    part, key = entry
+    if part.startswith("hooks."):
+        return next((g for g in obj.get("hooks", {}).get(part[6:], [])
+                     if any(h.get("command") == key for h in g.get("hooks", []))), None)
+    if part == "statusLine":
+        return obj.get(part)
+    return obj.get(part, {}).get(key)
+
+
 def settings_name(entry):
     part, key = entry
     return part + (": " + key[:60] if part.startswith("hooks.") else "." + key if key else "")
 
 
-def plan_settings(codex=False, manifest=None):
+def plan_settings(codex=False, manifest=None, text=None):
     path = os.path.join(CLAUDE, "settings.json")
-    raw = read_text(path)
+    raw = read_text(path) if text is None else text
     cur = {}
     if raw is not None:
         try:
             cur = json.loads(raw)
         except ValueError as e:
             die("%s が JSON として読めない: %s" % (path, e))
+        if not isinstance(cur, dict):
+            die("settings.json は JSON オブジェクトにする", 2)
     manifest = manifest or {}
     record = {}
     for part, values in manifest.get("settings", {}).items():
@@ -524,11 +543,13 @@ def plan_settings(codex=False, manifest=None):
     snip = load_json(os.path.join(KIT, "claude/settings.snippet.json"))
     theirs = settings_entries(snip)
     extra = settings_entries(load_json(os.path.join(KIT, "claude/settings.codex.json")))
-    if codex or any(e in record for e in extra) or (
+    # 前の更新で衝突になり、まだ --resolve していない項目。kit の値と一致するまで、足す・上げる・外すをしない
+    pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
+    if codex or any(e in record or e in pending for e in extra) or (
             "settings" not in manifest and any(current(e) is not absent for e in extra)):
         theirs.update(extra)
     plan = {"path": path, "raw": raw, "record": {}, "add": [], "update": [],
-            "remove": [], "keep": [], "conflict": []}
+            "remove": [], "keep": [], "conflict": [], "theirs": theirs}
     owned = dict(record)
 
     def change(entry, value, old):
@@ -557,37 +578,41 @@ def plan_settings(codex=False, manifest=None):
                 dst[key] = value
 
     def conflict(entry, old, rec, new, reason="両方が変えた"):
-        plan["conflict"].append({"name": settings_name(entry), "reason": reason,
+        plan["conflict"].append({"entry": entry, "name": settings_name(entry), "reason": reason,
                                  "ours": None if old is absent else old, "recorded": rec,
                                  "theirs": None if new is absent else new})
 
     # 同じイベントで消えた command と増えた command が 1 つずつなら、command の変更として対応付ける。
     # 複数あると対応が決まらないので、どれも触らずに衝突として出す（古い記録は残し、新しいものは足さない）。
     paired = set()
-    for part in dict.fromkeys(e[0] for e in record if e[0].startswith("hooks.")):
-        removed = [e for e in record if e[0] == part and e not in theirs]
+    # 解消待ちの未登録のフック（持ち主が消したもの・変えたもの）も、command の変更の元として数える
+    known = list(record) + [e for e in sorted(pending) if e not in record]
+    for part in dict.fromkeys(e[0] for e in known if e[0].startswith("hooks.")):
+        removed = [e for e in known if e[0] == part and e not in theirs]
         added = [e for e in theirs if e[0] == part and e not in record and current(e) is absent]
         if not removed or not added:
             continue
         if len(removed) > 1 or len(added) > 1:
             paired.update(removed + added)
             for e in removed:
-                conflict(e, current(e), record[e], absent, "command の変更が複数あり対応が決まらない")
+                conflict(e, current(e), record.get(e), absent, "command の変更が複数あり対応が決まらない")
             for e in added:
                 conflict(e, absent, None, theirs[e], "command の変更が複数あり対応が決まらない")
             continue
         for old_entry, new_entry in zip(removed, added):
             paired.update((old_entry, new_entry))
-            old, new, rec = current(old_entry), theirs[new_entry], record[old_entry]
-            if old is not absent and settings_sha(old) == rec:
+            old, new, rec = current(old_entry), theirs[new_entry], record.get(old_entry)
+            if old is not absent and rec is not None and settings_sha(old) == rec and \
+                    old_entry not in pending and new_entry not in pending:
                 change(old_entry, new, old)
-                owned.pop(old_entry)
+                owned.pop(old_entry, None)
                 owned[new_entry] = settings_sha(new)
                 plan["update"].append(settings_name(new_entry))
             else:
                 # 古い記録は残す（消すと次の更新で新しい command を未登録として足してしまう）。
                 conflict(old_entry, old, rec, new,
                          "持ち主が消した／kit が変えた" if old is absent else "持ち主が変えた／command が変わった")
+                conflict(new_entry, current(new_entry), None, new, "command の変更先（元の項目と一緒に確認する）")
 
     for entry in dict.fromkeys(list(theirs) + list(record)):
         if entry in paired:
@@ -596,6 +621,16 @@ def plan_settings(codex=False, manifest=None):
         old_sha = settings_sha(old) if old is not absent else None
         new_sha = settings_sha(new) if new is not absent else None
         name = settings_name(entry)
+        # 持ち主が手で消しても「足す」にしない。理由は最初の衝突と同じ言葉にする（資料を作り直さない）
+        if entry in pending and new is absent:
+            owned.pop(entry, None)            # kit から外れた。解消待ちのものは消さず、持ち主のものとして残す
+            if old is not absent:
+                plan["keep"].append(name)
+            continue
+        if entry in pending and old_sha != new_sha:
+            conflict(entry, old, rec, new, "未登録の項目と kit が違う" if rec is None else
+                     "持ち主が消した／kit が変えた" if old is absent else "両方が変えた")
+            continue
         if rec is None:
             if old is absent:
                 change(entry, new, old)
@@ -639,9 +674,9 @@ def plan_settings(codex=False, manifest=None):
 
 # ------------------------------------------------------------------ 計画（何を足す・上げる・触らない）
 class Item(object):
-    def __init__(self, kind, src, dst, flags, new):
+    def __init__(self, kind, src, dst, flags, new, read_current=True):
         self.kind, self.src, self.dst, self.flags, self.new = kind, src, dst, flags, new
-        self.cur = read_text(dst) if os.path.exists(dst) else None
+        self.cur = read_text(dst) if read_current and os.path.exists(dst) else None
         self.exists = os.path.exists(dst)
         self.state = None
         self.choice = None
@@ -663,12 +698,26 @@ def base_path(dst, cfg):
     return os.path.join(root, "base", key)
 
 
+def skill_dir(dst):
+    prefix = os.path.join(CLAUDE, "skills") + os.sep
+    return dst[len(prefix):].split(os.sep)[0] if dst.startswith(prefix) else None
+
+
 def build_plan(cfg, manifests, legacy, fps, mode="update"):
     """base・持ち主・kit を比較する。install の確認は従来どおり。"""
     items = []
     lt = legacy_marks(cfg) if legacy else None
     for src, dst, flags in load_kitfiles(cfg):
-        it = Item("kit", src, dst, flags, source_text(src, cfg, flags))
+        directory = skill_dir(dst)
+        collision = (mode == "update" and "files" in manifests["claude"] and directory and
+                     os.path.isdir(os.path.join(CLAUDE, "skills", directory)) and
+                     bool(os.listdir(os.path.join(CLAUDE, "skills", directory))) and
+                     not claude_dir_owned("skills", directory, manifests["claude"]))
+        it = Item("kit", src, dst, flags, source_text(src, cfg, flags), read_current=not collision)
+        if collision:
+            it.state, it.base = "collision", None
+            items.append(it)
+            continue
         where, key = manifest_key(dst, cfg)
         ent = (manifests[where].get("files") or {}).get(key)
         bp = base_path(dst, cfg)
@@ -721,7 +770,7 @@ def build_plan(cfg, manifests, legacy, fps, mode="update"):
     for src, dst, flags in owner_files(cfg):
         if dst in dropped:
             continue
-        it = Item("owner", src, dst, flags, None)
+        it = Item("owner", src, dst, flags, None, read_current=False)
         it.state = "keep" if it.exists else "add"
         if it.state == "add":
             it.new = io.open(os.path.join(KIT, src), "rb").read()
@@ -746,6 +795,73 @@ def diff_count(a, b):
     return plus, minus
 
 
+def owner_inventory(cfg, manifests, items, sett_record):
+    """kit の外は名前だけ集める。設定は JSON のキーと command だけを見る。"""
+    inventory = {part: [] for part in ("skills", "agents", "hooks", "plugins", "marketplaces")}
+    manifest = manifests["claude"]
+    planned = {skill_dir(it.dst) for it in items if it.kind == "kit" and it.state != "dropped"}
+    for part in ("skills", "agents"):
+        root = os.path.join(CLAUDE, part)
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            if claude_dir_owned(part, name, manifest) or ".claude/%s/%s" % (part, name) in manifest.get("files", {}):
+                continue
+            if part == "skills" and (name in planned or not os.path.isdir(os.path.join(root, name))):
+                continue
+            inventory[part].append(name)
+    known = set()
+    for part, keys in sett_record.items():
+        if part != "statusLine":
+            known.update((part, key) for key in keys)
+    for snippet in ("settings.snippet.json", "settings.codex.json"):
+        known.update(settings_entries(load_json(os.path.join(KIT, "claude", snippet), {})))
+    cur = load_json(os.path.join(CLAUDE, "settings.json"), {}) or {}
+    hooks = set()
+    for event, groups in cur.get("hooks", {}).items():
+        for group in groups:
+            for hook in group.get("hooks", []):
+                command = hook.get("command")
+                if isinstance(command, str) and ("hooks." + event, command) not in known:
+                    hooks.add(("hooks." + event, command))
+    inventory["hooks"] = [part + ": " + command for part, command in sorted(hooks)]
+    for part, label in (("enabledPlugins", "plugins"), ("extraKnownMarketplaces", "marketplaces")):
+        inventory[label] = sorted(key for key in cur.get(part, {}) if (part, key) not in known)
+    return inventory
+
+
+def name_collisions(cfg, items, inventory):
+    names = {p[key].lower() for p in cfg["personas"].values() for key in ("id", "name")}
+    names.update(skill_dir(it.dst).lower() for it in items
+                 if it.kind == "kit" and it.state != "dropped" and skill_dir(it.dst))
+    collisions = []
+    for part in ("skills", "agents"):
+        for name in inventory[part]:
+            stem = (os.path.splitext(name)[0] if part == "agents" and
+                    not os.path.isdir(os.path.join(CLAUDE, part, name)) else name)
+            if stem.lower() in names:
+                collisions.append("%s/%s: 持ち主の方を %s-own に改名するか、役割を統合するか、相棒と持ち主で決める"
+                                  % (part, name, stem))
+    for it in items:
+        if it.state == "collision":
+            collisions.append("%s: 持ち主の方を別名に移すか、kit の方を使わないか（この場所には書かない）" % tilde(it.dst))
+    return collisions
+
+
+def inventory_lines(inventory):
+    return ["%s: %d 件（%s）" % (part, len(names), "、".join(names) or "なし")
+            for part, names in inventory.items()]
+
+
+def print_collisions(collisions, bundle):
+    if collisions:
+        print("名前の重なり: %d 件" % len(collisions))
+        for line in collisions:
+            print("  " + line)
+        if bundle:
+            print("衝突の資料: %s" % tilde(bundle))
+
+
 # ------------------------------------------------------------------ 退避と戻し
 class Backup(object):
     def __init__(self, kind, meta):
@@ -754,7 +870,8 @@ class Backup(object):
         while os.path.exists(self.dir):
             n += 1
             self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s-%d" % (STAMP, n))
-        self.meta = dict(meta, kind=kind, stamp=STAMP, overwritten=[], added={}, worktrees=[], rolled_back=False)
+        self.meta = dict(meta, kind=kind, stamp=STAMP, created=datetime.datetime.now().isoformat(timespec="microseconds"),
+                         overwritten=[], added={}, worktrees=[], rolled_back=False)
         self.opened = False
 
     def _open(self):
@@ -772,19 +889,36 @@ class Backup(object):
             os.makedirs(os.path.dirname(dst))
         shutil.copy2(path, dst)
         self.meta["overwritten"].append(path)
+        self._journal()
 
     def added(self, path, text):
         self._open()
         self.meta["added"][path] = sha(text)
+        self._journal()
 
     def worktree(self, path, branch, new_branch):
         self._open()
         self.meta["worktrees"].append({"path": path, "branch": branch, "new_branch": new_branch})
+        self._journal()
+
+    def _journal(self):
+        """書き換えの前に meta.json を書く。途中で落ちても --rollback がこの退避を拾えるように。"""
+        write_atomic(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
 
     def close(self):
         if self.opened:
-            write_text(os.path.join(self.dir, "meta.json"), dump_json(self.meta))
+            self._journal()
         return self.dir if self.opened else None
+
+
+def write_atomic(path, text):
+    """隣の一時ファイルに書いてから置き換える。書きかけで落ちても前の内容が残る。"""
+    tmp = path + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def put(path, text, backup, exe=False):
@@ -947,9 +1081,9 @@ def apply_items(items, cfg, backup, args, mode):
     return written, kept
 
 
-def write_conflicts(items, cfg, backup, settings=()):
+def write_conflicts(items, cfg, backup, settings=(), inventory=None, collisions=()):
     """同じ衝突は既存の bundle を再利用する。候補は実ファイルへ戻さない。"""
-    if not items and not settings:
+    if not items and not settings and not collisions:
         return None
     files = {}
     notes = ["# 更新の衝突\n"]
@@ -992,6 +1126,20 @@ def write_conflicts(items, cfg, backup, settings=()):
             notes.append("\n### %s\n\n%s\n" % (entry["name"], entry["reason"]))
             for title, key in (("現在（ours）", "ours"), ("記録した sha", "recorded"), ("kit（theirs）", "theirs")):
                 notes.append("\n%s\n\n```json\n%s```\n" % (title, dump_json(entry[key])))
+    notes.append("\n## 持ち主が足した agent と道具（kit の外。中身は読んでいない）\n\n")
+    notes.extend("- " + line + "\n" for line in inventory_lines(inventory or {
+        part: [] for part in ("skills", "agents", "hooks", "plugins", "marketplaces")}))
+    notes.append("\n## 名前の重なり\n\n")
+    notes.extend("- " + line + "\n" for line in (collisions or ["なし"]))
+    notes.append("\n## 解き方\n\n相棒と資料を読み、書く前に全体の計画を持ち主に見せて OK をもらう。"
+                 "まず同じコマンドに --dry-run を付けて確かめる。\n\n"
+                 "```bash\n./install.sh --resolve <file> --from <merged file>\n"
+                 "./install.sh --resolve <file>   # 今の編集済みファイルを結果にする\n"
+                 "./install.sh --resolve --keep <file>\n"
+                 "./install.sh --resolve ~/.claude/settings.json --from <merged file>\n"
+                 "./install.sh --resolve ~/.claude/settings.json\n"
+                 "./install.sh --resolve --keep ~/.claude/settings.json\n```\n\n"
+                 "./install.sh --rollback は最後の resolve から先に戻し、次に更新を戻す。\n")
     files["README.md"] = "".join(notes)
     root = os.path.join(KIT_STATE, "conflicts")
     if os.path.isdir(root):
@@ -1053,6 +1201,9 @@ def update_manifests(items, cfg, manifests):
             files[key] = {"sha": sha(it.new)}
         elif it.state == "dropped":
             files.pop(key, None)
+        elif it.state == "conflict":
+            # 旧版から引き継いだ未解消の kit も登録し、次回に所有ディレクトリと取り違えない。
+            files.setdefault(key, {"sha": ""})
         elif it.choice == "keep" and it.state == "edited":
             ent = dict(files.get(key) or {})
             ent["declined"] = sha(it.new)
@@ -1101,6 +1252,7 @@ def print_plan(items, sett, wts, dry, verbose_diff):
         ("手で直したもの（kit。上書きせずに聞く）", rows("kit", "edited")),
         ("持ち主だけが変えたもの（触らない）", rows("kit", "owner")),
         ("両方が変えたもの（衝突。<file>.new を置く）", rows("kit", "conflict")),
+        ("持ち主のディレクトリと重なるもの（書かない）", rows("kit", "collision")),
         ("kit から外れたもの（消す・残す）", rows("kit", "dropped")),
         ("足すもの（持ち主の領域の骨格。無いものだけ）", rows("owner", "add")),
     ]
@@ -1343,9 +1495,15 @@ def cmd_update(args):
     fps = load_fingerprints() if legacy else {}
     items = build_plan(cfg, manifests, legacy, fps)
     sett = plan_settings(args.codex, manifests["claude"])
+    inventory = owner_inventory(cfg, manifests, items, manifests["claude"].get("settings", {}))
+    collisions = name_collisions(cfg, items, inventory)
     wts = [] if args.no_worktrees else plan_worktrees(cfg, WORKTREE_ROLES)
     print_plan(items, sett, wts, dry, args.diff or dry)
     if dry:
+        print("持ち主が足した agent と道具（名前だけ）:")
+        for line in inventory_lines(inventory):
+            print("  " + line)
+        print_collisions(collisions, None)
         if cfg.get("repos"):
             ensure_labels(cfg, True)
         print()
@@ -1360,10 +1518,15 @@ def cmd_update(args):
 
     backup = Backup("update", {"brain": cfg["brain"], "from": v_from, "to": VERSION})
     written, kept = apply_items(items, cfg, backup, args, "update")
-    bundle = write_conflicts(kept, cfg, backup, sett["conflict"])
     if sett["changed"]:
         put(sett["path"], sett["new"], backup)
     manifests["claude"]["settings"] = sett["record"]
+    # 衝突した項目を覚えておく（持ち主が手で消したあとの --resolve でも、どの項目だったか分かるように）
+    pending = sorted({tuple(c["entry"]) for c in sett["conflict"]})
+    if pending:
+        manifests["claude"]["settings_conflicts"] = [list(e) for e in pending]
+    else:
+        manifests["claude"].pop("settings_conflicts", None)
     # 版の記録（無ければ最初の更新で書く）
     cfg["version"] = VERSION
     cfg["updated_at"] = TODAY
@@ -1373,6 +1536,9 @@ def cmd_update(args):
         cfg["history"].pop()            # 何も変わらない 2 回目の更新は記録も増やさない
         cfg["updated_at"] = (load_json(config_path(cfg["brain"])) or {}).get("updated_at", TODAY)
     update_manifests(items, cfg, manifests)
+    inventory = owner_inventory(cfg, manifests, items, sett["record"])
+    collisions = name_collisions(cfg, items, inventory)
+    bundle = write_conflicts(kept, cfg, backup, sett["conflict"], inventory, collisions)
     before = {p: read_text(p) for p in (config_path(cfg["brain"]), brain_manifest_path(cfg["brain"]), CLAUDE_MANIFEST)}
     new_state = {config_path(cfg["brain"]): dump_json(cfg), brain_manifest_path(cfg["brain"]): dump_json(manifests["brain"]),
                  CLAUDE_MANIFEST: dump_json(manifests["claude"])}
@@ -1408,6 +1574,7 @@ def cmd_update(args):
             print_new_roles(cfg, new_roles)
     print_conflicts(kept, bundle)
     print_settings_conflicts(sett, bundle)
+    print_collisions(collisions, bundle)
 
 
 def print_settings_conflicts(sett, bundle):
@@ -1430,7 +1597,7 @@ def print_conflicts(kept, bundle):
         print("  %s.new%s" % (tilde(it.dst), note))
     if bundle:
         print("衝突の資料: %s" % tilde(bundle))
-    print("<file> と <file>.new を比べて直し、済んだら .new を消す。kit の版にするなら --update --edited new（退避あり）。")
+    print("相棒と資料を読んで計画を確認し、--resolve で解消する。kit の版にするなら --update --edited new（退避あり）。")
 
 
 def print_new_roles(cfg, roles):
@@ -1447,7 +1614,137 @@ def print_new_roles(cfg, roles):
     print("  続けて /setup で、足した人格の節（規準・手順・任せる範囲）を埋める")
 
 
+# ------------------------------------------------------------------ resolve
+def cmd_resolve(args):
+    if not args.target:
+        die("--resolve に対象のファイルが要る", 2)
+    if args.keep and args.from_file:
+        die("--keep と --from は一緒に使えない", 2)
+    target = os.path.abspath(os.path.expanduser(args.target))
+    cman = load_json(CLAUDE_MANIFEST, {}) or {}
+    cfg, _, _, legacy = resolve_config(args, cman)
+    if cfg is None:
+        die("brain-kit が入っていない。先に install か --update を実行する", 2)
+    if legacy:
+        # 版の記録が無い入れ方で一部だけ記録すると、次の更新が kit の skill を持ち主のものと取り違える
+        die("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する", 2)
+    manifests = load_manifests(cfg["brain"])
+    # macOS の /var → /private/var のように、cwd と HOME でディレクトリの書き方が違っても見つける。
+    # ファイル名の symlink はたどらない（別のファイルを kit のファイルとして扱わない）
+    def same(a, b):
+        return (os.path.realpath(os.path.dirname(a)), os.path.basename(a)) == \
+            (os.path.realpath(os.path.dirname(b)), os.path.basename(b))
+    settings_path = os.path.join(CLAUDE, "settings.json")
+    settings = same(target, settings_path)
+    if settings:
+        target = settings_path
+    it = None
+    if settings:
+        if os.path.islink(target) and args.from_file:
+            # dotfiles などで symlink にしている人もいるので、書かない形（その場で直す・--keep）は受け付ける
+            die("settings.json は symlink。--from では書かない。指す先をその場で直して --resolve <file> か --keep を使う", 2)
+        if not os.path.isfile(target):
+            die("settings.json が無い。--resolve は今ある settings.json の衝突だけを扱う（作り直すなら --update）", 2)
+        sett = plan_settings(args.codex, manifests["claude"])
+        current = sett["raw"]
+        pending = {tuple(e) for e in manifests["claude"].get("settings_conflicts", [])}
+        if not sett["conflict"] and not pending and not args.from_file:
+            die("settings.json に衝突は無い", 2)
+    else:
+        items = build_plan(cfg, manifests, legacy, load_fingerprints() if legacy else {}, mode="update")
+        it = next((i for i in items if i.kind == "kit" and same(i.dst, target)), None)
+        if it is None:
+            die("kit のファイルではない。持ち主のファイルは kit では解消しない: %s" % tilde(target), 2)
+        if it.state in ("add", "dropped", "collision") or not (
+                it.state == "conflict" or os.path.exists(target + ".new")):
+            die("衝突ではない: %s" % tilde(target), 2)
+        if os.path.exists(target + ".new") and read_text(target + ".new") != it.new:
+            die(".new が今の kit と違う版。先に --update を実行する", 2)
+        if os.path.islink(it.dst):
+            die("%s は symlink。指す先は kit のものではないので、--resolve では書かない" % tilde(it.dst), 2)
+        current = it.cur
+        target = it.dst
+    result = read_text(os.path.abspath(os.path.expanduser(args.from_file))) if args.from_file else current
+    if result is None:
+        die("解消結果を UTF-8 で読めない", 2)
+    if not args.keep and re.search(r"^(<<<<<<< |>>>>>>> )", result, re.M):
+        die("解消結果に衝突マーカーが残っている", 2)
+    if settings:
+        # 書く前の衝突も残しておき、--from で一致した項目も受け入れた版を記録する。
+        after = plan_settings(args.codex, manifests["claude"], text=result)
+        record = manifests["claude"].setdefault("settings", {})
+        # 更新が覚えた衝突も含める（持ち主が項目を手で消すと、今の計画では「足す」に見えるため）
+        entries = pending | {tuple(c["entry"]) for c in sett["conflict"] + after["conflict"]}
+        # --from で変えた・消した kit の項目も、持ち主が決めたものとして記録する（次の更新で戻さない）
+        before_obj, result_obj = json.loads(current or "{}"), json.loads(result)
+        recorded = [(part, "") if part == "statusLine" else (part, key)
+                    for part, values in record.items() for key in ([""] if part == "statusLine" else values)]
+        entries |= {e for e in list(after["theirs"]) + recorded
+                    if settings_get(before_obj, e) != settings_get(result_obj, e)}
+        manifests["claude"].pop("settings_conflicts", None)
+        for part, key in sorted(entries):
+            value = after["theirs"].get((part, key))
+            if (part, key) in after["theirs"]:
+                if part == "statusLine":
+                    record[part] = settings_sha(value)
+                else:
+                    record.setdefault(part, {})[key] = settings_sha(value)
+            elif part == "statusLine":
+                record.pop(part, None)
+            elif part in record:
+                record[part].pop(key, None)
+                if not record[part]:
+                    record.pop(part)
+        mp = CLAUDE_MANIFEST
+        manifest = manifests["claude"]
+        detail = "settings.json の衝突項目だけ kit の sha を記録する（廃止項目は記録を外す）"
+    else:
+        where, key = manifest_key(target, cfg)
+        manifest = manifests[where]
+        manifest.setdefault("files", {})[key] = {"sha": sha(it.new), "merged": sha(result)}
+        mp = brain_manifest_path(cfg["brain"]) if where == "brain" else CLAUDE_MANIFEST
+        detail = "base と sha に kit の版、merged に解消結果の sha を記録する"
+    print("解消%s: %s" % ("（--dry-run）" if args.dry_run else "", tilde(target)))
+    if args.dry_run:
+        sys.stdout.write(diff_text(current, result, target))
+    print("  " + detail)
+    if it and os.path.exists(target + ".new"):
+        print("  .new を退避して消す: %s.new" % tilde(target))
+    if args.dry_run:
+        print("--dry-run なので何も変えていない。退避も作らない。")
+        return
+    backup = Backup("resolve", {"brain": cfg["brain"], "from": VERSION, "to": VERSION, "target": target})
+    if result != current:
+        put(target, result, backup, it.exe if it else False)
+    if it:
+        if os.path.exists(target + ".new"):
+            backup.save(target + ".new")
+            os.remove(target + ".new")
+        if read_text(base_path(target, cfg)) != it.new:
+            put(base_path(target, cfg), it.new, backup)
+    if read_text(mp) != dump_json(manifest):
+        put(mp, dump_json(manifest), backup)
+    if not backup.opened:
+        backup.save(mp)  # 同じ内容の --from でも、この解消を先に戻せるようにする。
+    # 今の内容をそのまま結果にしたときも、受け入れた中身を記録と一緒にコミットする
+    touched = list(backup.meta["overwritten"]) + list(backup.meta["added"]) + [target]
+    commit_brain(cfg, touched, "brain-kit: 更新の衝突を解消")
+    bdir = backup.close()
+    print("解消した: %s%s" % (tilde(target), "（今の内容を保った）" if result == current else ""))
+    if bdir:
+        print("退避: %s（--rollback でこの解消を戻せる）" % tilde(bdir))
+
+
 # ------------------------------------------------------------------ rollback
+def backup_order(meta, directory):
+    stamp = meta.get("stamp", "")
+    suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
+    created = meta.get("created")
+    if not created:
+        created = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S").isoformat(timespec="microseconds")
+    return created, int(suffix) if suffix.isdigit() else 1
+
+
 def cmd_rollback(args):
     cands = []
     if os.path.isdir(CLAUDE):
@@ -1455,7 +1752,7 @@ def cmd_rollback(args):
             if d.startswith("backup-brain-kit-"):
                 m = load_json(os.path.join(CLAUDE, d, "meta.json"))
                 if m and not m.get("rolled_back"):
-                    cands.append((m.get("stamp", ""), d, m))
+                    cands.append((backup_order(m, d), d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
     cands.sort()
@@ -1508,7 +1805,7 @@ def cmd_rollback(args):
         commit_brain({"brain": brain}, restored + removed, "brain-kit: 更新を戻した（%s）" % d)
     meta["rolled_back"] = True
     meta["rolled_back_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-    write_text(os.path.join(bdir, "meta.json"), dump_json(meta))
+    write_atomic(os.path.join(bdir, "meta.json"), dump_json(meta))
     print("戻した: %d 件、消した: %d 件、残した: %d 件。ラベルは消さない（GitHub 側はそのまま）。" % (len(restored), len(removed), len(left)))
 
 
@@ -1690,7 +1987,10 @@ def cmd_doctor(args):
 # ------------------------------------------------------------------ 入口
 def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
-    ap.add_argument("cmd", choices=["install", "update", "rollback", "doctor", "detect"])
+    ap.add_argument("cmd", choices=["install", "update", "resolve", "rollback", "doctor", "detect"])
+    ap.add_argument("--target")
+    ap.add_argument("--from", dest="from_file")
+    ap.add_argument("--keep", action="store_true")
     ap.add_argument("--brain", default=os.environ.get("BRAIN_DIR") or os.path.join(HOME, "brain"))
     for r in ROLES:
         ap.add_argument("--" + r, default=None)
@@ -1710,6 +2010,8 @@ def main(argv):
         cmd_install(args)
     elif args.cmd == "update":
         cmd_update(args)
+    elif args.cmd == "resolve":
+        cmd_resolve(args)
     elif args.cmd == "rollback":
         cmd_rollback(args)
     elif args.cmd == "doctor":
