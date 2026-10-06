@@ -1,11 +1,11 @@
 {
-  "name": "agent-brainkit",
+  "name": "brainkit-agents",
   "version": "11.0.0",
   "description": "Claude Code + brain (Obsidian vault) + Orca: a structure-only template for a memory-keeping partner and a dev agent",
   "license": "MIT",
   "private": false,
   "bin": {
-    "agent-brainkit": "bin/brain-kit.js"
+    "brainkit-agents": "bin/brain-kit.js"
   },
   "files": [
     "bin/",
