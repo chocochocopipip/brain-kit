@@ -5,7 +5,8 @@
 > **Quick start** (Linux / macOS / WSL — Windows itself is not supported, use WSL):
 > ```
 > git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
-> npx github:chocochocopipip/brain-kit --partner Hikari --dev Takumi --review Mio --release Sora
+> npx agent-brainkit --partner Hikari --dev Takumi --review Mio --release Sora                 # from npm
+> npx github:chocochocopipip/brain-kit --partner Hikari --dev Takumi --review Mio --release Sora   # or straight from GitHub
 > npx github:chocochocopipip/brain-kit --update --dry-run      # already installed (v1–v9 too): see what changes
 > npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
@@ -84,7 +85,8 @@ git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 ./install.sh --mode base  --partner Aoi --dev Ren --review Mio --release Sora    # 母艦の上で。最後に ./setup-base.sh が続く
 ./install.sh --brain-merge --partner Aoi --dev Ren --review Mio --release Sora   # brain-kit ではない自前の ~/brain に上乗せ
 ./install.sh --codex --partner Aoi --dev Ren --review Mio --release Sora         # ChatGPT／Codex の契約がある人（下の節）
-npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --release Sora   # clone せずに
+npx agent-brainkit --partner Aoi --dev Ren --review Mio --release Sora                    # clone せずに（npm から）
+npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --release Sora   # clone せずに（GitHub から）
 ```
 
 | 名前から作るもの | 相棒 | 開発 | レビュー | リリース |
@@ -121,11 +123,12 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 **Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` は macOS 標準の bash 3.2 でも動く書き方だけを使う。本体は `lib/kit.py`（Python 3.8 以上、標準ライブラリだけ）。bash 4 以降の機能・GNU 拡張・column は使っていない。任意の `heavy-lock` だけ awk を使う）。
 
-入ったか確かめる: `./install.sh --doctor`（`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／kit だけの更新待ち／足りない／持ち主の変更／衝突）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+入ったか確かめる: `./install.sh --doctor`（`npx agent-brainkit --doctor`・`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／kit だけの更新待ち／足りない／持ち主の変更／衝突）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
 
 ## 更新のしかた（すでに使っている人）
 
 ```bash
+npx agent-brainkit --update --dry-run                      # npm から。GitHub からなら下の 3 行
 npx github:chocochocopipip/brain-kit --update --dry-run    # 何が変わるかを見る（何も変えない）
 npx github:chocochocopipip/brain-kit --update              # 上げる
 npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か更新を戻す
@@ -281,7 +284,7 @@ Claude の Artifact（`db` の capability）で、中身は相棒が節目に書
 brain-kit/
 ├── README.md                 ← これ
 ├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
-├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。package.json / LICENSE(MIT)
+├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。npm のパッケージ名は agent-brainkit。package.json / LICENSE(MIT)
 ├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
 ├── lib/kit.py                ← 本体（install / --update / --rollback / --doctor）
 ├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）

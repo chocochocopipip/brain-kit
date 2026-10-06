@@ -1472,9 +1472,9 @@ section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
   mkdir -p "$TMP/pack"
   (cd "$KIT" && PATH="$(dirname "$NPM"):$PATH" "$NPM" pack --silent --pack-destination "$TMP/pack" >/dev/null 2>&1)
-  check "npm pack が tarball を作る" sh -c "ls '$TMP/pack'/brain-kit-*.tgz"
+  check "npm pack が tarball を作る" sh -c "ls '$TMP/pack'/agent-brainkit-*.tgz"
   # PATH を絞っているので gzip が無い。python3 で展開する
-  python3 -c 'import glob, sys, tarfile; tarfile.open(glob.glob(sys.argv[1] + "/brain-kit-*.tgz")[0]).extractall(sys.argv[1])' "$TMP/pack"
+  python3 -c 'import glob, sys, tarfile; tarfile.open(glob.glob(sys.argv[1] + "/agent-brainkit-*.tgz")[0]).extractall(sys.argv[1])' "$TMP/pack"
   check "tarball を展開できる（install.sh がある）" test -f "$TMP/pack/package/install.sh"
   check "tarball に tests は入らない" test ! -e "$TMP/pack/package/tests"
   H="$TMP/from-npm"; mkdir -p "$H"
