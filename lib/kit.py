@@ -1912,12 +1912,31 @@ def cmd_uninstall(args):
         os.remove(path)
         directories.add(os.path.dirname(path))
 
+    if settings_remove and settings_writable:
+        # settings.json を先に書く。退避してから書く直前にもう一度確かめ、隣の一時ファイルから置き換える
+        # （途中で落ちても元のバイトか書き終えた版のどちらかが残る。権限は元のまま）
+        text = json.dumps(cur, ensure_ascii=False, indent=2) + "\n"
+        backup.save(settings_path)
+        if open_bytes(settings_path) != settings_raw or not safe(settings_path):
+            # 何も変えていない退避なので、--rollback の対象にしない（持ち主の新しい settings.json を古い版で戻さない）
+            backup.meta.update(rolled_back=True, aborted=True)
+            backup._journal()
+            die("書く直前に settings.json が変わった。何も変えていない（--rollback は要らない）", 1)
+        backup.meta["written"][settings_path] = sha(text)
+        backup._journal()
+        fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=CLAUDE)
+        try:
+            with io.open(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, os.stat(settings_path).st_mode & 0o7777)
+            os.replace(tmp, settings_path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     for path in sorted(remove - {CLAUDE_MANIFEST}):
         drop(path)
-    if settings_remove and settings_writable:
-        text = json.dumps(cur, ensure_ascii=False, indent=2) + "\n"
-        backup.meta["written"][settings_path] = sha(text)
-        put(settings_path, text, backup)
     if CLAUDE_MANIFEST in remove:
         drop(CLAUDE_MANIFEST)
         directories.add(KIT_STATE)

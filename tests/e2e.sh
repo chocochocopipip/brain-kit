@@ -1486,6 +1486,7 @@ s['hooks']['SessionEnd'][0]['timeout'] = 987
 s['hooks']['Stop'].append({'hooks': [{'type': 'command', 'command': 'echo owner'}]})
 open(p, 'w').write(json.dumps(s, ensure_ascii=False, indent=2) + '\n')
 PY
+chmod 600 "$H/.claude/settings.json"
 before="$(snap "$H")"; own="$(owner_snap "$H" Aoi)"
 brain_before="$(snap "$H" | grep ' brain/')"
 head_before="$(git -C "$H/brain" rev-parse HEAD)"
@@ -1518,6 +1519,8 @@ assert not any('pr-review-toolkit' in k for k in s.get('enabledPlugins', {}))
 assert 'permissions' in s
 PY
 check "settings は持ち主の hook・変更・permissions を保ち kit の項目だけ削除" test $? -eq 0
+check "settings の権限（600）を保つ" python3 -c 'import os, sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o777 != 0o600)' "$H/.claude/settings.json"
+check "settings の一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
 check "持ち主の brain は同一" test "$own" = "$(owner_snap "$H" Aoi)"
 check "brain 全体（kit の記録も）は同一" test "$brain_before" = "$(snap "$H" | grep ' brain/')"
 check "brain HEAD は同一" test "$head_before" = "$(git -C "$H/brain" rev-parse HEAD)"
