@@ -185,7 +185,7 @@ for ((elapsed=0; ; elapsed++)); do
   for ((i=0; i<${#ids[@]}; i++)); do
     running "${ids[i]}" || missing=1
   done
-  [ "$missing" = 1 ] && [ "$elapsed" -lt "$seconds" ] || break
+  if [ "$missing" = 0 ] || [ "$elapsed" -ge "$seconds" ]; then break; fi
   sleep 1
 done
 if [ "$backend" = tmux ]; then
