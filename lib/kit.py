@@ -55,9 +55,10 @@ def set_lang(code):
     _LANG = code if code in LANG_NAMES else "ja"
 
 
-def M(msgid):
+def M(msgid, lang=None):
+    """表示文の翻訳。lang を渡すと、表示の言語ではなくその言語で返す（brain に書く中身は cfg の言語で作る）。"""
     global _CATALOG
-    if _LANG == "ja":
+    if (lang or _LANG) == "ja":
         return msgid
     if _CATALOG is None:
         _CATALOG = load_json(os.path.join(KIT, "i18n", "en", "messages.json"), {}) or {}
@@ -379,18 +380,19 @@ def gen_start_all(cfg):
 
 def gen_start(role, cfg):
     p = persona(cfg, role)
+    lang = cfg.get("lang", "ja")   # 中身は brain の言語（--lang で表示だけ変えても同じバイト）
     wt = worktree_of(cfg, role)
     lines = [
         "#!/usr/bin/env bash",
-        M("# %s（%s）を起動する。brain-kit が作った（--update で上がる。手で直すなら別名で写す）") % (p["name"], M(ROLE_JA[role])),
-        M("#   start-%s [claude に渡す引数...]") % p["id"],
+        M("# %s（%s）を起動する。brain-kit が作った（--update で上がる。手で直すなら別名で写す）", lang) % (p["name"], M(ROLE_JA[role], lang)),
+        M("#   start-%s [claude に渡す引数...]", lang) % p["id"],
         "set -u",
         'dir="%s"' % wt,
         '[ -d "$dir" ] || dir="%s"' % cfg["brain"],
         'cd "$dir" || exit 1',
     ]
     if role != "partner":
-        lines.append(M("# main の決定・規約を取り込んでから始める（衝突したら何もしない）"))
+        lines.append(M("# main の決定・規約を取り込んでから始める（衝突したら何もしない）", lang))
         lines.append('git merge -q --no-edit main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1')
     lines.append('exec claude "$@" "/%s"' % p["id"])
     return "\n".join(lines) + "\n"
@@ -1596,6 +1598,8 @@ def resolve_config(args, cman, quiet=False):
     cfg = load_json(config_path(brain))
     if cfg:
         cfg["brain"] = brain
+        # 言語の記録が無い brain は機械側の記録、それも無ければ日本語（中身を作る言語）
+        cfg.setdefault("lang", cman.get("lang") or "ja")
         v = cfg.get("version")
         return cfg, v, M("v%s（brain の .brain-kit/config.json）") % v, False
     info = detect_legacy(brain)
@@ -1623,7 +1627,8 @@ def cmd_update(args):
     cfg, v_from, desc, legacy = resolve_config(args, cman)
     if cfg is None:
         die(M("%s に brain-kit が見つからない。新しく入れるなら --update を付けずに実行する") % tilde(os.path.expanduser(args.brain)), 1)
-    old_lang = cfg.get("lang", "ja")
+    # 記録が無ければ機械側の記録、それも無ければ日本語（言語を選べるようになる前の入れ方）
+    old_lang = cfg.get("lang") or cman.get("lang") or "ja"
     cfg["lang"] = args.lang or old_lang
     if old_lang != cfg["lang"]:
         print(M("言語: %s → %s") % (language_name(old_lang), language_name(cfg["lang"])))
@@ -2489,13 +2494,15 @@ def cmd_doctor(args):
     cfg, v_from, desc, legacy = resolve_config(args, cman)
     brain = os.path.abspath(os.path.expanduser(args.brain))
 
+    # 表示の言語（--lang）ではなく、記録された持ち主の言語を出す
+    owner_lang = (cfg or {}).get("lang") or cman.get("lang") or "ja"
     recorded = []
-    if cfg and "lang" in cfg:
+    if "lang" in (load_json(config_path(brain), {}) or {}):
         recorded.append(tilde(config_path(brain)))
     if "lang" in cman:
         recorded.append(tilde(CLAUDE_MANIFEST))
     row(M("  言語"), True, M("%s（%s）; 記録: %s") % (
-        language_name(_LANG), _LANG, ", ".join(recorded) or M("未記録（既定 ja）")))
+        language_name(owner_lang), owner_lang, ", ".join(recorded) or M("未記録（既定 ja）")))
     rows.append((M("[版]"), "", ""))
     row(M("  kit（この手元）"), True, "v%d" % VERSION)
     if cfg is None:

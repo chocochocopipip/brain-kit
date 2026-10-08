@@ -239,6 +239,29 @@ check "Edited kit file unchanged" cmp "$HL.setup" "$HL/.claude/skills/setup/SKIL
 check "Edited kit file has English .new" grep -q "owner's own words" "$HL/.claude/skills/setup/SKILL.md.new"
 check "Conflict candidate contains no Japanese prose" no_japanese "$HL/.claude/skills/setup/SKILL.md.new"
 
+# 表示だけ英語にしても、作る中身（起動スクリプトなど）と記録は brain の言語のまま
+new "$HJ" --doctor >"$HJ.doctor-ja" 2>&1
+new "$HJ" --doctor --lang en >"$HJ.doctor-en" 2>&1
+check "Display override shows the recorded language" grep -q 'Language.*Japanese (ja)' "$HJ.doctor-en"
+check "Display override keeps kit files up to date" python3 - "$HJ.doctor-ja" "$HJ.doctor-en" <<'PY'
+import re, sys
+ja = re.search(r'最新\s+OK\s+(\d+) 件', open(sys.argv[1], encoding='utf-8').read())
+en = re.search(r'Up to date\s+OK\s+(\d+) files', open(sys.argv[2], encoding='utf-8').read())
+assert ja and en and ja.group(1) == en.group(1), (ja, en)
+PY
+# brain の記録に言語が無くても、機械側が English なら English を引き継ぐ
+python3 - "$HE/brain/.brain-kit/config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d.pop('lang', None)
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+git -C "$HE/brain" add -A && git -C "$HE/brain" commit -qm no-lang
+before="$(snap "$HE" | grep -v 'config.json$')"
+new "$HE" --update >"$HE.up2" 2>&1
+check "Machine manifest language is carried when config has none" grep -q '"lang": "en"' "$HE/brain/.brain-kit/config.json"
+check "Manifest fallback keeps English kit files" test "$before" = "$(snap "$HE" | grep -v 'config.json$')"
+check "Manifest fallback update output" no_japanese "$HE.up2"
+
 python3 - "$HE" <<'PY'
 import json, pathlib, sys, time
 p = pathlib.Path(sys.argv[1]) / '.claude/brain-kit/update-check.json'
