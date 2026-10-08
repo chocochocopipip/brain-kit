@@ -36,11 +36,18 @@ read_field() {
 # Owner language: the brain's config first, then the machine manifest, then Japanese
 # (the behavior before languages existed). Any read error falls through; never fails.
 OWNER_LANG="$(node -e '
+  // FIFO などが置かれていても待たない：非ブロッキングで開き、普通のファイルだけを 1 MiB まで読む
   const fs=require("fs");
   for (const p of process.argv.slice(1)) {
-    try { const l=JSON.parse(fs.readFileSync(p,"utf8")).lang;
+    let fd = null;
+    try {
+      fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      if (!fs.fstatSync(fd).isFile()) continue;
+      const buf = Buffer.alloc(1024 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      const l = JSON.parse(buf.subarray(0, n).toString("utf8")).lang;
       if (l === "en" || l === "ja") { process.stdout.write(l); process.exit(0); }
-    } catch {}
+    } catch {} finally { if (fd !== null) { try { fs.closeSync(fd); } catch {} } }
   }
   process.stdout.write("ja");
 ' "$BRAIN/.brain-kit/config.json" "$HOME/.claude/brain-kit/manifest.json" 2>/dev/null)" || OWNER_LANG=ja

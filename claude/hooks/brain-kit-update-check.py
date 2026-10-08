@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -90,10 +91,26 @@ def refresh(state):
                 write_cache(path, {"checked_at": cache["checked_at"], "latest": latest})
 
 
+def read_regular_json(path):
+    # FIFO などが置かれていても待たない：非ブロッキングで開き、普通のファイルだけを 1 MiB まで読む
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return json.loads(os.read(fd, 1024 * 1024).decode("utf-8"))
+    except Exception:
+        return None
+    finally:
+        os.close(fd)
+
+
 def owner_lang(manifest):
     # brain の記録が先、次に機械側の記録、どちらも読めなければ日本語（言語を選べる前の動き）
     brain = os.environ.get("BRAIN_DIR") or os.path.expanduser("~/brain")
-    for record in (read_json(os.path.join(brain, ".brain-kit", "config.json")), manifest):
+    for record in (read_regular_json(os.path.join(brain, ".brain-kit", "config.json")), manifest):
         lang = record.get("lang") if isinstance(record, dict) else None
         if lang in ("ja", "en"):
             return lang

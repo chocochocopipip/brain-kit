@@ -434,6 +434,26 @@ en ja en
 broken en en
 none none ja
 CASES
+  # 言語の記録が FIFO でも、フックは待たずに次の記録（機械側）へ進む
+  check "Hooks do not wait on a FIFO language record" python3 - "$TMP/lang-fifo" "$KIT" "$TMP/lang-hook-bin" "$TMP/lang-hook-input" <<'PY'
+import json, os, pathlib, subprocess, sys, time
+h, kit, hbin, inp = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+for d in ("brain/daily", "brain/.brain-kit", ".claude/brain-kit", ".claude/hooks"):
+    (h / d).mkdir(parents=True, exist_ok=True)
+os.mkfifo(str(h / "brain/.brain-kit/config.json"))
+(h / ".claude/brain-kit/manifest.json").write_text(json.dumps({"version": 11, "package_version": "11.0.0", "lang": "en"}))
+(h / ".claude/brain-kit/update-check.json").write_text(json.dumps({"checked_at": time.time(), "latest": "999.0.0"}))
+(h / ".claude/hooks/brain-digest.js").write_bytes((kit / "claude/hooks/brain-digest.js").read_bytes())
+env = dict(os.environ, HOME=str(h), PATH=hbin + os.pathsep + os.environ["PATH"], HOOK_PROMPT=str(h / "prompt"),
+           BRAIN_KIT_UPDATE_URL="file:///nonexistent")
+start = subprocess.run([sys.executable, str(kit / "claude/hooks/brain-kit-update-check.py")], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, env=env, timeout=10)
+assert b"brain-kit update notice:" in start.stdout, start.stdout
+with open(inp, "rb") as f:
+    end = subprocess.run(["bash", str(kit / "claude/hooks/session-end-brain.sh")], stdin=f, env=env, timeout=20)
+assert end.returncode == 0
+assert "### Done" in next((h / "brain/daily").iterdir()).read_text(encoding="utf-8")
+PY
 else
   printf '  skip SessionEnd の言語（node が無い。フック自体も node が要る）\n'
 fi
