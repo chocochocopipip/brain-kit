@@ -1622,10 +1622,14 @@ check "確認中に settings が変わると止まる" test $? -ne 0
 check "止まったとき settings は持ち主の書いたまま" grep -q '"owner": true' "$H/.claude/settings.json"
 check "止まったとき kit の skill は消えていない" test -f "$H/.claude/skills/aoi/SKILL.md"
 check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
-# 確認を待つ間に kit の skill を持ち主が書き換えたら、それは消さない
+# 確認を待つ間に kit の skill を持ち主が書き換えたら、計画が変わったので何も消さずに止まる
 { sleep 3; printf 'edited while waiting\n' >>"$H/.claude/skills/mio/SKILL.md"; echo y; } |
   BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race2" 2>&1
-check "確認中の書き換え: uninstall が 0" test $? -eq 0
+check "確認中の書き換え: 計画が変わったので止まる" test $? -ne 0
+check "確認中の書き換え: ほかの kit の skill も消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+# もう一度（新しい計画で）外す。書き換えた skill は「持ち主が変えた」として残る
+new "$H" --uninstall --yes >"$H.race2b" 2>&1
+check "もう一度の uninstall が 0" test $? -eq 0
 check "確認中に書き換えた skill は残す" grep -q 'edited while waiting' "$H/.claude/skills/mio/SKILL.md"
 check "ほかの kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 check "記録の無い base のファイルは残す" test -f "$H/.claude/brain-kit/base/owner-note.md"
@@ -1671,6 +1675,21 @@ def copy2(src, dst, *a, **k):
             f.write(data[: len(data) // 2])
         raise OSError("injected: copy failed")
     return real_copy2(src, dst, *a, **k)
+real_open_bytes = g["main"].__globals__["open_bytes"]   # run_path が返す g は写しなので、関数が見る方を差し替える
+def open_bytes(path):
+    # 1 MiB を超えるファイルを丸ごと読んだら落とす（大きなデータファイルを読み込まないことの確かめ）
+    if os.path.getsize(path) > 1024 * 1024:
+        raise MemoryError("read whole file over 1 MiB: %s" % path)
+    return real_open_bytes(path)
+real_split, real_shlex = g["shlex"].split, g["shlex"].shlex
+def split(line, *a, **k):
+    if len(line) > 4096:
+        raise MemoryError("shlex.split on a %d-char line" % len(line))
+    return real_split(line, *a, **k)
+def shlex_cls(line, *a, **k):
+    if isinstance(line, str) and len(line) > 4096:
+        raise MemoryError("shlex.shlex on a %d-char line" % len(line))
+    return real_shlex(line, *a, **k)
 real_journal = g["Backup"]._journal
 def journal(self):
     # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
@@ -1685,11 +1704,13 @@ def journal(self):
 patches = {"replace": [mock.patch.object(os, "replace", replace)],
            "race": [mock.patch.object(g["Backup"], "save", save)],
            "journal": [mock.patch.object(g["Backup"], "_journal", journal)],
-           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)]}[mode]
+           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)],
+           "bigread": [mock.patch.dict(g["main"].__globals__, {"open_bytes": open_bytes})],
+           "longline": [mock.patch.object(g["shlex"], "split", split), mock.patch.object(g["shlex"], "shlex", shlex_cls)]}[mode]
 for p in patches:
     p.start()
 try:
-    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--yes"])
+    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--dry-run"] if mode == "longline" else ["uninstall", "--yes"])
 except SystemExit as e:
     sys.exit(e.code or 0)
 except OSError as e:
@@ -1802,6 +1823,13 @@ ln -s ../brain-kit/automations/precheck.sh "$H/.claude/hooks/current.sh"
 printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-aoi" --help\n' >"$H/.claude/hooks/my hook.sh"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-ren" --help\n' >"$H/.claude/hooks/other hook.sh"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-sora" --help\n' >"$H/.claude/hooks/third hook.sh"
+# UTF-8 でない（Latin-1 のコメント）持ち主のスクリプト → kit の index.html を呼ぶ
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n# caf\351\ncat "$HOME/.claude/brain-kit/dashboard/index.html"\n' >"$H/.claude/hooks/latin1.sh"
+# 大きな（2 MiB）データファイルを名指しする持ち主のフック
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"x" * (2 * 1024 * 1024))' "$H/.claude/big.dat"
 printf "require('child_process').execFileSync('/usr/bin/env', ['python3', '%s/.claude/brain-kit/dashboard/shot.py']);\n" "$H" >"$H/.claude/hooks/helper.js"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
@@ -1815,6 +1843,9 @@ s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "nod
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/current.sh\""}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh \"$HOME/.claude/hooks/my hook.sh\""}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/other\\ hook.sh"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/third\\ hook.sh; echo done"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/latin1.sh"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "wc -c ~/.claude/big.dat"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1829,6 +1860,9 @@ check ".claude の中の symlink（current.sh → precheck.sh）越しに呼ぶ 
 check "symlink はそのまま" test -L "$H/.claude/hooks/current.sh"
 check "引用符の中の空白を含むパスの持ち主のスクリプトが呼ぶ start-aoi も残る" test -f "$H/.claude/brain-kit/bin/start-aoi"
 check "\\ で逃がした空白を含むパスの持ち主のスクリプトが呼ぶ start-ren も残る" test -f "$H/.claude/brain-kit/bin/start-ren"
+check "\\ で逃がした空白のパスのあとに ; が続いても、そのスクリプトが呼ぶ start-sora を残す" test -f "$H/.claude/brain-kit/bin/start-sora"
+check "UTF-8 でない持ち主のスクリプトが呼ぶ index.html も残す" test -f "$H/.claude/brain-kit/dashboard/index.html"
+check "大きなファイルを名指ししても uninstall は通り、そのファイルは残る" test -f "$H/.claude/big.dat"
 check "どれも呼ばない start-mio は消す" test ! -e "$H/.claude/brain-kit/bin/start-mio"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 確認を待つ間に、残す持ち主のスクリプトが kit のファイルを呼ぶように書き換えた → 何も変えずに止まる
@@ -1859,6 +1893,126 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "変えていなければ SessionEnd の項目を外す" sh -c "! grep -q 'session-end-brain.sh' '$H/.claude/settings.json'"
 check "変えていなければ session-end-brain.sh も消す" test ! -e "$H/.claude/hooks/session-end-brain.sh"
 check "変えていなければ brain-digest.js も消す" test ! -e "$H/.claude/hooks/brain-digest.js"
+# 同じ実体の別名（skills/sora → skills/ren のディレクトリ symlink）：残すフックが sora の側を読むなら、ren の側も消さない
+H="$TMP/uninstall-alias"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mv "$H/.claude/skills/sora" "$H/sora-moved"
+ln -s ren "$H/.claude/skills/sora"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "cat ~/.claude/skills/sora/SKILL.md"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "別名: uninstall が 0" test $? -eq 0
+check "別名で読まれる skills/ren/SKILL.md は消さない" test -f "$H/.claude/skills/ren/SKILL.md"
+check "別名: 読まれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# symlink の別名から相対で呼ぶ：hooks/wrapper.sh → ../own/wrapper.sh（実体）が ./session-end-brain.sh を呼ぶ
+# （別名のディレクトリ hooks/ から見た相対）→ hooks/session-end-brain.sh を消さない
+H="$TMP/uninstall-aliasrel"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # スクリプトの中で展開させる
+printf '#!/bin/sh\ncd -- "$(dirname -- "$0")" || exit 1\nsh ./session-end-brain.sh\n' >"$H/.claude/own/wrapper.sh"
+ln -s ../own/wrapper.sh "$H/.claude/hooks/wrapper.sh"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/wrapper.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "別名からの相対: uninstall が 0" test $? -eq 0
+check "別名のディレクトリから相対で呼ぶ session-end-brain.sh は消さない" test -f "$H/.claude/hooks/session-end-brain.sh"
+check "別名からの相対: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 自分自身を別名で呼び直す：own/disp.sh が hooks/alias.sh（→ own/disp.sh）を呼び、そこから ./brain-digest.js を使う
+# symlink と .. の組み合わせ：~/.claude/link（→ brain-kit/dashboard）/../bin/heavy-lock は brain-kit/bin/heavy-lock
+H="$TMP/uninstall-selfalias"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # スクリプトの中で展開させる
+printf '#!/bin/sh\n[ -n "$1" ] && exec sh "$HOME/.claude/hooks/alias.sh"\nnode ./brain-digest.js\n' >"$H/.claude/own/disp.sh"
+ln -s ../own/disp.sh "$H/.claude/hooks/alias.sh"
+ln -s brain-kit/dashboard "$H/.claude/link"
+# 指す先の途中に .. がある symlink：link2 → brain-kit/automations/../bin（automations が消えると辿れない）
+ln -s brain-kit/automations/../bin "$H/.claude/link2"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+# 持ち主のフック（自分では kit の SessionEnd を外してある）
+del s["hooks"]["SessionEnd"]
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/own/disp.sh go"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/link/../bin/heavy-lock true"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/link2/heavy-lock true"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "自分を別名で呼ぶ: uninstall が 0" test $? -eq 0
+check "別名のディレクトリから相対で使う brain-digest.js は消さない" test -f "$H/.claude/hooks/brain-digest.js"
+check "symlink と .. で指す heavy-lock は消さない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+check "symlink と .. のパスが、外したあとも書かれた形のまま辿れる（link の指す先を消さない）" test -x "$H/.claude/link/../bin/heavy-lock"
+check "指す先の途中に .. がある symlink のパスも、外したあと辿れる（automations を消さない）" test -x "$H/.claude/link2/heavy-lock"
+check "自分を別名で呼ぶ: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 相対の自己参照（./self.sh）と 2 つのファイルの相対の循環でも、同じファイルを読み続けずに終わる
+H="$TMP/uninstall-cycle"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf '#!/bin/sh\n# usage: ./self.sh\nsh ./b.sh\n' >"$H/.claude/hooks/self.sh"
+printf '#!/bin/sh\nsh ./self.sh\nsh ../hooks/./self.sh\n' >"$H/.claude/hooks/b.sh"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/self.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+python3 - "$KIT" "$H" <<'PY2'
+import subprocess, sys
+kit, h = sys.argv[1], sys.argv[2]
+try:
+    r = subprocess.run(["bash", kit + "/install.sh", "--uninstall", "--dry-run"], env={"HOME": h, "PATH": __import__("os").environ["PATH"]},
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    sys.exit(r.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+PY2
+check "相対の自己参照と循環でも dry-run が 60 秒以内に 0 で終わる" test $? -eq 0
+# 計画のときには無かった持ち主のスクリプトが、確認を待つ間に作られ、kit のファイルを呼ぶ → 止まる
+H="$TMP/uninstall-appear"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/later.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+{ sleep 3; printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >"$H/.claude/hooks/later.sh"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race" 2>&1
+check "確認中に現れたスクリプト: 止まる" test $? -ne 0
+check "確認中に現れたスクリプトが呼ぶ heavy-lock は消えていない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "もう一度の uninstall は heavy-lock を残す" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+# 残すフックが名指しした 2 MiB のファイルを丸ごと読まない（1 MiB を超えて読んだら落ちるようにして走らせる）
+H="$TMP/uninstall-bigread"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"x" * (2 * 1024 * 1024))' "$H/.claude/big.dat"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "wc -c ~/.claude/big.dat"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+uninstall_fault "$H" longline >"$H.long" 2>&1
+check "1 MiB の 1 行のデータファイルを shlex に渡さない（遅くなる。CI の bash 3.2 で止まった）" test $? -eq 0
+uninstall_fault "$H" bigread >"$H.big" 2>&1
+check "残すフックが名指しした大きなファイルを丸ごと読まずに uninstall が 0" test $? -eq 0
+check "大きなファイルは残る" test -f "$H/.claude/big.dat"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

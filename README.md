@@ -145,7 +145,7 @@ npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か�
 
 clone してあるなら `git pull && ./install.sh --update`。
 
-- **外すときは `--uninstall`**：機械側の manifest に記録された `~/.claude` の未変更の kit ファイル・base・記録と、未変更の所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定や permissions は残す。brain 全体（`.brain-kit` と kit ファイルも）・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない。記録が無い古い導入は先に `--update` が必要。`--rollback` で元に戻せる（brain のコミットは増えない）。残る設定を使い `./install.sh --update` で再導入できる
+- **外すときは `--uninstall`**：機械側の manifest に記録された `~/.claude` の未変更の kit ファイル・base・記録と、未変更の所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定や permissions は残す。外したあとも残るフック・statusLine が使う kit のファイル（持ち主のスクリプト経由・symlink 経由も、書かれたパスから辿れるもの）と、そこへ辿り着くディレクトリも残す。確認のあとに計画を作り直し、確認の間に変わっていれば何も変えずに止める。brain 全体（`.brain-kit` と kit ファイルも）・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない。記録が無い古い導入は先に `--update` が必要。`--rollback` で元に戻せる（brain のコミットは増えない）。残る設定を使い `./install.sh --update` で再導入できる
 - **上がるのは kit のものだけ**：skill・規約（brain の `README.md` `CLAUDE.md`、各領域の `README.md`、`記録/README.md` など）・台本・フック。一覧は `kitfiles.tsv`
 - **持ち主のものには触らない**：核・辞書・関係・任せる範囲・振り返り・日誌・決定・知識・プロジェクト・状況カード・報告・記録・規準・手順。新しい版で増えた骨格は、無いものだけ足す
 - **今の版を見分ける**：`~/brain/.brain-kit/config.json` があればそれ。v1〜v9 のように記録が無ければ、kit のファイルの形から判定し、最初の更新で記録を書く

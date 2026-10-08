@@ -1738,7 +1738,8 @@ def cmd_resolve(args):
 
 
 # ------------------------------------------------------------------ uninstall（機械側の記録だけを使う）
-def cmd_uninstall(args):
+def plan_uninstall(args):
+    """何を消す・残すかを決める（何も書かない）。確認のあとにもう一度呼び、同じ計画になるかを比べる。"""
     # HOME に // が混ざっても（macOS の TMPDIR は / で終わる）比べられるように、正規化した形だけを使う
     claude, claude_manifest, kit_state = (os.path.abspath(p) for p in (CLAUDE, CLAUDE_MANIFEST, KIT_STATE))
     brain = os.path.abspath(os.path.expanduser(args.brain))
@@ -1891,77 +1892,150 @@ def cmd_uninstall(args):
     # 辿るときは ~/.claude の中の symlink もたどる（消すかどうかの safe() とは別。読むだけ）。
     # 指す先が記録のある kit のファイルなら、その記録のパスとして残す
     real_claude = os.path.realpath(claude)
-    by_real = {os.path.realpath(c): c for c in candidates}
+    by_real = {}
+    for c in candidates:
+        by_real.setdefault(os.path.realpath(c), []).append(c)
 
     def canonical(path):
+        """path が指すもの。記録のある kit のファイルなら、同じ実体を指す記録のパスを全部（symlink の別名も）"""
         real = os.path.realpath(path)
         if real in by_real:
             return by_real[real]
         if real.startswith(real_claude + os.sep) and os.path.isfile(real):
-            return real
-        return None
+            return [real]
+        return []
 
-    looked = {}   # 辿るときに読んだファイルとディレクトリ。確認のあとで変わっていれば止める
-
-    def named_files(text, here=None):
-        """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
-        ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
-        out = set()
+    def named_files(text, heres=()):
+        """text に書かれた ~/.claude の中のファイル。(書かれた形のパス, 指す先の一覧) を返す。
+        絶対・~/・$HOME/・${HOME}/ の形と、heres（読んだファイルが置かれたディレクトリ。symlink の別名の側も）
+        からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
+        out = {}
         args = re.split(r"[\s'\"`;|&()<>=,]+", text)
         # 引用符の中（空白を含むパス）と、\ で逃がした空白も 1 つの引数として見る
         args += [a or b for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', text)]
         for line in text.splitlines():
+            if len(line) > 4096:           # shlex は 1 文字ずつ組み立てるので、長い行（データ）は上の分け方だけにする
+                continue
             try:
                 args += shlex.split(line, comments=True)
+                # ; | & ( ) < > をパスから切り離す（my\ hook.sh; echo のような形）
+                lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+                lex.whitespace_split = True
+                args += list(lex)
             except ValueError:
                 pass
+        found = []
         for arg in args:
             for prefix in ("${HOME}/", "$HOME/", "~/"):
                 if arg.startswith(prefix):
                     arg = os.path.join(HOME, arg[len(prefix):])
-            if not arg.startswith(os.sep):
-                arg = os.path.join(here, arg) if here and "/" in arg else ""
-            if arg and os.path.abspath(arg).startswith(claude + os.sep) and canonical(arg):
-                out.add(canonical(arg))
-        if here and os.path.isdir(here):
-            looked[("dir", here)] = sorted(os.listdir(here))
-            out.update(canonical(os.path.join(here, name)) for name in sorted(os.listdir(here))
-                       if name in text and canonical(os.path.join(here, name)))
+            if arg.startswith(os.sep):
+                found.append(arg)
+            elif "/" in arg:
+                found.extend(os.path.join(here, arg) for here in heres)
+        for here in heres:
+            if os.path.isdir(here):
+                found.extend(os.path.join(here, name) for name in sorted(os.listdir(here)) if name in text)
+        for path in found:
+            # .. を先に畳まない（link/../bin は link の指す先の親の bin）。中かどうかは実体で見る（canonical）
+            if os.path.isabs(path) and canonical(path):
+                out.setdefault(path, canonical(path))
         for path in candidates:
             if any(f in text for f in forms(path)):
-                out.add(path)
-        return sorted(out)
+                out.setdefault(path, canonical(path) or [path])
+        return sorted(out.items())
 
     # 起点：残る command に書かれた ~/.claude の中のファイル（kit のものも持ち主のスクリプトも）。
     # そこから、読んだファイルに書かれたファイルを何段でも辿る（session-end-brain.sh → "$HOOK_DIR/brain-digest.js"、
-    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。見たものは飛ばす。1 MiB を超えるファイルは読まない
+    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。相対パスと同じディレクトリのファイル名は、
+    # 書かれた形（symlink の別名）のディレクトリと実体のディレクトリの両方から探す。
+    # 同じ実体を同じディレクトリから見たら飛ばす。先頭 1 MiB だけ読む
     queue = []
-    for part, command in commands:
-        for path in named_files(command):
-            mark(path, part)
-            queue.append(path)
-    seen = set()
 
-    def fingerprint(path):
-        try:
-            return (os.path.realpath(path), sha(open_bytes(path)))
-        except (IOError, OSError):
-            return None
+    def traversed_dirs(path):
+        """path を 1 段ずつたどるときに通るディレクトリ（実体）。symlink は指す先を展開してから続け、.. の前に通る
+        ディレクトリも数える（link → dashboard/../bin なら dashboard も）。最後のファイルそのものは入れない"""
+        out, cur, hops = set(), os.sep, 0
+        stack = list(reversed(path.split(os.sep)))
+        while stack:
+            part = stack.pop()
+            if part in ("", "."):
+                continue
+            if part == "..":
+                cur = os.path.dirname(cur) or os.sep
+                continue
+            nxt = os.path.join(cur, part)
+            if os.path.islink(nxt) and hops < 40:
+                hops += 1
+                target = os.readlink(nxt)
+                if os.path.isabs(target):
+                    cur = os.sep
+                stack.extend(reversed(target.split(os.sep)))
+                continue
+            if stack and os.path.isdir(nxt):
+                out.add(nxt)
+            cur = nxt
+        return out
+
+    needed_dirs = set()   # 残すものに辿り着くのに要るディレクトリ（symlink の指す先も）。空になっても消さない
+
+    def found(items, why):
+        for written, targets in items:
+            needed_dirs.update(traversed_dirs(written))
+            for target in targets:
+                mark(target, why)
+                dirs = {os.path.dirname(written), os.path.dirname(os.path.realpath(written)),
+                        os.path.dirname(target)}
+                queue.append((target, dirs))
+
+    for part, command in commands:
+        found(named_files(command), part)
+    seen = set()
+    limit = 1024 * 1024
     while queue:
-        user = queue.pop(0)
-        if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
+        user, dirs = queue.pop(0)
+        real = os.path.realpath(user)
+        # 同じディレクトリかは実体で比べる（hooks/. と hooks/./. を別にしない）。探すときは書かれた形を使う
+        fresh = {}
+        for d in sorted(dirs):
+            key = (real, os.path.realpath(d))
+            if key not in seen and key[1] not in {os.path.realpath(x) for x in fresh}:
+                fresh[d] = key
+        dirs = set(fresh)
+        if not dirs or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
             continue
-        seen.add(user)
+        seen.update(fresh.values())
+        # UTF-8 でなくても ASCII のパスは拾えるように、読めない文字だけ置き換える
         try:
-            big = os.path.getsize(user) > 1024 * 1024
-        except OSError:
-            big = True
-        text = "" if big else (read_text(user) or "")
-        looked[("file", user)] = fingerprint(user)
-        for path in named_files(text, os.path.dirname(user)):
-            if path != user:
-                mark(path, "%s から" % os.path.basename(user))
-                queue.append(path)
+            with open(user, "rb") as f:
+                text = f.read(limit).decode("utf-8", "replace")
+        except (IOError, OSError) as e:
+            die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
+                "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
+        # 自分自身を別名で呼ぶものも積む（別名のディレクトリから見た相対を探すため。同じ組は seen が飛ばす）
+        found(named_files(text, sorted(dirs)), "%s から" % os.path.basename(user))
+    return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
+                settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
+                unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,
+                needed_dirs=needed_dirs,
+                settings_raw=settings_raw, settings_writable=settings_writable,
+                settings_remove=settings_remove, settings_keep=settings_keep)
+
+
+def plan_signature(p):
+    """確認の前と後で比べるもの。消すもの（と中身の sha）・残すもの・settings の元のバイトと外す項目"""
+    return (sorted(p["remove"]), sorted(p["expected"].items()), sorted(p["keep"]), sorted(p["used"]),
+            sorted(p["unsafe"]), sorted(p["other"]), p["settings_raw"], p["settings_writable"],
+            p["settings_remove"], p["settings_keep"], sorted(p["needed_dirs"]))
+
+
+def cmd_uninstall(args):
+    P = plan_uninstall(args)
+    claude, kit_state, claude_manifest = P["claude"], P["kit_state"], P["claude_manifest"]
+    brain, cfg, settings_path, conflicts, safe = P["brain"], P["cfg"], P["settings_path"], P["conflicts"], P["safe"]
+    remove, keep, unsafe, other, directories = P["remove"], P["keep"], P["unsafe"], P["other"], P["directories"]
+    expected, used, cur, settings_raw = P["expected"], P["used"], P["cur"], P["settings_raw"]
+    settings_writable, settings_remove, settings_keep = P["settings_writable"], P["settings_remove"], P["settings_keep"]
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
@@ -1996,16 +2070,13 @@ def cmd_uninstall(args):
         if ask("実行する？ [y/N]", args=args).lower() not in ("y", "yes"):
             print("中止した。何も変えていない。")
             return
-    # 確認を待つ間に settings.json が変わったら、古い計画で上書きしない（何も変えずに止める）
-    now_raw = open_bytes(settings_path) if os.path.lexists(settings_path) and not os.path.isdir(settings_path) else None
-    if now_raw != settings_raw or safe(settings_path) != settings_writable:
-        die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
-    # 残すフックが使うものを調べたときに読んだスクリプト・ディレクトリが変わっていたら、計画が古い。何も変えずに止める
-    for (kind, path), before in sorted(looked.items()):
-        now = (sorted(os.listdir(path)) if os.path.isdir(path) else None) if kind == "dir" else fingerprint(path)
-        if now != before:
-            die("確認の間に %s が変わった（残すフックが使うものを調べ直す）。何も変えていない。もう一度 --uninstall を実行する"
-                % tilde(path), 1)
+    # 確認のあとで計画を作り直し、見せた計画と同じかを比べる。settings.json・残すフックが使うスクリプト
+    # （新しく作られたものも）・消すものの中身が、確認の間に変わっていたら古い計画で消さない（何も変えずに止める）
+    again = plan_uninstall(args)
+    if plan_signature(again) != plan_signature(P):
+        if again["settings_raw"] != settings_raw or again["settings_writable"] != settings_writable:
+            die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+        die("確認の間に、消すもの・残すフックが使うものが変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
 
     def unchanged(path):
         # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる
@@ -2057,7 +2128,8 @@ def cmd_uninstall(args):
         directories.add(kit_state)
     stops = {claude} | {os.path.join(claude, p) for p in ("skills", "hooks", "agents")}
     for directory in sorted(directories, key=len, reverse=True):
-        while directory not in stops and safe(directory):
+        # 残すフックがたどるディレクトリ（symlink の指す先も）は、空になっても消さない
+        while directory not in stops and safe(directory) and os.path.realpath(directory) not in P["needed_dirs"]:
             try:
                 os.rmdir(directory)
             except OSError:
