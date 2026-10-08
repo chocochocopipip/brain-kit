@@ -33,12 +33,18 @@ read_field() {
     });' "$1" 2>/dev/null
 }
 
-# A missing or unreadable manifest keeps the original Japanese behavior.
+# Owner language: the brain's config first, then the machine manifest, then Japanese
+# (the behavior before languages existed). Any read error falls through; never fails.
 OWNER_LANG="$(node -e '
-  try { const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
-    process.stdout.write(m.lang === "en" ? "en" : "ja");
-  } catch { process.stdout.write("ja"); }
-' "$HOME/.claude/brain-kit/manifest.json" 2>/dev/null)" || OWNER_LANG=ja
+  const fs=require("fs");
+  for (const p of process.argv.slice(1)) {
+    try { const l=JSON.parse(fs.readFileSync(p,"utf8")).lang;
+      if (l === "en" || l === "ja") { process.stdout.write(l); process.exit(0); }
+    } catch {}
+  }
+  process.stdout.write("ja");
+' "$BRAIN/.brain-kit/config.json" "$HOME/.claude/brain-kit/manifest.json" 2>/dev/null)" || OWNER_LANG=ja
+[ "$OWNER_LANG" = en ] || OWNER_LANG=ja
 
 TRANSCRIPT="$(read_field transcript_path)"
 SESSION_ID="$(read_field session_id)"

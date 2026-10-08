@@ -317,6 +317,27 @@ PY
       check "Japanese SessionEnd fallback" grep -q '### やったこと' "$hook_home/brain/daily/$(date +%F).md"
     fi
   done
+  # brain の記録が機械側より先。読めない記録は飛ばし、どちらも無ければ日本語
+  while read -r c_cfg c_man c_want <&3; do
+    set -- "$c_cfg" "$c_man" "$c_want"
+    hm="$TMP/lang-hook-$1-$2"
+    mkdir -p "$hm/brain/daily" "$hm/brain/.brain-kit" "$hm/.claude/brain-kit" "$hm/.claude/hooks"
+    cp "$KIT/claude/hooks/brain-digest.js" "$hm/.claude/hooks/"
+    case "$1" in none) ;; broken) printf '{' >"$hm/brain/.brain-kit/config.json" ;; *) printf '{"lang": "%s"}\n' "$1" >"$hm/brain/.brain-kit/config.json" ;; esac
+    case "$2" in none) ;; *) printf '{"lang": "%s"}\n' "$2" >"$hm/.claude/brain-kit/manifest.json" ;; esac
+    HOME="$hm" HOOK_PROMPT="$hm.prompt" PATH="$TMP/lang-hook-bin:$PATH" \
+      bash "$KIT/claude/hooks/session-end-brain.sh" <"$TMP/lang-hook-input"
+    check "SessionEnd 言語（config $1・manifest $2）が 0" test $? -eq 0
+    if [ "$3" = en ]; then
+      check "SessionEnd 言語（config $1・manifest $2）は English" grep -q '### Done' "$hm/brain/daily/$(date +%F).md"
+    else
+      check "SessionEnd 言語（config $1・manifest $2）は日本語" grep -q '### やったこと' "$hm/brain/daily/$(date +%F).md"
+    fi
+  done 3<<'CASES'
+en ja en
+broken en en
+none none ja
+CASES
 else
   printf '  skip SessionEnd の言語（node が無い。フック自体も node が要る）\n'
 fi
