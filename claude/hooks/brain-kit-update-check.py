@@ -124,9 +124,15 @@ def main():
     if semver(latest) is not None and semver(latest) > current:
         # SessionStart の stdout は Claude の文脈に入る（持ち主の画面には直接出ない。systemMessage は
         # SessionStart では捨てられる）。相棒が最初の返事で 1 行だけ伝える
-        print("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は %s）。自動では更新しない。"
-              "中身を見る: npx brainkit-agents@latest --update --dry-run"
-              "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）" % (latest, installed))
+        if manifest.get("lang") == "en":
+            print("brain-kit update notice: brain-kit %s is available (installed: %s). No automatic update. "
+                  "Preview: npx brainkit-agents@latest --update --dry-run "
+                  "(Repeat this one line verbatim at the start of your first reply to the owner. Do not update.)"
+                  % (latest, installed))
+        else:
+            print("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は %s）。自動では更新しない。"
+                  "中身を見る: npx brainkit-agents@latest --update --dry-run"
+                  "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）" % (latest, installed))
 
     if fresh(cache, time.time()):
         return

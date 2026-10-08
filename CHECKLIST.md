@@ -33,6 +33,8 @@ check.sh は引数の語に加えて、次を**常に**探す:
 
 ## 2. 中身が「型」だけであること
 
+- 日本語のテンプレート・skill を変えたら `i18n/en/` の英語版も直し、`python3 tools/i18n-stamp.py --write`。kit.py の新しい表示文は `M()` を通して `i18n/en/messages.json` に足し、`python3 tools/i18n-stamp.py --catalog` で確認する。
+
 - `brain-template/<相棒名>/00_核.md` `01_辞書.md` `02_関係.md` が**見出しだけ**で、本文が空
 - `brain-template/partner/03_任せる範囲.md` `review/規準.md` `release/手順.md` が**一般的な既定だけ**（実在のリポジトリ・過去の PR 番号・店・人が出てこない）
 - `brain-template/dev/状況/` に `_テンプレート.md` 以外のカードが無い

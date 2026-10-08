@@ -18,6 +18,7 @@
     "brain-template/",
     "claude/",
     "migrations/",
+    "i18n/",
     "ORCA.md",
     "SECURITY.md"
   ],

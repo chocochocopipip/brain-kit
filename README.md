@@ -1,5 +1,7 @@
 # brain-kit
 
+> **English:** run `npx brainkit-agents --lang en` for English installation prompts, templates, skills, and owner-facing messages. See the [Language section](#language). File and folder names stay unchanged.
+
 > **EN** — A structure-only template for running Claude Code with four personas: a *partner* that keeps memory in an Obsidian vault (`~/brain`) and helps you decide, a *dev* agent that turns issues into PRs, a *review* agent that reads PRs against a versioned checklist, and a *release* agent that merges and ships only on an explicit label and instruction. Plus a process board (*brain-kit Dashboard*, a Claude Artifact) and an optional always-on *base* machine (Orca + Tailscale). No personal data included; you fill it in.
 >
 > **Quick start** (Linux / macOS / WSL — Windows itself is not supported, use WSL):
@@ -44,6 +46,33 @@ Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で�
 | **Orca** | Claude Code を母艦（WSL）で常駐・並列に動かし、外から繋ぐ。無くても上の2層は動く | `ORCA.md` |
 
 ## 導入
+
+### 言語（日本語／English）
+
+<a id="language"></a>
+
+対話式の導入では、最初に `Language / 言語` を聞く。`en` または `ja` を選ぶと、その後の質問、テンプレート・skill、持ち主への返事、doctor・更新・削除・復元・衝突解消の表示、フックの通知と要約がその言語になる。`npx brainkit-agents --lang en`（または `./install.sh --lang ja`）なら質問を省ける。対話の既定はロケールに従い、`--yes` や非対話で言語を指定しない場合と既存の導入は日本語のまま。
+
+言語は brain の `.brain-kit/config.json` と機械側の `~/.claude/brain-kit/manifest.json` に記録する。ファイル・フォルダ名は、どの言語でも日本語のまま変えない。
+
+| 名前 | English gloss |
+|---|---|
+| `00_核` | core |
+| `01_辞書` | dictionary |
+| `02_関係` | relationship |
+| `03_任せる範囲` | delegation scope |
+| `10_日誌` | journal |
+| `20_振り返り` | retrospective |
+| `状況` | status |
+| `報告` | reports |
+| `規準` | criteria |
+| `手順` | procedure |
+| `記録` | log |
+| `評価` | evaluation |
+
+人格同士の連絡、PR・コミット・issue の本文は、そのリポジトリの言語に合わせる。
+
+あとで変えるときは、まず `./install.sh --update --dry-run --lang en` で確認し、`./install.sh --update --lang en` で適用する（日本語に戻すなら `--lang ja`）。未編集の kit ファイルは新しい言語になり、編集済みなら通常どおり衝突として `.new` を置く。持ち主が書く核・辞書・関係・日誌などのノートは翻訳しない。
 
 ### 1. どこで動かすかを選ぶ（local ／ base）
 
