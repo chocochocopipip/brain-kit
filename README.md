@@ -145,7 +145,7 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
    既存があれば `~/.claude/backup-brain-kit-<日時>/` に退避してから、新しい版にする／今のまま／差分を見る、を聞く（`--yes` で新しい版）
 3. `~/.claude/settings.json` に `hooks` / `statusLine` / `enabledPlugins` を**マージ**する。丸ごと上書きはしない。
    `permissions.allow` は既存に無いときだけ最小例を置く
-4. `~/brain` を `git init` して初回コミット。開発・レビュー・リリースの worktree を作る（相棒の領域は sparse-checkout で見えなくする。`--no-worktrees` で作らない）
+4. `~/brain` を `git init` して `main` の枝で初回コミット（git の `init.defaultBranch` によらない。すでに git の brain の枝は改名せず、`main` が無ければ改名のコマンドを出す）。開発・レビュー・リリースの worktree を作る（相棒の領域は sparse-checkout で見えなくする。`--no-worktrees` で作らない）
 5. `gh` があり認証済みなら、`--repos` の各リポジトリに issue ラベル
    `from-chat` `needs-triage` `agent-ready` `agent-working` `question` と、開発・レビュー・リリースの id のラベルを作る（無ければ案内してスキップ）
 6. `--mode base` なら続けて `./setup-base.sh`（冪等。各段で済みならスキップ。ネット取得は確認してから。`--dry-run` で印字だけ）:

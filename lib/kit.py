@@ -613,8 +613,11 @@ def choose_persona(role, args, used_ids, cmanifest, fixed=None):
     pid = pid.lower()
     if not ID_RE.match(pid):
         die(M("%s の id %r が使えない（小文字・数字・- で 40 字まで）。--%s-id で渡す") % (name, pid, role), 2)
-    while pid in used_ids or pid in ("setup", "grilling") or id_taken_by_other(pid, cmanifest):
+    # worktree の役の id はブランチ名にもなる。brain の枝 main とは重ねない
+    branch_clash = lambda i: role in WORKTREE_ROLES and i == "main"  # noqa: E731
+    while pid in used_ids or pid in ("setup", "grilling") or branch_clash(pid) or id_taken_by_other(pid, cmanifest):
         why = M("ほかの役と重なる") if pid in used_ids or pid in ("setup", "grilling") else \
+            M("brain の枝 main と重なる") if branch_clash(pid) else \
             M("~/.claude/skills/%s が kit の外で既にある") % pid
         if not interactive(args):
             die(M("%s の id %r は %s。--%s-id <別の id> で渡す") % (name, pid, why, role), 2)
@@ -1149,6 +1152,95 @@ def git(brain, *a, **kw):
     return run(["git", "-C", brain] + list(a), **kw)
 
 
+def own_repo(brain):
+    """brain がそれ自身の git の repo の最上位か（親のディレクトリの repo の中ではない）。"""
+    rc, top, _ = git(brain, "rev-parse", "--show-toplevel")
+    return rc == 0 and bool(top.strip()) and os.path.realpath(top.strip()) == os.path.realpath(brain)
+
+
+def brain_main_advice(brain):
+    rc, inside, _ = git(brain, "rev-parse", "--is-inside-work-tree")
+    if rc != 0 or inside.strip() != "true":
+        return None
+    if not own_repo(brain):
+        return None
+    if git(brain, "rev-parse", "--verify", "-q", "HEAD^{commit}")[0] != 0:
+        return None
+    rc = git(brain, "show-ref", "--verify", "--quiet", "refs/heads/main")[0]
+    if rc == 0:
+        return None
+    if rc != 1:
+        # 1 だけが「無い」。それ以外は読めなかったので、改名も push も案内しない
+        return {"branch": None, "commands": [],
+                "message": M("brain に main があるか確かめられなかった。git -C %s branch で見て、無ければ main に揃える") % tilde(brain)}
+    # --short は同名のタグがあると heads/<枝> に縮めるので、refs/heads/ を自分で外す
+    rc, ref, _ = git(brain, "symbolic-ref", "-q", "HEAD")
+    ref = ref.strip() if rc == 0 else ""
+    if rc not in (0, 1) or (rc == 0 and not ref.startswith("refs/heads/")):
+        # 1 だけが「detached HEAD」。それ以外は読めなかったので、改名も push も案内しない
+        return {"branch": None, "commands": [],
+                "message": M("brain に main が無い。今の枝を確かめられなかったので、git -C %s status で見てから main に揃える") % tilde(brain)}
+    branch = ref[len("refs/heads/"):] if rc == 0 else None
+    path = tilde(brain)
+    if path.startswith("~/"):
+        path = "~/" + shlex.quote(path[2:])
+    elif path != "~":
+        path = shlex.quote(path)
+    # 持ち主のシェルに GIT_DIR などが残っていると、写したコマンドが別の repo に効く。そのときは外して打たせる
+    unset = "".join("-u %s " % k for k in ORIG_GIT_REPO_ENV)
+    cmd = ("env %sgit -C %s " % (unset, path)) if unset else "git -C %s " % path
+    commands = [cmd + "branch -m %s main" % shlex.quote(branch) if branch else cmd + "checkout -b main"]
+    message = M("brain に main が無い（%s）。起動スクリプトと skill は main を取り込むので、取り込みが何もしない") % (
+        M("今の枝 ") + branch if branch else M("今は detached HEAD"))
+    rc_remote, out_remote, _ = git(brain, "remote")
+    remotes = out_remote.split() if rc_remote == 0 else []
+    if rc_remote != 0 or remotes:
+        # 押し先は git が push に使う順（枝の pushRemote → remote.pushDefault → 枝の upstream）。
+        # どれも無ければ remote が 1 つのときだけそれ。読めない設定があれば推さずに持ち主が選ぶ
+        keys = (["branch.%s.pushRemote" % branch] if branch else []) + ["remote.pushDefault"] + (
+            ["branch.%s.remote" % branch] if branch else [])
+        dest, unsure = "", rc_remote != 0
+        for k in keys:
+            rc, out, _ = git(brain, "config", "--get", k)
+            if rc == 0 and out.strip():
+                dest = out.strip()
+                break
+            if rc != 1:                                # 1 = 設定が無い。それ以外は読めなかった
+                unsure = True
+                break
+        if not unsure and dest and dest in remotes:
+            target = shlex.quote(dest)
+        elif not unsure and not dest and len(remotes) == 1:
+            target = shlex.quote(remotes[0])
+        else:
+            target = "<remote>"
+            message += M("。押し先の remote が決まらない（%s）ので選ぶ") % (" ".join(remotes) or M("remote を読めない"))
+        # 宛先を書き切る（remote.<名>.push の対応で別の枝へ押さない）
+        # 改名が通ったときだけ押す（main が既にあって改名が失敗したら、その main を押さない）
+        commands[-1] += " && " + cmd + "push -u %s refs/heads/main:refs/heads/main" % target
+        message += M("。remote の既定の枝を main に切り替え、古い枝は持ち主が削除する")
+    return {"branch": branch, "message": message, "commands": commands}
+
+
+def new_repo_at(brain):
+    """brain/.git がいま使われる repo で、まだコミットが無い（作ったばかり）か。"""
+    # --absolute-git-dir は古い git（2.13 より前）に無いので、--git-dir を brain から解く
+    rc, gd, _ = git(brain, "rev-parse", "--git-dir")
+    gd = os.path.join(brain, gd.strip()) if gd.strip() else ""
+    if rc != 0 or not gd or os.path.realpath(gd) != os.path.realpath(os.path.join(brain, ".git")):
+        return False
+    if git(brain, "rev-parse", "--verify", "-q", "HEAD")[0] == 0:
+        return False
+    return git(brain, "for-each-ref", "--count=1")[1].strip() == ""
+
+
+def print_brain_main_advice(brain):
+    advice = brain_main_advice(brain)
+    if advice:
+        for line in [advice["message"]] + advice["commands"]:
+            print("  warn: " + line)
+
+
 def worktree_branches(brain):
     rc, out, _ = git(brain, "worktree", "list", "--porcelain")
     res = {}
@@ -1165,8 +1257,8 @@ def plan_worktrees(cfg, roles):
     """作る worktree の一覧。在るもの・同じブランチが別の場所に在るものは作らない。"""
     brain = cfg["brain"]
     out = []
-    if git(brain, "rev-parse", "--verify", "-q", "HEAD")[0] != 0:
-        return out
+    if not own_repo(brain) or git(brain, "rev-parse", "--verify", "-q", "HEAD")[0] != 0:
+        return out                                     # 親の repo に枝を作らない
     wts = worktree_branches(brain)
     for r in roles:
         if r not in cfg["personas"]:
@@ -1456,6 +1548,9 @@ def commit_brain(cfg, paths, msg):
     brain = cfg["brain"]
     if git(brain, "rev-parse", "--is-inside-work-tree")[0] != 0:
         return
+    if not own_repo(brain):
+        print(M("  warn: brain が別の git の repo の中にあるので、その repo にはコミットしない"))
+        return
     rel = sorted({os.path.relpath(p, brain) for p in paths if p.startswith(brain + os.sep)})
     if not rel:
         return
@@ -1603,21 +1698,43 @@ def cmd_install(args):
     write_state(cfg, manifests, backup)
 
     say("[4/6] git: %s" % tilde(brain))
+    git_ok = True
     if git(brain, "rev-parse", "--is-inside-work-tree")[0] != 0:
-        git(brain, "init", "-q")
+        if os.path.lexists(os.path.join(brain, ".git")):
+            # 確かめるのに失敗しただけで、もう git かもしれない。持ち主の HEAD を書き換えないよう、git には触らない
+            print(M("  warn: brain の git を確かめられなかった（.git はある）。init もコミットもしない"))
+            git_ok = False
+        elif git(brain, "init", "-q")[0] != 0:
+            print(M("  warn: git init に失敗した。コミットしない"))
+            git_ok = False
+        elif not new_repo_at(brain):
+            # GIT_DIR などで別の repo が選ばれている。持ち主の HEAD を書き換えない
+            print(M("  warn: git init が brain/.git 以外の repo を指した（GIT_DIR など）。枝もコミットも触らない"))
+            git_ok = False
+        elif git(brain, "symbolic-ref", "HEAD", "refs/heads/main")[0] != 0:
+            # 作ったばかりで最初のコミットの前なので、枝の名前だけを main に向ける（古い git の init に -b が無くても効く）
+            print(M("  warn: 最初の枝を main にできなかった"))
         msg = M("brain: 初期化（brain-kit v%d）") % VERSION
     else:
+        if not own_repo(brain):
+            # brain が別の repo（親のディレクトリ）の中にある。その repo に足したり枝を作ったりしない
+            print(M("  warn: brain が別の git の repo の中にある。コミットも worktree もしない"))
+            git_ok = False
         msg = M("brain: brain-kit v%d の骨格を追加") % VERSION
-    git(brain, "add", "-A")
-    if git(brain, "diff", "--cached", "--quiet")[0] != 0:
-        if git(brain, "commit", "-q", "-m", msg)[0] != 0:
-            print(M("  warn: コミットに失敗（git の user.name / user.email を設定してから再実行）"))
-        else:
-            print(M("  コミットした: %s") % msg)
+    if git_ok:
+        git(brain, "add", "-A")
+        if git(brain, "diff", "--cached", "--quiet")[0] != 0:
+            if git(brain, "commit", "-q", "-m", msg)[0] != 0:
+                print(M("  warn: コミットに失敗（git の user.name / user.email を設定してから再実行）"))
+            else:
+                print(M("  コミットした: %s") % msg)
+        print_brain_main_advice(brain)
 
     say(M("[5/6] worktree（開発・レビュー・リリースの居場所）"))
     if args.no_worktrees:
         print(M("  --no-worktrees なので作らない"))
+    elif not git_ok:
+        print(M("  git を確かめられなかったので作らない"))
     else:
         for r, path, b, what in plan_worktrees(cfg, WORKTREE_ROLES):
             if what == "add":
@@ -1788,6 +1905,7 @@ def cmd_update(args):
         print_collisions(collisions, None)
         if cfg.get("repos"):
             ensure_labels(cfg, True)
+        print_brain_main_advice(cfg["brain"])
         print()
         print(M("--dry-run なので何も変えていない。上げるなら --dry-run を外して同じコマンド。"))
         if getattr(args, "edited", None) != "new":
@@ -1846,6 +1964,7 @@ def cmd_update(args):
     commit_brain(cfg, touched, M("brain-kit: v%s → v%d に更新（kit のものだけ）") % (v_from if v_from else "?", VERSION))
     bdir = backup.close()
 
+    print_brain_main_advice(cfg["brain"])
     print()
     changed = len(set(backup.meta["overwritten"]) | set(backup.meta["added"]))
     if changed == 0 and not backup.meta["worktrees"]:
@@ -2747,6 +2866,10 @@ def cmd_doctor(args):
             row("  git", True, M("コミット %s、remote %s") % (n, M("あり") if rem else M("無し")), "OK" if rem else M("要対応"))
             if not rem:
                 todo.append(M("git -C %s remote add origin <private リポジトリ>") % tilde(brain))
+            advice = brain_main_advice(brain)
+            if advice:
+                row("  main", False, advice["message"], M("要対応"))
+                todo.extend(advice["commands"])
             rc3, dirty = first(["git", "-C", brain, "status", "--porcelain"])
             if dirty:
                 row(M("  未コミット"), False, M("brain に未コミットの変更がある"), M("要対応"))
@@ -2936,7 +3059,20 @@ def lock_home():
     return fd
 
 
+# 外から渡った repo の選び先。kit の git は常に `git -C <brain>` の repo だけを相手にする
+GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
+                "GIT_CONFIG")                          # git config だけが読む別の設定ファイル（push は読まない）
+
+
+ORIG_GIT_REPO_ENV = []
+
+
 def main(argv):
+    for k in GIT_REPO_ENV:
+        if k in os.environ:
+            ORIG_GIT_REPO_ENV.append(k)
+            os.environ.pop(k)
     ap = argparse.ArgumentParser(prog="kit.py")
     ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
     ap.add_argument("--stall-hours", type=float, default=None)

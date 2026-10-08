@@ -4691,6 +4691,268 @@ new "$H" --update --no-worktrees >"$H.up2" 2>&1
 check "許可: 前の kit からの 2 回目の更新は何も変えない" test "$before" = "$(snap "$H")"
 check "許可: 前の kit からの 2 回目の更新はコミット無し" test "$n" = "$(commits "$H")"
 
+# ------------------------------------------------------------------ brain の既定の枝（#28）
+# 起動スクリプトと skill は brain の main を取り込む。git の init.defaultBranch が master でも brain は main で始める。
+section "brain の既定の枝（init.defaultBranch=master）"
+fakem="$TMP/fake-claude-merge"; mkdir -p "$fakem"
+printf '#!/bin/sh\nexit 0\n' >"$fakem/claude"
+chmod +x "$fakem/claude"
+H="$TMP/branch-master"; mkdir -p "$H"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+check "枝: 既定の枝が master の環境を作れた" sh -c "test \"\$(HOME='$H' git config --global init.defaultBranch)\" = master"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "枝: install が 0" test $? -eq 0
+check "枝: brain は main で始まる" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+check "枝: brain に master の枝は無い" sh -c "! HOME='$H' git -C '$H/brain' rev-parse --verify -q refs/heads/master"
+check "枝: worktree の枝は main から分かれる" sh -c "HOME='$H' git -C '$H/brain' merge-base --is-ancestor main ren"
+printf -- '---\ndate: 2026-01-02\nproject: none\ntags: [decision]\n---\n相棒の決定\n' >"$H/brain/decisions/2026-01-02-main.md"
+HOME="$H" git -C "$H/brain" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/brain" commit -qm 'partner decision' >/dev/null 2>&1
+HOME="$H" PATH="$fakem:$PATH" "$H/.claude/brain-kit/bin/start-ren" >"$H.ren" 2>&1
+check "枝: 開発の起動スクリプトが main の決定を取り込む" test -f "$H/brain-ren/decisions/2026-01-02-main.md"
+new "$H" --doctor >"$H.doctor" 2>&1
+check "枝: main の brain で --doctor は枝の対応を出さない" sh -c "! grep -q -e 'branch -m' -e 'main が無い' '$H.doctor'"
+
+section "brain の既定の枝（--absolute-git-dir の無い古い git）"
+# 古い git は知らない rev-parse の引数をそのまま返して 0 で終わる。新しい brain はそれでも main で始まる
+H="$TMP/branch-old-git"; mkdir -p "$H"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+oshim="$TMP/git-old"; mkdir -p "$oshim"
+# shellcheck disable=SC2016  # $a と $@ は偽の git の中で展開させる
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = --absolute-git-dir ] && { echo "$a"; exit 0; }; done\nexec %s "$@"\n' "$(command -v git)" >"$oshim/git"
+chmod +x "$oshim/git"
+HOME="$H" PATH="$oshim:$PATH" bash "$KIT/install.sh" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "古い git: install が 0" test $? -eq 0
+check "古い git: brain は main で始まる" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+check "古い git: 最初のコミットがある" sh -c "HOME='$H' git -C '$H/brain' rev-parse --verify -q main"
+check "古い git: worktree を作る" test -d "$H/brain-ren"
+
+section "brain の既定の枝（main という id）"
+# 開発・レビュー・リリースの id はブランチ名になる。brain の枝 main と重ねない（重なると worktree が作られず brain で動く）
+H="$TMP/branch-id-main"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Main --user Ken --yes </dev/null >"$H.log" 2>&1
+check "id main: リリースの id main は止まる" test $? -ne 0
+check "id main: 理由を出す" grep -q 'brain の枝 main と重なる' "$H.log"
+check "id main: 何も置かない" test ! -e "$H/brain/.brain-kit/config.json"
+new "$H" --partner Main --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log2" 2>&1
+check "id main: 相棒の id main は通る（worktree を持たない）" test $? -eq 0
+
+section "brain の既定の枝（English）"
+H="$TMP/branch-en"; mkdir -p "$H"
+new "$H" --lang en --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "branch en: install exits 0" test $? -eq 0
+check "branch en: brain starts on main" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+HOME="$H" git -C "$H/brain" branch -m main master >/dev/null 2>&1
+new "$H" --doctor >"$H.doctor" 2>&1
+check "branch en: --doctor says main is missing in English" grep -q 'the brain has no main branch (current branch master)' "$H.doctor"
+check "branch en: --doctor gives the rename command" grep -q -F 'branch -m master main' "$H.doctor"
+check "branch en: no Japanese in the main-branch row" sh -c "! grep -q 'main が無い' '$H.doctor'"
+new "$H" --update </dev/null >"$H.up" 2>&1
+check "branch en: --update warns in English" grep -q 'warn: the brain has no main branch' "$H.up"
+H="$TMP/branch-en-id"; mkdir -p "$H"
+new "$H" --lang en --partner Aoi --dev Ren --review Mio --release Main --user Ken --yes </dev/null >"$H.log" 2>&1
+check "branch en: release id main stops" test $? -ne 0
+check "branch en: the reason is in English" grep -q "clashes with the brain's main branch" "$H.log"
+
+section "brain の既定の枝（すでに master で作られた brain）"
+H="$TMP/branch-old-master"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "旧 master: install が 0" test $? -eq 0
+# 直す前の kit で作られた brain と同じ形にする（brain だけ master、worktree はそれぞれの枝）
+HOME="$H" git -C "$H/brain" branch -m main master >/dev/null 2>&1
+# 同名のタグがあっても枝の名前は master のまま（heads/master にしない）
+HOME="$H" git -C "$H/brain" tag master >/dev/null 2>&1
+check "旧 master: brain が master にある" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/master"
+new "$H" --doctor >"$H.doctor" 2>&1
+check "旧 master: --doctor が 0" test $? -eq 0
+check "旧 master: --doctor が main の無いことを出す" grep -q 'main が無い' "$H.doctor"
+check "旧 master: --doctor が改名のコマンドを出す" grep -q -F "branch -m master main" "$H.doctor"
+check "旧 master: 同名のタグがあっても heads/ を付けない" sh -c "! grep -q -F 'heads/master' '$H.doctor'"
+before="$(snap "$H")"
+new "$H" --update </dev/null >"$H.up" 2>&1
+check "旧 master: --update が 0" test $? -eq 0
+check "旧 master: --update は枝を改名しない（master のまま）" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/master"
+check "旧 master: --update は main を作らない" sh -c "! HOME='$H' git -C '$H/brain' rev-parse --verify -q refs/heads/main"
+check "旧 master: --update はファイルを変えない" test "$before" = "$(snap "$H")"
+check "旧 master: --update が改名のコマンドを出す" grep -q -F "branch -m master main" "$H.up"
+# remote があれば押し先も出す（upstream の remote、無ければ 1 つだけの remote、決まらなければ選ばせる）
+HOME="$H" git -C "$H/brain" remote add backup "$TMP/nowhere-backup.git" >/dev/null 2>&1
+new "$H" --doctor >"$H.doctor-r1" 2>&1
+check "旧 master: remote が 1 つ（origin 以外）ならそこへ押す" grep -q -F "push -u backup refs/heads/main:refs/heads/main" "$H.doctor-r1"
+check "旧 master: origin 決め打ちにしない" sh -c "! grep -q -F 'push -u origin refs/heads/main:refs/heads/main' '$H.doctor-r1'"
+HOME="$H" git -C "$H/brain" remote add origin "$TMP/nowhere-origin.git" >/dev/null 2>&1
+new "$H" --doctor >"$H.doctor-r2" 2>&1
+check "旧 master: remote が複数で upstream が無ければ選ばせる" grep -q -F "push -u <remote> refs/heads/main:refs/heads/main" "$H.doctor-r2"
+HOME="$H" git -C "$H/brain" config branch.master.remote backup
+new "$H" --doctor >"$H.doctor-r3" 2>&1
+check "旧 master: upstream の remote へ押す" grep -q -F "push -u backup refs/heads/main:refs/heads/main" "$H.doctor-r3"
+check "旧 master: upstream があれば origin へは押さない" sh -c "! grep -q -F 'push -u origin refs/heads/main:refs/heads/main' '$H.doctor-r3'"
+# 外から渡った GIT_CONFIG（git config だけが読む）で押し先を変えない
+printf '[branch "master"]\n\tpushRemote = origin\n' >"$TMP/branch-other-config"
+HOME="$H" GIT_CONFIG="$TMP/branch-other-config" bash "$KIT/install.sh" --doctor >"$H.doctor-rc" 2>&1
+check "旧 master: 外の GIT_CONFIG で押し先を変えない" grep -q -F "push -u backup refs/heads/main:refs/heads/main" "$H.doctor-rc"
+check "旧 master: 外の GIT_CONFIG の remote へは押さない" sh -c "! grep -q -F 'push -u origin' '$H.doctor-rc'"
+HOME="$H" git -C "$H/brain" config remote.pushDefault origin
+new "$H" --doctor >"$H.doctor-r4" 2>&1
+check "旧 master: remote.pushDefault が upstream より先" grep -q -F "push -u origin refs/heads/main:refs/heads/main" "$H.doctor-r4"
+check "旧 master: remote.pushDefault があれば upstream へは押さない" sh -c "! grep -q -F 'push -u backup refs/heads/main:refs/heads/main' '$H.doctor-r4'"
+HOME="$H" git -C "$H/brain" config branch.master.pushRemote backup
+new "$H" --doctor >"$H.doctor-r5" 2>&1
+check "旧 master: 枝の pushRemote が remote.pushDefault より先" grep -q -F "push -u backup refs/heads/main:refs/heads/main" "$H.doctor-r5"
+check "旧 master: 枝の pushRemote があれば pushDefault へは押さない" sh -c "! grep -q -F 'push -u origin refs/heads/main:refs/heads/main' '$H.doctor-r5'"
+HOME="$H" git -C "$H/brain" config branch.master.pushRemote gone
+new "$H" --doctor >"$H.doctor-r6" 2>&1
+check "旧 master: 押し先が無い remote なら選ばせる" grep -q -F "push -u <remote> refs/heads/main:refs/heads/main" "$H.doctor-r6"
+# 設定が読めない（時間切れなど）ときは、ほかの remote に推し進めずに選ばせる
+cshim="$TMP/git-config-fail"; mkdir -p "$cshim"
+# shellcheck disable=SC2016  # $a と $@ は偽の git の中で展開させる
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = branch.master.pushRemote ] && exit 3; done\nexec %s "$@"\n' "$(command -v git)" >"$cshim/git"
+chmod +x "$cshim/git"
+HOME="$H" PATH="$cshim:$PATH" bash "$KIT/install.sh" --doctor >"$H.doctor-r7" 2>&1
+check "旧 master: 設定が読めなければ選ばせる" grep -q -F "push -u <remote> refs/heads/main:refs/heads/main" "$H.doctor-r7"
+check "旧 master: 設定が読めなければ具体の remote を出さない" sh -c "! grep -q -e 'push -u origin' -e 'push -u backup' '$H.doctor-r7'"
+# 今の枝が読めない（時間切れなど）ときは detached と取り違えず、改名も push も案内しない
+sshim="$TMP/git-symref-fail"; mkdir -p "$sshim"
+# shellcheck disable=SC2016  # $a と $@ は偽の git の中で展開させる
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = symbolic-ref ] && exit 128; done\nexec %s "$@"\n' "$(command -v git)" >"$sshim/git"
+chmod +x "$sshim/git"
+HOME="$H" PATH="$sshim:$PATH" bash "$KIT/install.sh" --doctor >"$H.doctor-r8" 2>&1
+check "旧 master: 枝が読めなくても main が無いことは出す" grep -q 'main が無い' "$H.doctor-r8"
+check "旧 master: 枝が読めなければ checkout も push も案内しない" sh -c "! grep -q -e 'checkout -b main' -e 'push -u' -e 'branch -m' '$H.doctor-r8'"
+# main があるかが読めない（時間切れなど）ときも、改名も push も案内しない
+rshim="$TMP/git-showref-fail"; mkdir -p "$rshim"
+# shellcheck disable=SC2016  # $a と $@ は偽の git の中で展開させる
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = show-ref ] && exit 128; done\nexec %s "$@"\n' "$(command -v git)" >"$rshim/git"
+chmod +x "$rshim/git"
+HOME="$H" PATH="$rshim:$PATH" bash "$KIT/install.sh" --doctor >"$H.doctor-r9" 2>&1
+check "旧 master: main の有無が読めなければ確かめるよう出す" grep -q 'main があるか確かめられなかった' "$H.doctor-r9"
+check "旧 master: main の有無が読めなければ改名も push も案内しない" sh -c "! grep -q -e 'checkout -b main' -e 'push -u' -e 'branch -m' '$H.doctor-r9'"
+HOME="$H" git -C "$H/brain" config --unset branch.master.pushRemote
+HOME="$H" git -C "$H/brain" config --unset remote.pushDefault
+HOME="$H" git -C "$H/brain" config --unset branch.master.remote
+HOME="$H" git -C "$H/brain" remote remove backup >/dev/null 2>&1
+HOME="$H" git -C "$H/brain" remote remove origin >/dev/null 2>&1
+# 案内のコマンドをそのまま流す。remote の push の対応が別の枝を指していても、remote の main に入り、ほかの枝は動かない
+rb="$TMP/branch-old-master-remote.git"
+HOME="$H" git init -q --bare "$rb" >/dev/null 2>&1
+HOME="$H" git -C "$H/brain" remote add origin "$rb" >/dev/null 2>&1
+HOME="$H" git -C "$H/brain" push -q origin refs/heads/master:refs/heads/master refs/heads/master:refs/heads/other >/dev/null 2>&1
+check "旧 master: remote にほかの枝を作れた（前提）" test $? -eq 0
+other0="$(HOME="$H" git -C "$rb" rev-parse --verify -q 'refs/heads/other^{commit}' 2>/dev/null)"
+check "旧 master: remote のほかの枝が読める（前提）" test -n "$other0"
+HOME="$H" git -C "$H/brain" config remote.origin.push refs/heads/main:refs/heads/other
+new "$H" --doctor >"$H.doctor-run" 2>&1
+grep -E '^ *(→ |[0-9]+\. |- )?git -C ' "$H.doctor-run" | sed 's/^[^g]*git -C /git -C /' >"$H.cmds"
+check "旧 master: 案内は改名が通ったときだけ push する（&& でつなぐ）" grep -q -F "branch -m master main && git -C" "$H.cmds"
+while IFS= read -r c; do HOME="$H" sh -c "$c" >/dev/null 2>&1; done <"$H.cmds"
+check "旧 master: 案内のとおりで brain が main になる" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+check "旧 master: 案内の push が remote の main に入る" sh -c "test \"\$(HOME='$H' git -C '$rb' rev-parse refs/heads/main)\" = \"\$(HOME='$H' git -C '$H/brain' rev-parse main)\""
+check "旧 master: 案内の push は remote のほかの枝を動かさない" test "$(HOME="$H" git -C "$rb" rev-parse --verify -q 'refs/heads/other^{commit}' 2>/dev/null)" = "$other0"
+HOME="$H" git -C "$H/brain" config --unset remote.origin.push
+HOME="$H" git -C "$H/brain" remote remove origin >/dev/null 2>&1
+# --doctor のとおりに改名すれば、起動スクリプトが取り込む
+HOME="$H" git -C "$H/brain" branch -m master main >/dev/null 2>&1
+printf -- '---\ndate: 2026-01-03\nproject: none\ntags: [decision]\n---\n改名後の決定\n' >"$H/brain/decisions/2026-01-03-renamed.md"
+HOME="$H" git -C "$H/brain" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/brain" commit -qm 'after rename' >/dev/null 2>&1
+HOME="$H" PATH="$fakem:$PATH" "$H/.claude/brain-kit/bin/start-mio" >"$H.mio" 2>&1
+check "旧 master: 改名のあとは起動スクリプトが main を取り込む" test -f "$H/brain-mio/decisions/2026-01-03-renamed.md"
+
+section "brain の既定の枝（持ち主がもう git にしていた brain）"
+H="$TMP/branch-owner-repo"; mkdir -p "$H/brain"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+printf 'owner\n' >"$H/brain/owner.md"
+HOME="$H" git -C "$H/brain" init -q >/dev/null 2>&1
+HOME="$H" git -C "$H/brain" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/brain" commit -qm owner >/dev/null 2>&1
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --brain-merge --yes </dev/null >"$H.log" 2>&1
+check "持ち主の repo: install が 0" test $? -eq 0
+check "持ち主の repo: 持ち主の枝は改名しない" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/master"
+check "持ち主の repo: install が改名のコマンドを出す" grep -q -F "branch -m master main" "$H.log"
+
+section "brain の既定の枝（git の確かめに失敗したとき）"
+# rev-parse --is-inside-work-tree だけが失敗する git（時間切れなど）。もう git の brain の HEAD を書き換えない
+H="$TMP/branch-probe-fail"; mkdir -p "$H/brain"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+printf 'owner\n' >"$H/brain/owner.md"
+HOME="$H" git -C "$H/brain" init -q >/dev/null 2>&1
+HOME="$H" git -C "$H/brain" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/brain" commit -qm owner >/dev/null 2>&1
+refs0="$(HOME="$H" git -C "$H/brain" show-ref 2>/dev/null; HOME="$H" git -C "$H/brain" symbolic-ref HEAD 2>/dev/null)"
+gshim="$TMP/git-probe-fail"; mkdir -p "$gshim"
+# shellcheck disable=SC2016  # $a と $@ は偽の git の中で展開させる
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = --is-inside-work-tree ] && exit 128; done\nexec %s "$@"\n' "$(command -v git)" >"$gshim/git"
+chmod +x "$gshim/git"
+check "確かめ失敗: 持ち主の repo にコミットがある（前提）" test -n "$refs0"
+wt0="$(HOME="$H" git -C "$H/brain" worktree list --porcelain 2>/dev/null)"
+HOME="$H" PATH="$gshim:$PATH" bash "$KIT/install.sh" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --brain-merge --yes </dev/null >"$H.log" 2>&1
+check "確かめ失敗: install が 0" test $? -eq 0
+check "確かめ失敗: 持ち主の HEAD と枝が変わらない" test "$refs0" = "$(HOME="$H" git -C "$H/brain" show-ref 2>/dev/null; HOME="$H" git -C "$H/brain" symbolic-ref HEAD 2>/dev/null)"
+check "確かめ失敗: worktree を足さない" test "$wt0" = "$(HOME="$H" git -C "$H/brain" worktree list --porcelain 2>/dev/null)"
+check "確かめ失敗: 触らないことを出す" grep -q 'brain の git を確かめられなかった' "$H.log"
+
+section "brain の既定の枝（外の GIT_DIR が効いているとき）"
+# GIT_DIR が持ち主の別の repo を指していても、その HEAD を main に向けない
+H="$TMP/branch-gitdir"; mkdir -p "$H/other"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+printf 'other\n' >"$H/other/o.md"
+HOME="$H" git -C "$H/other" init -q >/dev/null 2>&1
+HOME="$H" git -C "$H/other" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/other" commit -qm other >/dev/null 2>&1
+orefs0="$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
+check "外の GIT_DIR: 外の repo にコミットがある（前提）" test -n "$orefs0"
+HOME="$H" GIT_DIR="$H/other/.git" PATH="$gshim:$PATH" bash "$KIT/install.sh" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "外の GIT_DIR: 外の repo の HEAD と枝が変わらない" test "$orefs0" = "$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
+oidx0="$(HOME="$H" git -C "$H/other" ls-files -s 2>/dev/null)"
+# 確かめが通る普通の場合も、外の GIT_DIR は使わない（brain は自分の repo で main に）
+rm -rf "$H/brain" "$H/brain-ren" "$H/brain-mio" "$H/brain-sora" "$H/.claude"
+HOME="$H" GIT_DIR="$H/other/.git" bash "$KIT/install.sh" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log2" 2>&1
+check "外の GIT_DIR（確かめが通る）: install が 0" test $? -eq 0
+check "外の GIT_DIR（確かめが通る）: 外の repo の HEAD と枝が変わらない" test "$orefs0" = "$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
+check "外の GIT_DIR（確かめが通る）: 外の repo の index が変わらない" test "$oidx0" = "$(HOME="$H" git -C "$H/other" ls-files -s 2>/dev/null)"
+check "外の GIT_DIR（確かめが通る）: 外の repo に worktree を足さない" test "$(HOME="$H" git -C "$H/other" worktree list --porcelain | grep -c '^worktree ')" -eq 1
+check "外の GIT_DIR（確かめが通る）: brain は自分の repo で main" test "$(HOME="$H" git -C "$H/brain" rev-parse --absolute-git-dir 2>/dev/null)" = "$(cd "$H/brain" && pwd -P)/.git"
+check "外の GIT_DIR（確かめが通る）: brain の HEAD は main" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+HOME="$H" GIT_DIR="$H/other/.git" bash "$KIT/install.sh" --doctor >"$H.doctor" 2>&1
+check "外の GIT_DIR: --doctor は外の repo の改名を案内しない" sh -c "! grep -q -e 'branch -m' -e 'main が無い' '$H.doctor'"
+
+section "brain の既定の枝（親の repo の中の brain）"
+H="$TMP/branch-parent"; mkdir -p "$H"
+printf '[init]\n\tdefaultBranch = master\n' >"$H/.gitconfig"
+printf 'p\n' >"$H/p.md"
+HOME="$H" git -C "$H" init -q >/dev/null 2>&1
+HOME="$H" git -C "$H" add p.md >/dev/null 2>&1 && HOME="$H" git -C "$H" commit -qm parent >/dev/null 2>&1
+prefs0="$(HOME="$H" git -C "$H" show-ref 2>/dev/null; HOME="$H" git -C "$H" symbolic-ref HEAD 2>/dev/null)"
+check "親の repo: コミットがある（前提）" test -n "$prefs0"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "親の repo: install が 0" test $? -eq 0
+check "親の repo: 親の HEAD と枝が変わらない" test "$prefs0" = "$(HOME="$H" git -C "$H" show-ref 2>/dev/null; HOME="$H" git -C "$H" symbolic-ref HEAD 2>/dev/null)"
+check "親の repo: 親に worktree を足さない" test "$(HOME="$H" git -C "$H" worktree list --porcelain | grep -c '^worktree ')" -eq 1
+check "親の repo: 触らないことを出す" grep -q 'brain が別の git の repo の中にある' "$H.log"
+new "$H" --doctor >"$H.doctor" 2>&1
+check "親の repo: --doctor は親の改名を案内しない" sh -c "! grep -q 'branch -m' '$H.doctor'"
+pidx0="$(HOME="$H" git -C "$H" ls-files -s 2>/dev/null)"
+printf '\n<!-- 持ち主の追記 -->\n' >>"$H/brain/CLAUDE.md"
+rm -f "$H/brain/dev/README.md"   # --update が足し直すものを作る
+new "$H" --update </dev/null >"$H.up" 2>&1
+check "親の repo: --update が 0" test $? -eq 0
+check "親の repo: --update は足し直す（前提）" test -f "$H/brain/dev/README.md"
+check "親の repo: --update 後も親の HEAD と枝が変わらない" test "$prefs0" = "$(HOME="$H" git -C "$H" show-ref 2>/dev/null; HOME="$H" git -C "$H" symbolic-ref HEAD 2>/dev/null)"
+check "親の repo: --update 後も親の index が変わらない" test "$pidx0" = "$(HOME="$H" git -C "$H" ls-files -s 2>/dev/null)"
+check "親の repo: --update は親に worktree を足さない" test "$(HOME="$H" git -C "$H" worktree list --porcelain | grep -c '^worktree ')" -eq 1
+
+section "brain の既定の枝（GIT_DIR が残ったシェルで案内を写す）"
+H="$TMP/branch-advice-env"; mkdir -p "$H/other"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+HOME="$H" git -C "$H/brain" branch -m main master >/dev/null 2>&1
+printf 'other\n' >"$H/other/o.md"
+HOME="$H" git -C "$H/other" init -q >/dev/null 2>&1
+HOME="$H" git -C "$H/other" checkout -q -b master >/dev/null 2>&1
+HOME="$H" git -C "$H/other" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/other" commit -qm other >/dev/null 2>&1
+orefs0="$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
+check "案内と GIT_DIR: 外の repo が master にある（前提）" sh -c "test \"\$(HOME='$H' git -C '$H/other' symbolic-ref HEAD)\" = refs/heads/master"
+HOME="$H" GIT_DIR="$H/other/.git" GIT_WORK_TREE="$H/other" bash "$KIT/install.sh" --doctor >"$H.doctor" 2>&1
+grep -E 'git -C ' "$H.doctor" | sed 's/^[^eg]*\(env \|git -C \)/\1/' >"$H.cmds"
+check "案内と GIT_DIR: 改名の案内が出る（前提）" grep -q -F 'branch -m master main' "$H.cmds"
+while IFS= read -r c; do HOME="$H" GIT_DIR="$H/other/.git" GIT_WORK_TREE="$H/other" sh -c "$c" >/dev/null 2>&1; done <"$H.cmds"
+check "案内と GIT_DIR: 写したコマンドが外の repo を変えない" test "$orefs0" = "$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
+check "案内と GIT_DIR: 写したコマンドで brain が main になる" sh -c "test \"\$(HOME='$H' git -C '$H/brain' symbolic-ref HEAD)\" = refs/heads/main"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
