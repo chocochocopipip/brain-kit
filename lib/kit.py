@@ -987,16 +987,16 @@ def read_backup_meta(d):
     path = os.path.join(top, "meta.json")
     try:
         if not stat.S_ISDIR(os.lstat(top).st_mode):
-            return None, "退避がディレクトリでない（symlink・ファイル）"
+            return None, M("退避がディレクトリでない（symlink・ファイル）")
         if not stat.S_ISREG(os.lstat(path).st_mode):
-            return None, "meta.json が普通のファイルでない"
+            return None, M("meta.json が普通のファイルでない")
     except OSError as e:
         if e.errno == errno.ENOENT and os.path.isdir(top) and not os.path.islink(top):
             return None, None
-        return None, "確かめられない: %s" % e
+        return None, M("確かめられない: %s") % e
     m = load_json(path)
     if not isinstance(m, dict) or not m:
-        return None, "読めない・JSON の object でない"
+        return None, M("読めない・JSON の object でない")
     return m, None
 
 
@@ -2376,19 +2376,19 @@ def cmd_rollback(args):
                 if why:
                     pass
                 elif not isinstance(m.get("rolled_back", False), bool):
-                    why = "rolled_back が true / false でない"
+                    why = M("rolled_back が true / false でない")
                 elif m.get("rolled_back"):
                     continue
                 elif "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
-                    why = "seq か legacy_before が不正"
+                    why = M("seq か legacy_before が不正")
                 else:
                     try:
                         order = backup_order(m, d)
                     except (TypeError, ValueError):
-                        why = "stamp か created が不正"
+                        why = M("stamp か created が不正")
                 if why:
-                    die("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
-                        "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (why, tilde(path)), 1)
+                    die(M("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
+                          "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す") % (why, tilde(path)), 1)
                 cands.append((order, d, m))
     if not cands:
         die(M("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）"), 1)
@@ -2403,9 +2403,9 @@ def cmd_rollback(args):
         later = [c[1] for c in cands if "seq" not in c[2] and
                  meta["legacy_before"].get(c[1]) != meta_sha(os.path.join(CLAUDE, c[1]))]
         if later:
-            die("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
-                "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
-                "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (", ".join(later), d), 1)
+            die(M("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
+                  "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
+                  "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す") % (", ".join(later), d), 1)
     bdir = os.path.join(CLAUDE, d)
     target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
     say(M("戻す: %s（%s、v%s → %s）%s") % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
@@ -2773,18 +2773,18 @@ def lock_home():
     try:
         import fcntl
     except ImportError:
-        die("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める", 1)
+        die(M("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める"), 1)
     try:
         fd = os.open(HOME, os.O_RDONLY)
     except OSError as e:
-        die("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める" % (HOME, e), 1)
+        die(M("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める") % (HOME, e), 1)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
         os.close(fd)
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-            die("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度", 1)
-        die("同時実行を防ぐロックが取れない（%s）。何も変えずに止める" % e, 1)
+            die(M("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度"), 1)
+        die(M("同時実行を防ぐロックが取れない（%s）。何も変えずに止める") % e, 1)
     return fd
 
 
