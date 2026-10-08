@@ -2279,12 +2279,20 @@ def cmd_rollback(args):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
                 path = os.path.join(CLAUDE, d, "meta.json")
-                if not os.path.lexists(path):
-                    continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
-                m = load_json(path)
                 why = None
-                if not isinstance(m, dict) or not m:
+                try:
+                    os.lstat(path)
+                except OSError as e:
+                    if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                        continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
+                    why = "確かめられない: %s" % e
+                m = None if why else load_json(path)
+                if why:
+                    pass
+                elif not isinstance(m, dict) or not m:
                     why = "読めない・JSON の object でない"
+                elif not isinstance(m.get("rolled_back", False), bool):
+                    why = "rolled_back が true / false でない"
                 elif m.get("rolled_back"):
                     continue
                 elif "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):

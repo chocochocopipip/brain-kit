@@ -1154,11 +1154,14 @@ good = {d: open(d + "/meta.json", "rb").read() for d in dirs}
 for target in (dirs[2], dirs[0]):
     for raw in (b"{", b"", b"[]", b"{}", b"null", b'\xff\xfe', None,
                 g["dump_json"](dict(g["load_json"](target + "/meta.json"), stamp=1)).encode(),
-                g["dump_json"](dict(g["load_json"](target + "/meta.json"), created=5)).encode()):
-        if raw is None:
-            os.chmod(target + "/meta.json", 0)
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), created=5)).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), rolled_back="false")).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), rolled_back=1)).encode(), "dir"):
+        if raw in (None, "dir"):   # meta.json か、退避のディレクトリそのものが読めない
+            locked = target + "/meta.json" if raw is None else target
+            os.chmod(locked, 0)
             if os.access(target + "/meta.json", os.R_OK):   # root では読めてしまうので飛ばす
-                os.chmod(target + "/meta.json", 0o644)
+                os.chmod(locked, 0o755)
                 continue
         else:
             open(target + "/meta.json", "wb").write(raw)
@@ -1167,6 +1170,7 @@ for target in (dirs[2], dirs[0]):
             raise AssertionError("rollback が止まらなかった: %s %r" % (target, raw))
         except SystemExit as e:
             assert e.code == 1, e.code
+        os.chmod(target, 0o755)
         os.chmod(target + "/meta.json", 0o644)
         open(target + "/meta.json", "wb").write(good[target])
         assert g["read_text"](p) == "kit2"
