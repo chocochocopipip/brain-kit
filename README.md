@@ -11,6 +11,7 @@
 > npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
 > Start all four once with `~/.claude/brain-kit/bin/start-all`; it detects tmux or terminal windows and verifies the process list.
+> Optional first-day practice: `--practice` walks one issue through all four personas locally; it never touches real projects or creates a GitHub repo. Remove it with `--practice-cleanup`.
 >
 > Update notice: a SessionStart hook checks the published npm release in the background at most once a day; from the following session, Claude mentions a cached newer release in one line in its first reply. Fetch failures are silent; never auto-updates; opt out with `BRAIN_KIT_NO_UPDATE_CHECK=1` or `~/.claude/brain-kit/no-update-check`.
 >
@@ -149,6 +150,27 @@ Ctrl-b のあと番号、または Ctrl-b w で人格のウィンドウを選ぶ
 `cd ~/brain && claude` で起動して `/setup` と打つと、
 あなたのこと → 相棒の声 → プロジェクト → 開発の分担 → レビューの規準 → リリースの手順 → 相棒に任せる範囲、の順に 1 節ずつインタビューして brain に書き、節ごとにコミットする。
 既に書いてある節は飛ばす。
+
+### 初日の練習（任意）
+
+導入後に希望したときだけ実行する。`--yes` や非対話の導入では自動実行しない。
+捨ててよいローカルの小さな issue を相棒 → 開発 → レビュー → リリースに通し、
+ラベルを誰が付けるか、リリースの「ラベル＋指示コメント＋main の前後 SHA」、工程表の列の動きを見る。
+
+GitHub の代わりは練習ディレクトリ内の bare git リポジトリ。issue・PR・ラベル・コメントはファイル。
+ネット通信も GitHub リポジトリの作成も行わず、`~/brain`・`~/.claude`・本物のリポジトリには一切書かない。
+`--brain`（既定 `$BRAIN_DIR` または `~/brain`）から人格の設定だけを読み、練習の記録は練習内の `records/` に置く。
+
+```bash
+./install.sh --practice                   # 任意の練習。Enter で進む／q で中断、再実行で続きから
+./install.sh --practice-status            # 練習の現在地と工程表
+./install.sh --practice-cleanup           # 練習だけを削除（非対話なら --yes。--dry-run で場所だけ）
+./install.sh --practice --practice-dir ~/brain-kit-practice-other  # 練習先を変更
+```
+
+既定の場所は `~/brain-kit-practice`。別の場所なら status・cleanup にも同じ `--practice-dir` を渡す。
+`npx brainkit-agents` にも同じ引数を渡せる。`--uninstall` では練習を消さない。`--practice-cleanup` を使う。
+実際のセッションで試すときは `--repos` に本物のリポジトリを登録する。練習リポジトリは登録しない。
 
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 **Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` は macOS 標準の bash 3.2 でも動く書き方だけを使う。本体は `lib/kit.py`（Python 3.8 以上、標準ライブラリだけ）。bash 4 以降の機能・GNU 拡張・column は使っていない。任意の `heavy-lock` だけ awk を使う）。
@@ -331,6 +353,7 @@ brain-kit/
 ├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
 ├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。npm のパッケージ名は brainkit-agents。package.json / LICENSE(MIT)
 ├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
+├── lib/practice.py           ← 任意のローカル練習（本物のプロジェクトには触らない）
 ├── lib/kit.py                ← 本体（install / --update / --uninstall / --rollback / --doctor）
 ├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）
 ├── VERSION / CHANGELOG.md    ← 版と変更点（--update の最後に出る）
