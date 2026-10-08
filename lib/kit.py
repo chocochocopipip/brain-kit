@@ -1887,8 +1887,18 @@ def cmd_uninstall(args):
             used[path] = why
             remove.discard(path)
 
-    def inside_claude(path):
-        return path.startswith(claude + os.sep) and os.path.isfile(path) and safe(path)
+    # 辿るときは ~/.claude の中の symlink もたどる（消すかどうかの safe() とは別。読むだけ）。
+    # 指す先が記録のある kit のファイルなら、その記録のパスとして残す
+    real_claude = os.path.realpath(claude)
+    by_real = {os.path.realpath(c): c for c in candidates}
+
+    def canonical(path):
+        real = os.path.realpath(path)
+        if real in by_real:
+            return by_real[real]
+        if real.startswith(real_claude + os.sep) and os.path.isfile(real):
+            return real
+        return None
 
     def named_files(text, here=None):
         """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
@@ -1900,11 +1910,11 @@ def cmd_uninstall(args):
                     arg = os.path.join(HOME, arg[len(prefix):])
             if not arg.startswith(os.sep):
                 arg = os.path.join(here, arg) if here and "/" in arg else ""
-            if arg and inside_claude(os.path.abspath(arg)):
-                out.add(os.path.abspath(arg))
+            if arg and os.path.abspath(arg).startswith(claude + os.sep) and canonical(arg):
+                out.add(canonical(arg))
         if here and os.path.isdir(here):
-            out.update(os.path.join(here, name) for name in sorted(os.listdir(here))
-                       if name in text and inside_claude(os.path.join(here, name)))
+            out.update(canonical(os.path.join(here, name)) for name in sorted(os.listdir(here))
+                       if name in text and canonical(os.path.join(here, name)))
         for path in candidates:
             if any(f in text for f in forms(path)):
                 out.add(path)

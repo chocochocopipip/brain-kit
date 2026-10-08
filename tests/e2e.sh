@@ -1795,6 +1795,8 @@ printf '#!/bin/sh\nexec "$HOME/.claude/own/helper.sh"\n' >"$H/.claude/hooks/mine
 printf '#!/bin/sh\npython3 ~/.claude/brain-kit/dashboard/collect.py\n' >"$H/.claude/own/helper.sh"
 # 相対：持ち主のフック → node の mine.js → require('./helper.js') → kit の shot.py
 printf "require('./helper.js');\n" >"$H/.claude/hooks/mine.js"
+# symlink：持ち主のフック → ~/.claude/hooks/current.sh（kit の precheck.sh を指す symlink）
+ln -s ../brain-kit/automations/precheck.sh "$H/.claude/hooks/current.sh"
 printf "require('child_process').execFileSync('/usr/bin/env', ['python3', '%s/.claude/brain-kit/dashboard/shot.py']);\n" "$H" >"$H/.claude/hooks/helper.js"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
@@ -1805,6 +1807,7 @@ s["hooks"].setdefault("Notification", []).append(
     {"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/mine.sh\""}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine2.sh"}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "node ~/.claude/hooks/mine.js"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/current.sh\""}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1815,6 +1818,8 @@ check "持ち主のスクリプトが呼ぶ heavy-lock も残る" test -x "$H/.c
 check "持ち主のスクリプトは残る" test -x "$H/.claude/hooks/mine.sh"
 check "持ち主のスクリプト → 補助スクリプトが呼ぶ collect.py も残る" test -f "$H/.claude/brain-kit/dashboard/collect.py"
 check "持ち主の node スクリプト → 相対の補助 → kit の shot.py も残る" test -f "$H/.claude/brain-kit/dashboard/shot.py"
+check ".claude の中の symlink（current.sh → precheck.sh）越しに呼ぶ kit のファイルも残る" test -f "$H/.claude/brain-kit/automations/precheck.sh"
+check "symlink はそのまま" test -L "$H/.claude/hooks/current.sh"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
 H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
