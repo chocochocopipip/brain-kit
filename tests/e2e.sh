@@ -4068,6 +4068,267 @@ check "核（worktree 無し）: 開発の起動は相棒の核を出さない" 
 HOME="$H" PATH="$fakec:$PATH" "$H/.claude/brain-kit/bin/start-aoi" >"$H.aoi" 2>&1
 check "核（worktree 無し）: 相棒の起動は相棒の核を出す" grep -q '相棒だけの核' "$H.aoi"
 
+# ------------------------------------------------------------------ リリースだけの許可
+section "リリースだけの許可（任意）"
+lacks() { ! grep -q -E -- "$1" "$2"; }   # lacks <式> <file> : 一致する行が無い
+H="$TMP/release-off"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes --no-worktrees >"$H.log" 2>&1
+check "許可: 既定の install" test $? -eq 0
+check "許可: 既定ではディレクトリ無し" test ! -e "$H/.claude/brain-kit/permissions"
+check "許可: config は false" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["release_permissions"] is False' "$H/brain/.brain-kit/config.json"
+check "許可: 既定の start は読み込まない" lacks --settings "$H/.claude/brain-kit/bin/start-sora"
+new "$H" --doctor >"$H.doctor" 2>&1
+check "許可: doctor の既定表示" grep -q 'リリースの許可の一覧.*入れていない.*任意' "$H.doctor"
+H0="$H"
+# 任意機能を入れる前の main（a1cf25a。起動スクリプトに BRAIN_KIT_PERSONA が入った版）の生成結果と比べ、
+# 選ばない起動を保つ。原文は一時領域だけで使う
+git -C "$KIT" show a1cf25a:lib/kit.py >"$TMP/previous-kit.py"
+python3 - "$TMP/previous-kit.py" "$KIT/lib/kit.py" "$H0" <<'PY'
+import json, pathlib, runpy, sys
+old, current = (runpy.run_path(p) for p in sys.argv[1:3])
+cfg = json.loads((pathlib.Path(sys.argv[3]) / "brain/.brain-kit/config.json").read_text())
+for role in ("partner", "dev", "review", "release"):
+    assert old["gen_start"](role, cfg) == current["gen_start"](role, cfg)
+PY
+check "許可: 無効時の全起動は前の生成結果と同一" test $? -eq 0
+for answer in y n; do
+  hi="$TMP/permissions-interactive-$answer"; mkdir -p "$hi"
+  printf '%s\n' "$answer" | BRAIN_KIT_INTERACTIVE=1 HOME="$hi" bash "$KIT/install.sh" --mode local --no-codex \
+    --partner Aoi --dev Ren --review Mio --release Sora --user Ken --projects '' --repos '' --no-worktrees >"$hi.log" 2>&1
+  check "許可: 対話 $answer の導入" test $? -eq 0
+  check "許可: 対話 $answer の選択を記録" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["release_permissions"] == (sys.argv[2] == "y")' "$hi/brain/.brain-kit/config.json" "$answer"
+done
+
+H="$TMP/release-on"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --release-permissions --yes --no-worktrees >"$H.log" 2>&1
+check "許可: 明示して install" test $? -eq 0
+perm="$H/.claude/brain-kit/permissions/sora.json"
+check "許可: 雛形と manifest" python3 -c 'import json,sys; from pathlib import Path; h=Path(sys.argv[1]); assert "Bash(gh pr merge:*)" in json.loads((h/".claude/brain-kit/permissions/sora.json").read_text())["permissions"]["allow"]; assert ".claude/brain-kit/permissions/sora.json" in json.loads((h/".claude/brain-kit/manifest.json").read_text())["files"]' "$H"
+check "許可: 共通設定は同一" cmp -s "$H0/.claude/settings.json" "$H/.claude/settings.json"
+for id in aoi ren mio; do
+  check "許可: $id は読み込まない" lacks 'permissions|--settings' "$H/.claude/brain-kit/bin/start-$id"
+  # HOME の展開結果だけ揃え、スクリプトをバイトで比較する。kit はパスを正規化して書くので、
+  # 置き換える側も正規化する（macOS の TMPDIR は / で終わり、$H0 に // が混ざる）
+  python3 -c 'import os, sys; sys.stdout.write(open(sys.argv[1]).read().replace(os.path.abspath(sys.argv[2]), os.path.abspath(sys.argv[3])))' \
+    "$H0/.claude/brain-kit/bin/start-$id" "$H0" "$H" >"$H.expected"
+  check "許可: $id は同一" cmp -s "$H.expected" "$H/.claude/brain-kit/bin/start-$id"
+done
+check "許可: sora だけ settings" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
+mkdir -p "$TMP/permissions-bin"
+cat >"$TMP/permissions-bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@"
+SH
+chmod +x "$TMP/permissions-bin/claude"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" extra >"$H.args"
+printf '%s\n' --settings "$perm" extra /sora >"$H.want"
+check "許可: sora の引数と追加引数" cmp -s "$H.want" "$H.args"
+# 一覧を渡すときも、要約のあとのフック用の役（BRAIN_KIT_PERSONA）は同じに渡る
+mkdir -p "$TMP/permissions-env-bin"
+cat >"$TMP/permissions-env-bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'PERSONA=%s\n' "${BRAIN_KIT_PERSONA:-}"
+printf '%s\n' "$@"
+SH
+chmod +x "$TMP/permissions-env-bin/claude"
+HOME="$H" PATH="$TMP/permissions-env-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.envargs"
+printf '%s\n' PERSONA=release --settings "$perm" /sora >"$H.want"
+check "許可: 一覧と BRAIN_KIT_PERSONA が両方渡る" cmp -s "$H.want" "$H.envargs"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-mio" >"$H.args"
+printf '%s\n' /mio >"$H.want"
+check "許可: mio の引数" cmp -s "$H.want" "$H.args"
+before="$(snap "$H")"; n="$(commits "$H")"
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "許可: 通常更新が成功" test $? -eq 0
+check "許可: 通常更新は同一" test "$before" = "$(snap "$H")"
+check "許可: 通常更新はコミット無し" test "$n" = "$(commits "$H")"
+new "$H" --update --no-release-permissions --no-worktrees >"$H.off" 2>&1
+check "許可: 解除が成功" test $? -eq 0
+check "許可: 未編集の一覧を削除" test ! -e "$perm"
+check "許可: 解除で起動から外す" lacks --settings "$H/.claude/brain-kit/bin/start-sora"
+check "許可: 解除を記録" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["release_permissions"] is False' "$H/brain/.brain-kit/config.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "許可: 解除の rollback" test $? -eq 0
+check "許可: 解除前を全復元" test "$before" = "$(snap "$H")"
+python3 - "$perm" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); data = json.loads(p.read_text())
+data["permissions"]["allow"].append("Bash(echo:*)")
+p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+PY
+cp "$perm" "$H.edited"
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "許可: 編集後の更新" test $? -eq 0
+check "許可: 持ち主の変更を保持" cmp -s "$perm" "$H.edited"
+new "$H" --doctor >"$H.doctor" 2>&1
+check "許可: doctor は入れた" grep -q 'リリースの許可の一覧.*入れた.*sora.json.*start-sora だけが読む' "$H.doctor"
+rm "$perm"
+new "$H" --doctor >"$H.missing" 2>&1
+check "許可: doctor は欠落と修復を案内" grep -q 'リリースの許可の一覧.*無い' "$H.missing"
+check "許可: doctor の修復コマンド" grep -q './install.sh --update（リリースの許可の一覧を戻す）' "$H.missing"
+cp "$H.edited" "$perm"
+# 一覧と起動スクリプトの両方を持ち主が直したまま外す → 起動スクリプトは衝突で残るが、一覧は読まれない場所へ
+printf '# owner\n' >>"$H/.claude/brain-kit/bin/start-sora"
+before="$(snap "$H")"
+new "$H" --update --no-release-permissions --no-worktrees --dry-run >"$H.offdry" 2>&1
+check "許可: 解除の dry-run は何も変えない" test "$before" = "$(snap "$H")"
+check "許可: 解除の dry-run は移すと出す" grep -q '.off に移し' "$H.offdry"
+new "$H" --update --no-release-permissions --no-worktrees >"$H.off" 2>&1
+check "許可: 編集済みの解除が 0" test $? -eq 0
+check "許可: 編集済みの一覧は読まれる場所から消える" test ! -e "$perm"
+check "許可: 編集済みの中身は .off に残る" cmp -s "$perm.off" "$H.edited"
+check "許可: 移したことを出す" grep -q 'sora.json.off に移した' "$H.off"
+check "許可: 直した起動スクリプトは衝突で残る" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+printf '%s\n' /sora >"$H.want"
+check "許可: 残った起動スクリプトも一覧を渡さない" cmp -s "$H.want" "$H.args"
+# 一覧が読まれる場所に戻っていても、設定で選んでいなければ残った起動スクリプトは渡さない
+cp "$H.edited" "$perm"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+check "許可: 選んでいなければ一覧が在っても渡さない" cmp -s "$H.want" "$H.args"
+new "$H" --doctor >"$H.offdoc" 2>&1
+check "許可: doctor は選んでいないのに在る一覧を指摘" grep -q 'sora.json.*要確認.*選んでいないのに在る' "$H.offdoc"
+rm "$perm"
+# 外す → 入れ直す → 一覧を直す → --rollback（入れ直しを戻す）でも、外した状態で一覧は渡らない
+new "$H" --update --release-permissions --no-worktrees >"$H.reon" 2>&1
+check "許可: 入れ直しが 0" test $? -eq 0
+printf '%s\n' '{"permissions": {"allow": ["Bash(psql:*)", "Bash(echo:*)"]}}' >"$perm"
+new "$H" --rollback >"$H.rb3" 2>&1
+check "許可: 入れ直しの rollback が 0" test $? -eq 0
+check "許可: rollback で設定は外した状態" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["release_permissions"] is False' "$H/brain/.brain-kit/config.json"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+check "許可: rollback のあと起動スクリプトは一覧を渡さない" cmp -s "$H.want" "$H.args"
+rm -f "$perm"
+new "$H" --rollback >"$H.rb2" 2>&1
+check "許可: 編集済みの解除の rollback" test "$before" = "$(snap "$H")"
+new "$H" --update --no-release-permissions --no-worktrees >"$H.off" 2>&1
+rm -f "$perm.off"
+printf '\n# --settings\n' >>"$H/.claude/brain-kit/bin/start-mio"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); data = json.loads(p.read_text())
+data["permissions"]["allow"].append("Bash(psql:*)")
+p.write_text(json.dumps(data))
+PY
+new "$H" --doctor >"$H.leak" 2>&1
+check "許可: doctor は他人格を指摘" grep -q 'start-mio.*要確認' "$H.leak"
+check "許可: doctor は共通設定を指摘" grep -q 'settings.json.*要確認.*全人格' "$H.leak"
+H="$H0"; perm="$H/.claude/brain-kit/permissions/sora.json"
+new "$H" --update --release-permissions --no-worktrees >"$H.on" 2>&1
+check "許可: あとから追加" test $? -eq 0
+check "許可: あとから一覧を置く" test -f "$perm"
+check "許可: あとから起動に追加" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
+before="$(snap "$H")"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "許可: uninstall" test $? -eq 0
+check "許可: 空のディレクトリも削除" test ! -e "$H/.claude/brain-kit/permissions"
+new "$H" --rollback >"$H.rb" 2>&1
+check "許可: uninstall の rollback" test $? -eq 0
+check "許可: uninstall 前を全復元" test "$before" = "$(snap "$H")"
+# 一覧と起動スクリプトの両方を直したまま外す → 両方とも残るが、kit の記録が無いので一覧は渡さない
+printf '%s\n' '{"permissions": {"allow": ["Bash(psql:*)"]}}' >"$perm"
+printf '# owner\n' >>"$H/.claude/brain-kit/bin/start-sora"
+new "$H" --uninstall --yes >"$H.un2" 2>&1
+check "許可: 直したまま uninstall が 0" test $? -eq 0
+check "許可: 直した一覧は残る" test -f "$perm"
+check "許可: 直した起動スクリプトは残る" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+printf '%s\n' /sora >"$H.want"
+check "許可: uninstall のあとは一覧を渡さない" cmp -s "$H.want" "$H.args"
+new "$H" --rollback >"$H.rb4" 2>&1
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+printf '%s\n' --settings "$perm" /sora >"$H.want"
+check "許可: uninstall を戻すと一覧を渡す" cmp -s "$H.want" "$H.args"
+new "$H" --update --release-permissions --no-release-permissions >"$H.bad" 2>&1
+check "許可: 両方の指定は失敗" test $? -ne 0
+# 同じ機に別の brain を入れ、前のリリースの id を開発に使う。直した前の起動スクリプトが残っても一覧は渡さない
+H="$TMP/release-two-brains"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --release-permissions --yes --no-worktrees >"$H.log" 2>&1
+check "許可: 1 つ目の brain" test $? -eq 0
+printf '# owner\n' >>"$H/.claude/brain-kit/bin/start-sora"
+new "$H" --brain "$H/brain2" --partner Kai --dev Sora --review Mio2 --release Rin --user Ken --edited keep --yes --no-worktrees >"$H.log2" 2>&1
+check "許可: 2 つ目の brain" test $? -eq 0
+check "許可: 前の直した起動スクリプトは残る" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+check "許可: 別の brain の開発に同じ id でも一覧を渡さない" lacks --settings "$H.args"
+
+# 起動スクリプトの条件を 1 つずつ確かめる。ほかの条件はそろえたまま、その 1 つだけを崩して渡さないことを見る
+# （条件：一覧が在る／config で選んでいる／config のリリースの id／manifest の brain と id の記録／manifest の一覧の記録／skill の印）
+H="$TMP/release-gates"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --release-permissions --yes --no-worktrees >"$H.log" 2>&1
+check "条件: install" test $? -eq 0
+perm="$H/.claude/brain-kit/permissions/sora.json"
+gate_launch() { HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"; }
+gate_passes() { gate_launch; grep -q -x -- --settings "$H.args"; }
+# json_edit <file> <python の式（d を書き換える）>
+json_edit() { python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2]); open(p, "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")' "$1" "$2"; }
+conf="$H/brain/.brain-kit/config.json"; man="$H/.claude/brain-kit/manifest.json"; skill="$H/.claude/skills/sora/SKILL.md"
+check "条件: そろっていれば渡す" gate_passes
+# 1. 一覧のファイルだけが無い
+mv "$perm" "$perm.keep"
+gate_launch; check "条件 1（一覧が在る）: 無ければ渡さない" lacks --settings "$H.args"
+mv "$perm.keep" "$perm"; check "条件 1: 戻せば渡す" gate_passes
+# 2a. config の選択だけが false（一覧・manifest・skill はそのまま）
+cp "$conf" "$conf.keep"; json_edit "$conf" 'd["release_permissions"] = False'
+gate_launch; check "条件 2a（config で選んでいる）: false なら渡さない" lacks --settings "$H.args"
+mv "$conf.keep" "$conf"; check "条件 2a: 戻せば渡す" gate_passes
+# 2b. config のリリースの id だけが違う（選択は true のまま）
+cp "$conf" "$conf.keep"; json_edit "$conf" 'd["personas"]["release"]["id"] = "other"'
+gate_launch; check "条件 2b（config のリリースの id）: 違えば渡さない" lacks --settings "$H.args"
+mv "$conf.keep" "$conf"; check "条件 2b: 戻せば渡す" gate_passes
+# 4. manifest の一覧の記録だけが無い（brain と id の記録はそのまま）
+cp "$man" "$man.keep"; json_edit "$man" 'del d["files"][".claude/brain-kit/permissions/sora.json"]'
+gate_launch; check "条件 4（manifest の一覧の記録）: 無ければ渡さない" lacks --settings "$H.args"
+mv "$man.keep" "$man"; check "条件 4: 戻せば渡す" gate_passes
+# 5. 入れたあとに持ち主が skill から印を消す（manifest は入れたときの記録のまま）
+cp "$skill" "$skill.keep"
+python3 -c 'import sys; p = sys.argv[1]; s = open(p, encoding="utf-8").read(); open(p, "w", encoding="utf-8").write("".join(l for l in s.splitlines(True) if "brain-kit:role=release" not in l))' "$skill"
+check "条件 5: 印を消した" lacks 'brain-kit:role=release' "$skill"
+gate_launch; check "条件 5（skill の印）: 消せば渡さない" lacks --settings "$H.args"
+mv "$skill.keep" "$skill"; check "条件 5: 戻せば渡す" gate_passes
+# 3. 同じ機の 2 つの brain が、どちらも同じリリースの id で許可を選ぶ。manifest は後の brain2 を指すので、
+#    直して残した brain1 の起動スクリプトでは 3 だけが止める（brain1 の config・一覧・manifest の一覧・skill の印はそろう）
+printf '# owner\n' >>"$H/.claude/brain-kit/bin/start-sora"
+check "条件 3: 直した brain1 の起動スクリプトはまだ渡す" gate_passes
+new "$H" --brain "$H/brain2" --partner Kai --dev Ren2 --review Mio2 --release Sora --user Ken --release-permissions --edited keep --yes --no-worktrees >"$H.log2" 2>&1
+check "条件 3: brain2 も同じ id で選ぶ" test $? -eq 0
+check "条件 3: brain1 の起動スクリプトが残る" grep -q -F "$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$H/brain")/.brain-kit/config.json" "$H/.claude/brain-kit/bin/start-sora"
+check "条件 3: ほかの条件はそろっている" python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); assert c["release_permissions"] is True and c["personas"]["release"]["id"] == "sora"; assert ".claude/brain-kit/permissions/sora.json" in m["files"]; assert m["release_permissions"]["id"] == "sora" and m["release_permissions"]["brain"].endswith("brain2"); assert "brain-kit:role=release" in open(sys.argv[3], encoding="utf-8").read()' "$conf" "$man" "$skill"
+gate_launch; check "条件 3（manifest の brain の記録）: 別の brain を指せば渡さない" lacks --settings "$H.args"
+
+# 逆向き：前の brain の開発の id を、別の brain のリリースに使う。直した開発の skill を残したら一覧は渡さない
+H="$TMP/release-two-brains-rev"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Sora --review Mio --release Rin --user Ken --yes --no-worktrees >"$H.log" 2>&1
+check "許可（逆）: 1 つ目の brain" test $? -eq 0
+printf '# owner\n' >>"$H/.claude/skills/sora/SKILL.md"
+new "$H" --brain "$H/brain2" --partner Kai --dev Ren2 --review Mio2 --release Sora --user Ken --release-permissions --edited keep --yes --no-worktrees >"$H.log2" 2>&1
+check "許可（逆）: 2 つ目の brain" test $? -eq 0
+check "許可（逆）: 直した開発の skill は残る" grep -q '^# owner' "$H/.claude/skills/sora/SKILL.md"
+check "許可（逆）: 渡さないと知らせる" grep -q '許可の一覧は渡さない' "$H.log2"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+check "許可（逆）: 残った開発の skill に一覧を渡さない" lacks --settings "$H.args"
+# そのあと普通の流れで衝突を今のまま解消しても（--update → --resolve --keep → --update）、開発の skill には渡さない
+new "$H" --brain "$H/brain2" --update --no-worktrees </dev/null >"$H.up1" 2>&1
+new "$H" --brain "$H/brain2" --resolve --keep "$H/.claude/skills/sora/SKILL.md" </dev/null >"$H.res" 2>&1
+check "許可（逆）: --resolve --keep が 0" test $? -eq 0
+new "$H" --brain "$H/brain2" --update --no-worktrees </dev/null >"$H.up2" 2>&1
+check "許可（逆）: 解消後の更新が 0" test $? -eq 0
+check "許可（逆）: 解消後も開発の skill のまま" grep -q '^# owner' "$H/.claude/skills/sora/SKILL.md"
+HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
+check "許可（逆）: 今のまま解消しても一覧を渡さない" lacks --settings "$H.args"
+
+# 選ぶ前の kit で入れた設定には、何も変わらない更新で印を足さない
+H="$TMP/release-legacy"
+old_install 62952c7 "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "許可: 前の kit からの更新が 0" test $? -eq 0
+check "許可: 前の kit の設定に印を足さない" lacks release_permissions "$H/brain/.brain-kit/config.json"
+check "許可: 前の kit からの更新で一覧を置かない" test ! -e "$H/.claude/brain-kit/permissions"
+before="$(snap "$H")"; n="$(commits "$H")"
+new "$H" --update --no-worktrees >"$H.up2" 2>&1
+check "許可: 前の kit からの 2 回目の更新は何も変えない" test "$before" = "$(snap "$H")"
+check "許可: 前の kit からの 2 回目の更新はコミット無し" test "$n" = "$(commits "$H")"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then

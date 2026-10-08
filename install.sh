@@ -27,6 +27,7 @@
 #   --practice-dir <dir>              練習の場所（既定 ~/brain-kit-practice）
 #   ./install.sh --doctor             何も変えず、版・人格・古いもの・手で直したもの・CLI・Orca・gh を表で出す
 #
+#   --release-permissions / --no-release-permissions : リリース担当だけに許可の一覧を入れる／外す（既定は入れない。更新でも使える）
 #   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
 #             codex login は案内のみ、settings.json に Codex plugin の marketplace と plugin キーを足す
 #   --brain-merge : ~/brain が既にあるとき（brain-kit ではない自前の vault）、無いものだけを足す。
@@ -77,9 +78,9 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "error: $1 に値が要る" >&2; exit 2; }
       PYARGS+=("$1" "$2"); shift 2 ;;
     --dry-run)  PYARGS+=(--dry-run); PRACTICE_ARGS+=(--dry-run); shift ;;
-    --brain-merge|--no-worktrees|--diff|--keep)
+    --release-permissions|--no-release-permissions|--brain-merge|--no-worktrees|--diff|--keep)
       PYARGS+=("$1"); shift ;;
-    -h|--help)  sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
     -*) echo "使えない引数: $1" >&2; exit 2 ;;
     *)
       if [ "$ACTION" != resolve ] || [ -n "$TARGET" ]; then
