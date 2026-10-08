@@ -4947,7 +4947,7 @@ HOME="$H" git -C "$H/other" add -A >/dev/null 2>&1 && HOME="$H" git -C "$H/other
 orefs0="$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
 check "案内と GIT_DIR: 外の repo が master にある（前提）" sh -c "test \"\$(HOME='$H' git -C '$H/other' symbolic-ref HEAD)\" = refs/heads/master"
 HOME="$H" GIT_DIR="$H/other/.git" GIT_WORK_TREE="$H/other" bash "$KIT/install.sh" --doctor >"$H.doctor" 2>&1
-grep -E 'git -C ' "$H.doctor" | sed 's/^[^eg]*\(env \|git -C \)/\1/' >"$H.cmds"
+grep -E 'git -C ' "$H.doctor" | sed -E 's/^[^eg]*(env |git -C )/\1/' >"$H.cmds"   # BSD の sed は基本形の \| を知らない
 check "案内と GIT_DIR: 改名の案内が出る（前提）" grep -q -F 'branch -m master main' "$H.cmds"
 while IFS= read -r c; do HOME="$H" GIT_DIR="$H/other/.git" GIT_WORK_TREE="$H/other" sh -c "$c" >/dev/null 2>&1; done <"$H.cmds"
 check "案内と GIT_DIR: 写したコマンドが外の repo を変えない" test "$orefs0" = "$(HOME="$H" git -C "$H/other" show-ref 2>/dev/null; HOME="$H" git -C "$H/other" symbolic-ref HEAD 2>/dev/null)"
