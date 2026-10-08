@@ -4241,6 +4241,50 @@ check "許可: 前の直した起動スクリプトは残る" grep -q -- --setti
 HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"
 check "許可: 別の brain の開発に同じ id でも一覧を渡さない" lacks --settings "$H.args"
 
+# 起動スクリプトの条件を 1 つずつ確かめる。ほかの条件はそろえたまま、その 1 つだけを崩して渡さないことを見る
+# （条件：一覧が在る／config で選んでいる／config のリリースの id／manifest の brain と id の記録／manifest の一覧の記録／skill の印）
+H="$TMP/release-gates"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --release-permissions --yes --no-worktrees >"$H.log" 2>&1
+check "条件: install" test $? -eq 0
+perm="$H/.claude/brain-kit/permissions/sora.json"
+gate_launch() { HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.args"; }
+gate_passes() { gate_launch; grep -q -x -- --settings "$H.args"; }
+# json_edit <file> <python の式（d を書き換える）>
+json_edit() { python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2]); open(p, "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")' "$1" "$2"; }
+conf="$H/brain/.brain-kit/config.json"; man="$H/.claude/brain-kit/manifest.json"; skill="$H/.claude/skills/sora/SKILL.md"
+check "条件: そろっていれば渡す" gate_passes
+# 1. 一覧のファイルだけが無い
+mv "$perm" "$perm.keep"
+gate_launch; check "条件 1（一覧が在る）: 無ければ渡さない" lacks --settings "$H.args"
+mv "$perm.keep" "$perm"; check "条件 1: 戻せば渡す" gate_passes
+# 2a. config の選択だけが false（一覧・manifest・skill はそのまま）
+cp "$conf" "$conf.keep"; json_edit "$conf" 'd["release_permissions"] = False'
+gate_launch; check "条件 2a（config で選んでいる）: false なら渡さない" lacks --settings "$H.args"
+mv "$conf.keep" "$conf"; check "条件 2a: 戻せば渡す" gate_passes
+# 2b. config のリリースの id だけが違う（選択は true のまま）
+cp "$conf" "$conf.keep"; json_edit "$conf" 'd["personas"]["release"]["id"] = "other"'
+gate_launch; check "条件 2b（config のリリースの id）: 違えば渡さない" lacks --settings "$H.args"
+mv "$conf.keep" "$conf"; check "条件 2b: 戻せば渡す" gate_passes
+# 4. manifest の一覧の記録だけが無い（brain と id の記録はそのまま）
+cp "$man" "$man.keep"; json_edit "$man" 'del d["files"][".claude/brain-kit/permissions/sora.json"]'
+gate_launch; check "条件 4（manifest の一覧の記録）: 無ければ渡さない" lacks --settings "$H.args"
+mv "$man.keep" "$man"; check "条件 4: 戻せば渡す" gate_passes
+# 5. 入れたあとに持ち主が skill から印を消す（manifest は入れたときの記録のまま）
+cp "$skill" "$skill.keep"
+python3 -c 'import sys; p = sys.argv[1]; s = open(p, encoding="utf-8").read(); open(p, "w", encoding="utf-8").write("".join(l for l in s.splitlines(True) if "brain-kit:role=release" not in l))' "$skill"
+check "条件 5: 印を消した" lacks 'brain-kit:role=release' "$skill"
+gate_launch; check "条件 5（skill の印）: 消せば渡さない" lacks --settings "$H.args"
+mv "$skill.keep" "$skill"; check "条件 5: 戻せば渡す" gate_passes
+# 3. 同じ機の 2 つの brain が、どちらも同じリリースの id で許可を選ぶ。manifest は後の brain2 を指すので、
+#    直して残した brain1 の起動スクリプトでは 3 だけが止める（brain1 の config・一覧・manifest の一覧・skill の印はそろう）
+printf '# owner\n' >>"$H/.claude/brain-kit/bin/start-sora"
+check "条件 3: 直した brain1 の起動スクリプトはまだ渡す" gate_passes
+new "$H" --brain "$H/brain2" --partner Kai --dev Ren2 --review Mio2 --release Sora --user Ken --release-permissions --edited keep --yes --no-worktrees >"$H.log2" 2>&1
+check "条件 3: brain2 も同じ id で選ぶ" test $? -eq 0
+check "条件 3: brain1 の起動スクリプトが残る" grep -q -F "$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$H/brain")/.brain-kit/config.json" "$H/.claude/brain-kit/bin/start-sora"
+check "条件 3: ほかの条件はそろっている" python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); assert c["release_permissions"] is True and c["personas"]["release"]["id"] == "sora"; assert ".claude/brain-kit/permissions/sora.json" in m["files"]; assert m["release_permissions"]["id"] == "sora" and m["release_permissions"]["brain"].endswith("brain2"); assert "brain-kit:role=release" in open(sys.argv[3], encoding="utf-8").read()' "$conf" "$man" "$skill"
+gate_launch; check "条件 3（manifest の brain の記録）: 別の brain を指せば渡さない" lacks --settings "$H.args"
+
 # 逆向き：前の brain の開発の id を、別の brain のリリースに使う。直した開発の skill を残したら一覧は渡さない
 H="$TMP/release-two-brains-rev"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Sora --review Mio --release Rin --user Ken --yes --no-worktrees >"$H.log" 2>&1
