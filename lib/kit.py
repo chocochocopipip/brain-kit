@@ -2284,6 +2284,9 @@ def cmd_rollback(args):
                     cands.append((backup_order(m, d), d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
+    seqs = [backup_seq(c[2]) for c in cands if backup_seq(c[2])]
+    if len(seqs) != len(set(seqs)):
+        die("退避の記録が壊れている（戻していない退避に同じ seq がある）。どれから戻すか決められないので何も変えない", 1)
     cands.sort()
     stamp, d, meta = cands[-1]
     if backup_seq(meta):

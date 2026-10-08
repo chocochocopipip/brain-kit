@@ -1108,7 +1108,7 @@ for i in range(len(entries) - 1, -1, -1):
     assert g["read_text"](p) == (str(i - 1) if i else None), (i, g["read_text"](p))
 PY
 check "退避: 時計が戻っても作った順の逆に戻す（同じ秒・前の秒・古い記録）" test $? -eq 0
-# 通し番号が壊れている退避があれば、どれから戻すか決めずに止まる（番号の無い古い記録とは扱わない）
+# 通し番号が壊れている（型・値・重なり）退避があれば、どれから戻すか決めずに止まる（番号の無い古い記録とは扱わない）
 HOME="$TMP/order-badseq" python3 - "$KIT" <<'PY' >"$TMP/order-badseq.log" 2>&1
 import argparse, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
@@ -1120,7 +1120,7 @@ for i in range(2):
     backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
     g["put"](p, "kit%d" % i, backup)
     dirs.append(backup.close())
-for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("legacy_before", None), ("legacy_before", [])):
+for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("seq", 1), ("legacy_before", None), ("legacy_before", [])):
     meta = g["load_json"](dirs[1] + "/meta.json")
     meta["seq"] = 2
     meta["legacy_before"] = {}
