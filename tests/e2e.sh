@@ -3428,6 +3428,36 @@ assert compact(dev) == ""
 core.unlink()
 link.unlink()
 core.write_text(contents["dev/00_核.md"], encoding="utf-8")
+# 写した worktree（.git の指す登録は元のもの）・登録の消えた古い .git では動かない
+import shutil
+copy = h / "foreign-copy"
+shutil.copytree(str(h / "brain-ren"), str(copy), symlinks=True)
+assert compact(copy) == "", "copied worktree"
+stale = h / "stale-wt"
+subprocess.run(["git", "-C", str(brain), "worktree", "add", "-q", "--detach", str(stale)], check=True)
+stale_git = (stale / ".git").read_text()
+subprocess.run(["git", "-C", str(brain), "worktree", "remove", "--force", str(stale)], check=True)
+stale.mkdir()
+(stale / ".git").write_text(stale_git)
+assert compact(stale) == "", "stale .git pointer"
+# 領域そのものが symlink（dev → 相棒の領域、dev → 外）でも、相棒や外の本文は出さない
+real_dev = brain / "dev-real"
+(brain / "dev").rename(real_dev)
+try:
+    (brain / "dev").symlink_to(brain / "Aoi", target_is_directory=True)
+    out = compact(h / "brain-ren")
+    assert contents["Aoi/00_核.md"] not in out and contents["Aoi/02_関係.md"] not in out, out
+    (brain / "dev").unlink()
+    outside = h / "outside-area"
+    outside.mkdir()
+    (outside / "00_核.md").write_text("外の本文\n", encoding="utf-8")
+    (brain / "dev").symlink_to(outside, target_is_directory=True)
+    assert "外の本文" not in compact(h / "brain-ren")
+finally:
+    if (brain / "dev").is_symlink():
+        (brain / "dev").unlink()
+    real_dev.rename(brain / "dev")
+assert compact(h / "brain-ren") == expected("開発", "Ren", roles[1][3])
 for source in ("startup", "resume", "clear", None, 0):
     assert run(json.dumps({"source": source, "cwd": str(brain)}).encode()) == ""
 want = expected(*roles[0][:2], roles[0][3])

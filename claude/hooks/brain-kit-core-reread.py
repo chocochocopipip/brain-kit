@@ -82,6 +82,13 @@ def role_at(cwd, brain, personas):
     gitdir = os.path.realpath(os.path.join(top, link[len("gitdir: "):]))
     if not inside(gitdir, os.path.realpath(os.path.join(brain, ".git", "worktrees"))):
         return None
+    # 登録が生きていて、この場所を指し返しているか（写したディレクトリ・古い .git の指す先では動かない）
+    back = read_file(os.path.join(gitdir, "gitdir"), 65536).decode("utf-8").strip()
+    if os.path.realpath(os.path.join(gitdir, back)) != os.path.realpath(git):
+        return None
+    common = read_file(os.path.join(gitdir, "commondir"), 65536).decode("utf-8").strip()
+    if os.path.realpath(os.path.join(gitdir, common)) != os.path.realpath(os.path.join(brain, ".git")):
+        return None
     for role in ("dev", "review", "release"):
         person = personas.get(role)
         if person and top == os.path.realpath(brain + "-" + person["id"]):
@@ -123,8 +130,10 @@ def main():
         path = area + "/" + name
         limit = min(FILE_LIMIT, remaining)
         try:
+            # 許す場所は「brain の実体の直下の、その人格の領域の名前」。領域そのものが symlink で
+            # 別の人格や外を指していても、実体がその名前の下に無ければ読まない
             core = os.path.realpath(os.path.join(brain, path))
-            if not inside(core, os.path.realpath(os.path.join(brain, area))):
+            if not inside(core, os.path.join(os.path.realpath(brain), area)):
                 continue
             data = read_file(core, limit + 1)
         except Exception:
