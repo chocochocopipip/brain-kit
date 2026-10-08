@@ -2479,6 +2479,27 @@ def is_empty_note(p):
     return not any(l.strip() and not l.lstrip().startswith("#") and not l.startswith(("持ち主:", "Owner:")) for l in t.splitlines())
 
 
+def stalled_line(stalled):
+    """collect.py の 1 行の要約を表示の言語で。日本語は collect.py の行をそのまま使う（同じバイト）。"""
+    if _LANG == "ja":
+        return stalled["line"]
+    groups = []
+    for kind, label in (("issue", M("作業中の issue")), ("pr", M("レビュー済みで未リリースの PR")),
+                        ("session", M("止まったセッション"))):
+        refs = []
+        for it in stalled["items"]:
+            if it["kind"] != kind:
+                continue
+            if kind == "session":
+                refs.append(M("%s（%s、%s）") % (it["name"], M(ROLE_JA[it["role"]]),
+                            M("記録なし") if it["idle_hours"] is None else M("%d 時間") % it["idle_hours"]))
+            else:
+                refs.append("%s#%s" % (it["repo"].split("/")[-1], it["number"]))
+        if refs:
+            groups.append(label + " " + M("・").join(refs[:5]) + (M("…ほか %d 件") % (len(refs) - 5) if len(refs) > 5 else ""))
+    return M("止まっている（%s 時間以上動きなし）: %s") % (format(stalled["hours"], "g"), M("／").join(groups)) if groups else ""
+
+
 def cmd_doctor(args):
     rows, todo = [], []
 
@@ -2709,7 +2730,7 @@ def cmd_doctor(args):
                         detail = M("仕事なし")
                 row(M("  セッション ") + p["name"], status == "OK", detail, status)
             if stalled["line"]:
-                todo.append(M("止まっている仕事を確かめる（%s）") % stalled["line"])
+                todo.append(M("止まっている仕事を確かめる（%s）") % stalled_line(stalled))
         finally:
             sys.dont_write_bytecode = before_bytecode
 

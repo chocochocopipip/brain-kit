@@ -3143,6 +3143,12 @@ check "停滞: doctor の PR" grep -q 'レビュー済みで未リリースの P
 check "停滞: doctor の開発" grep -q 'セッション Ren.*止まっている' "$H.doctor"
 check "停滞: doctor のレビュー" grep -q 'セッション Mio.*記録なし' "$H.doctor"
 check "停滞: doctor の次にやること" grep -q '止まっている仕事を確かめる' "$H.doctor"
+PATH="$TMP/fakegh:$PATH" new "$H" --doctor --lang en >"$H.doctor-en" 2>&1
+check "停滞: 英語の doctor が 0" test $? -eq 0
+check "停滞: 英語の doctor の節" grep -q '\[Stalled work\]' "$H.doctor-en"
+check "停滞: 英語の doctor の issue" grep -q 'Issue in progress.*app#12' "$H.doctor-en"
+check "停滞: 英語の次にやること" grep -q 'Check stalled work (Stalled (no activity for 24 hours or more): Issues in progress app#12' "$H.doctor-en"
+check "停滞: 英語の doctor に日本語が残らない" no_japanese "$H.doctor-en"
 PATH="$TMP/fakegh:$PATH" new "$H" --doctor --stall-hours 60 >"$H.doctor60" 2>&1
 check "停滞: doctor に引数を渡せる" test $? -eq 0
 check "停滞: doctor の閾値 60" grep -q '60 時間以上動きなし' "$H.doctor60"
