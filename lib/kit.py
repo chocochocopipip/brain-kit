@@ -2652,8 +2652,8 @@ def cmd_doctor(args):
         for h in g.get("hooks", []))
     reread_off = (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
                   os.path.exists(os.path.join(KIT_STATE, "no-core-reread")))
-    row("  要約のあとの核の読み直し", True, "",
-        "止めてある" if reread_off else "有効" if reread_hook else "フック無し")
+    row(M("  要約のあとの核の読み直し"), True, "",
+        M("止めてある") if reread_off else M("有効") if reread_hook else M("フック無し"))
 
     rows.append(("[CLI]", "", ""))
 

@@ -79,6 +79,7 @@
   "  続けて /setup で、足した人格の節（規準・手順・任せる範囲）を埋める": "  Continue with /setup to fill in the new personas' criteria, procedure, and delegation scope",
   "  置いた: %d 件、今のまま: %d 件": "  Written: %d files, kept: %d files",
   "  衝突": "  Conflicts",
+  "  要約のあとの核の読み直し": "  Core reread after summary",
   "  触らないもの（持ち主のもの。核・辞書・関係・日誌・決定・知識・プロジェクト・記録など）: %d 件＋brain の中身すべて": "  Untouched (owner's core, dictionary, relationship, journal, decisions, knowledge, projects, logs, etc.): %d files plus all brain contents",
   "  言語": "  Language",
   "  足りない": "  Missing",

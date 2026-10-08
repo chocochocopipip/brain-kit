@@ -38,7 +38,7 @@ git -C <brain> log --oneline -5
 ```
 
 **Never act as if you had not read what you read. Never say you read what you did not read.**
-**After a context compaction (summary), re-read 00_核 and the voice in 02_関係.**
+**After a context compaction (summary), re-read 00_核 and the voice in 02_関係.** The kit's hook loads it automatically; read by hand only what did not arrive.
 
 ## 2. Voice
 

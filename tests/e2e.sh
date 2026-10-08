@@ -336,6 +336,26 @@ check "English update notice" grep -q 'brain-kit update notice:' "$HE.notice"
 check "English notice preview command" grep -q 'npx brainkit-agents@latest --update --dry-run' "$HE.notice"
 check "English notice first reply instruction" grep -q 'first reply to the owner' "$HE.notice"
 check "English notice has no Japanese" no_japanese "$HE.notice"
+# 要約のあとの核の読み直しも持ち主の言語で（brain の記録が先、次に機械側、無ければ日本語）
+check "English core reread hook" python3 - "$HE" "$KIT" <<'PY'
+import json, pathlib, shutil, subprocess, sys
+h, kit = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+def run(home):
+    r = subprocess.run([sys.executable, str(kit / "claude/hooks/brain-kit-core-reread.py")],
+                       input=json.dumps({"source": "compact", "cwd": str(home / "brain")}).encode(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, env={"HOME": str(home), "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0 and r.stderr == b"", r
+    return r.stdout.decode("utf-8")
+assert run(h).startswith("After the context summary, reread the core of Partner Partner (brain-kit hook).\n")
+cfg = h / "brain/.brain-kit/config.json"
+keep = cfg.read_text(encoding="utf-8")
+d = json.loads(keep); d["lang"] = "ja"
+cfg.write_text(json.dumps(d), encoding="utf-8")
+try:
+    assert run(h).startswith("文脈の要約のあと、相棒 Partner の核を読み直す")   # brain の記録が機械側（en）より先
+finally:
+    cfg.write_text(keep, encoding="utf-8")
+PY
 # SessionStart も brain の記録が先、次に機械側、読めなければ日本語
 while read -r c_cfg c_man c_want <&3; do
   hm="$TMP/lang-notice-$c_cfg-$c_man"

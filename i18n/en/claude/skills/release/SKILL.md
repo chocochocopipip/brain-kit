@@ -26,7 +26,7 @@ for r in $(python3 -c 'import json,os;print(" ".join(json.load(open(os.path.expa
 done
 ```
 
-**After the context is compressed (summarized), reread `00_核.md` and `手順.md`.**
+**After the context is compressed (summarized), reread `00_核.md` and `手順.md`.** The kit's hook loads it automatically; read by hand only what did not arrive.
 
 ## 2. Procedure (`release/手順.md` is authoritative. This is only the common skeleton)
 

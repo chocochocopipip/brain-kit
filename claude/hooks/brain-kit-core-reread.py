@@ -12,6 +12,7 @@ import time
 
 
 ROLE_JA = {"partner": "相棒", "dev": "開発", "review": "レビュー", "release": "リリース"}
+ROLE_EN = {"partner": "Partner", "dev": "Dev", "review": "Review", "release": "Release"}
 CORE_FILES = {"partner": ("00_核.md", "02_関係.md"), "dev": ("00_核.md",),
               "review": ("00_核.md", "規準.md"), "release": ("00_核.md", "手順.md")}
 FILE_LIMIT = 32 * 1024
@@ -101,6 +102,13 @@ def role_at(cwd, brain, personas):
     return None
 
 
+def read_manifest():
+    try:
+        return json.loads(read_file(os.path.expanduser("~/.claude/brain-kit/manifest.json"), 1024 * 1024))
+    except Exception:
+        return None
+
+
 def main():
     if (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
             os.path.exists(os.path.expanduser("~/.claude/brain-kit/no-core-reread"))):
@@ -129,6 +137,13 @@ def main():
     if role == "partner" and launched in ("dev", "review", "release") and launched in personas:
         role = launched
     person = personas[role]
+    # 持ち主の言語：brain の記録が先、次に機械側の記録、どちらも無ければ日本語（kit.py と同じ順）
+    lang = "ja"
+    for record in (cfg, read_manifest()):
+        value = record.get("lang") if isinstance(record, dict) else None
+        if value in ("ja", "en"):
+            lang = value
+            break
     area = person["name"] if role == "partner" else role
     parts = []
     remaining = TOTAL_LIMIT
@@ -151,10 +166,13 @@ def main():
         if not part.endswith("\n"):
             part += "\n"
         if len(data) > limit:
-            part += "（以下略: %s）\n" % path
+            part += ("(truncated: %s)\n" if lang == "en" else "（以下略: %s）\n") % path
         parts.append(part)
     if parts:
-        output = "文脈の要約のあと、%s %s の核を読み直す（brain-kit のフック）。\n" % (ROLE_JA[role], person["name"])
+        if lang == "en":
+            output = "After the context summary, reread the core of %s %s (brain-kit hook).\n" % (ROLE_EN[role], person["name"])
+        else:
+            output = "文脈の要約のあと、%s %s の核を読み直す（brain-kit のフック）。\n" % (ROLE_JA[role], person["name"])
         sys.stdout.buffer.write((output + "".join(parts)).encode("utf-8"))
 
 

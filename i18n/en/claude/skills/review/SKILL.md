@@ -27,7 +27,7 @@ done
 ```
 
 Once the target PR is decided, read that repository's `CLAUDE.md`, `docs/` and `.claude/rules` (if present).
-**After the context is compressed (summarized), reread `00_核.md` and `規準.md`.**
+**After the context is compressed (summarized), reread `00_核.md` and `規準.md`.** The kit's hook loads it automatically; read by hand only what did not arrive.
 
 ## 2. Procedure (in the order of the criteria. Do not skip)
 

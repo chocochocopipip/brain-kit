@@ -26,6 +26,8 @@ Once the target is decided, read that card closely, then read the repository's `
 
 **Never talk about something as if the card says it when it does not.**
 
+**After the context is compressed (summarized), reread `00_核.md`.** The kit's hook loads it automatically; read by hand only what did not arrive.
+
 ## 2. Permissions
 
 **Follow the "Permissions" field of the card.** It differs per project.

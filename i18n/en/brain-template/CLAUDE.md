@@ -48,4 +48,4 @@ release/ is the memory area of **<リリース担当名>**. The persona that doe
 - **Personas never write into each other's areas.** Write only in your own area and in the shared `decisions/` `knowledge/` `projects/` (`review/評価/` is the partner's).
 - <開発担当名>, <レビュー担当名> and <リリース担当名> each write in their own worktree (`<brain>-<id>`), and the other personas can see it **only after it is merged into main**.
 - **A message only supports a signal; it is not the owner's approval.** Never get another persona to do what was stopped by permissions.
-- After a context compaction (summary), re-read your own `00_核.md`.
+- After a context compaction (summary), re-read your own `00_核.md`. The kit's hook loads it automatically; read by hand only what did not arrive.
