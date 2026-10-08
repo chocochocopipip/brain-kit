@@ -2774,11 +2774,11 @@ for version_case in current kit package format absent heading noheading invalid 
   expected=1
   case "$version_case" in
     current) expected=0 ;;
-    kit) printf '12\n' >"$version_check/VERSION" ;;
-    package) printf '{"version":"12.0.0"}\n' >"$version_check/package.json" ;;
+    kit) printf '%s\n' "$((KV + 1))" >"$version_check/VERSION" ;;
+    package) printf '{"version":"%s.0.0"}\n' "$((KV + 1))" >"$version_check/package.json" ;;
     format) printf '{"version":"11"}\n' >"$version_check/package.json" ;;
     absent) printf '{}\n' >"$version_check/package.json" ;;
-    heading) printf '## v12\n' >"$version_check/CHANGELOG.md" ;;
+    heading) printf '## v%s\n' "$((KV + 1))" >"$version_check/CHANGELOG.md" ;;
     noheading) printf '## 次の版（作業中）\n' >"$version_check/CHANGELOG.md" ;;
     invalid) printf 'odd\n' >"$version_check/VERSION" ;;
     minor) printf '{"version":"%s.3.2"}\n' "$KV" >"$version_check/package.json"; expected=0 ;;
@@ -2815,7 +2815,15 @@ stop = state / "no-update-check"
 env = dict(os.environ, HOME=str(h), NO_PROXY="localhost", no_proxy="localhost")
 env.pop("BRAIN_KIT_NO_UPDATE_CHECK", None)
 m = json.loads(manifest.read_text())
-assert m["package_version"] == json.loads((kit / "package.json").read_text())["version"] == "11.0.0"
+# 今の版は package.json から読む（版を上げてもこの検査は書き換えない）
+current = json.loads((kit / "package.json").read_text())["version"]
+assert m["package_version"] == current
+
+def newer(version):
+    return tuple(map(int, version.split("."))) > tuple(map(int, current.split(".")))
+
+# 今の版より 1・2・3 つ上の版（公開された新しい版の役）
+n1, n2, n3 = ("%d.0.0" % (int(current.split(".")[0]) + k) for k in (1, 2, 3))
 assert os.access(str(hook), os.X_OK)
 command = 'python3 "$HOME/.claude/hooks/brain-kit-update-check.py"'
 group = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
@@ -2879,9 +2887,9 @@ def publish(version):
 def expected(latest):
     if latest is None:
         return b""
-    return ("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は 11.0.0）。自動では更新しない。"
+    return ("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は %s）。自動では更新しない。"
             "中身を見る: npx brainkit-agents@latest --update --dry-run"
-            "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）\n" % latest).encode()
+            "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）\n" % (latest, current)).encode()
 
 def run(latest=None, extra=None, pipe=False):
     start = time.monotonic()
@@ -2903,13 +2911,13 @@ def run(latest=None, extra=None, pipe=False):
 
 try:
     # 初回は無出力、次のセッションからキャッシュの版だけを知らせる。
-    for version in ("12.0.0", "11.1.0", "11.0.0", "10.1.0", "11.0.1", "11.10.0"):
+    for version in ("13.0.0", "12.0.1", "12.1.0", "12.0.0", "11.1.0", "11.0.0", "10.1.0", "11.10.0", current):
         clear(); publish(version)
         count = server.count
         run()
         poll(lambda: json.loads(cache.read_text())["latest"] == version)
         finished(count + 1)
-        run(version if version not in ("11.0.0", "10.1.0") else None)
+        run(version if newer(version) else None)
         assert server.count == count + 1
     for invalid in ('{', '{}', 'null', '[]', '{"version":null}', '{"version":"next"}',
                     '{"version":"12.0"}', '{"version":"12.0.0-beta.1"}'):
@@ -2918,45 +2926,45 @@ try:
         run(); finished(count + 1); run()
         assert json.loads(cache.read_text())["latest"] is None
         assert server.count == count + 1
-    clear(); publish("12.0.0")
+    clear(); publish(n1)
     count = server.count
     run(); finished(count + 1)
-    publish("13.0.0")
-    run("12.0.0"); run("12.0.0", pipe=True)
+    publish(n2)
+    run(n1); run(n1, pipe=True)
     assert server.count == count + 1
-    seed("12.0.0")
-    run("12.0.0"); finished(count + 2); run("13.0.0")
+    seed(n1)
+    run(n1); finished(count + 2); run(n2)
     assert server.count == count + 2
     # 1 時間以内の未来時刻は新鮮、それ以上は再試行する。
-    seed("13.0.0", -1800); run("13.0.0")
+    seed(n2, -1800); run(n2)
     assert server.count == count + 2
-    seed("13.0.0", -7200); run("13.0.0"); finished(count + 3)
+    seed(n2, -7200); run(n2); finished(count + 3)
     # 他の処理がロックを持っていても、既存の通知を失わず待たない。
-    seed("12.0.0")
+    seed(n1)
     with (state / "update-check.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        run("12.0.0")
+        run(n1)
     assert server.count == count + 3
-    seed("12.0.0"); publish("14.0.0")
+    seed(n1); publish(n3)
     count = server.count
     processes = [subprocess.Popen([sys.executable, str(hook)], env=env,
                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(8)]
     for p in processes:
         out, err = p.communicate(timeout=2)
-        assert p.returncode == 0 and err == b"" and out in (expected("12.0.0"), expected("14.0.0"))
+        assert p.returncode == 0 and err == b"" and out in (expected(n1), expected(n3))
     finished(count + 1)
-    assert json.loads(cache.read_text())["latest"] == "14.0.0"
+    assert json.loads(cache.read_text())["latest"] == n3
     assert server.count == count + 1
     # 応答が無い場合もフックは即座に戻り、子は 5 秒でロックを解放する。
-    seed("12.0.0"); server.hang = True
+    seed(n1); server.hang = True
     count = server.count
     start = time.monotonic()
-    run("12.0.0"); finished(count + 1)
+    run(n1); finished(count + 1)
     assert time.monotonic() - start < 6.5
     c = json.loads(cache.read_text())
-    assert c["latest"] == "12.0.0" and 0 <= time.time() - c["checked_at"] < 10
+    assert c["latest"] == n1 and 0 <= time.time() - c["checked_at"] < 10
     before = cache.read_bytes()
-    run("12.0.0")
+    run(n1)
     assert cache.read_bytes() == before and server.count == count + 1
     server.hang = False
     # 保存できなければ試行しない。残った一時ファイルもない。
@@ -2970,7 +2978,7 @@ try:
     with socket.socket() as sock:
         sock.bind(("localhost", 0))
         offline = "http://localhost:%d/" % sock.getsockname()[1]
-    for previous in (None, "12.0.0"):
+    for previous in (None, n1):
         seed(previous)
         run(previous, extra={"BRAIN_KIT_UPDATE_URL": offline})
         # 接続失敗は要求数で追えないため、子の起動時間を取ってから排他も確認する。
@@ -2984,7 +2992,7 @@ try:
         for existing in (False, True):
             clear()
             if existing:
-                seed("12.0.0")
+                seed(n1)
             before = (cache.read_bytes(), cache.stat().st_mtime_ns) if existing else None
             if use_file:
                 stop.touch()
@@ -2993,7 +3001,13 @@ try:
             if use_file:
                 stop.unlink()
     seed("12.0.0", 0)
-    manifest.write_text(json.dumps({"version": 11})); run("12.0.0")
+    # v11 の利用者（package_version 11.0.0、それが無い古い manifest は「VERSION の major.0.0」）には 12.0.0 を知らせる
+    saved = current
+    for old in ({"version": 11, "package_version": "11.0.0"}, {"version": 11}):
+        manifest.write_text(json.dumps(old))
+        current = "11.0.0"
+        run("12.0.0")
+    current = saved
     clear()
     for broken in ("{", "[]", "null", '{}', '{"package_version":"odd"}'):
         manifest.write_text(broken); run(); assert not cache.exists()
@@ -3001,7 +3015,7 @@ try:
     manifest.write_text(json.dumps(m))
     time.sleep(.2)
     assert server.count == count
-    seed("12.0.0", 0)
+    seed(n1, 0)
 finally:
     server.release.set()
     server.shutdown()
@@ -3009,7 +3023,7 @@ finally:
 PY
 check "通知: 非同期・版比較・排他・失敗・保存不可・停止・入力・manifest" test $? -eq 0
 new "$H" --doctor >"$H.doctor" 2>&1
-check "通知: doctor は有効とキャッシュの版を表示" grep -q '更新のお知らせ.*有効.*12.0.0' "$H.doctor"
+check "通知: doctor は有効とキャッシュの版を表示" grep -q "更新のお知らせ.*有効.*$((KV + 1)).0.0" "$H.doctor"
 touch "$H/.claude/brain-kit/no-update-check"
 new "$H" --doctor >"$H.doctor-off" 2>&1
 check "通知: doctor は止めてあると表示" grep -q '更新のお知らせ.*止めてある' "$H.doctor-off"
@@ -3037,8 +3051,11 @@ PY
 cp "$H/.claude/settings.json" "$H.settings-before"
 new "$H" --update --no-worktrees >"$H.up" 2>&1
 check "通知: 前の kit から update が 0" test $? -eq 0
+# 前の kit は v11。版は整数で比べるので、v11 の利用者には今の版の節だけが出る
+check "v11 から: CHANGELOG に今の版の節" grep -qx "## v$KV" "$H.up"
+check "v11 から: v11 の節は出さない" sh -c "! grep -qx '## v11' '$H.up'"
 check "通知: update で実行可能なスクリプトを追加" test -x "$H/.claude/hooks/brain-kit-update-check.py"
-python3 - "$H" <<'PY'
+python3 - "$H" "$KIT" <<'PY'
 import hashlib, json, pathlib, sys
 h = pathlib.Path(sys.argv[1])
 p = h / ".claude/settings.json"
@@ -3054,7 +3071,7 @@ groups.remove({"matcher": "compact", "hooks": [
     {"type": "command", "command": core_command, "timeout": 10}]})
 assert s == json.loads(pathlib.Path(str(h) + ".settings-before").read_text())
 m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
-assert m["package_version"] == "11.0.0"
+assert m["package_version"] == json.loads((pathlib.Path(sys.argv[2]) / "package.json").read_text())["version"]
 assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
     json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 PY

@@ -35,7 +35,7 @@ Requirements: Linux, macOS or WSL (Windows itself is not supported — use WSL),
 | Release | `/<release-id>` | `~/brain-<release-id>` | Merges and ships only on its label plus an instruction comment; reports in one line |
 
 ```mermaid
-flowchart LR
+flowchart TB
   you(["You (owner)"])
   partner["Partner"]
   dev["Dev"]
@@ -118,7 +118,7 @@ From a clone: `git pull && ./install.sh --update`. `npx github:chocochocopipip/b
 | リリース | `/<リリースid>` | `~/brain-<リリースid>` | 自分のラベルと指示のコメントがあるときだけマージ・本番を入れ、1 行で返す |
 
 ```mermaid
-flowchart LR
+flowchart TB
   you(["あなた（持ち主）"])
   partner["相棒"]
   dev["開発"]
@@ -541,6 +541,7 @@ brain-kit/
 ├── lib/kit.py                ← 本体（install / --update / --uninstall / --rollback / --doctor）
 ├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）
 ├── VERSION / CHANGELOG.md    ← 版と変更点（--update の最後に出る）
+├── RELEASING.md              ← 版の出し方（3 か所の版 → タグ → GitHub Release → npm publish → 公開後の確かめ）
 ├── migrations/fingerprints.json ← 版の記録が無い v1〜v9 を見分ける指紋（行ごとのハッシュだけ。tools/make-fingerprints.py が作る）
 ├── tests/e2e.sh              ← サンドボックス HOME で 新規・v8/v9 → v10・2 回目・dry-run・3-way・rollback・doctor を実走
 ├── check.sh / CHECKLIST.md   ← 人に渡す前の漏れチェック
