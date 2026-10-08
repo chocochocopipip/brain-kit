@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1904,7 +1905,15 @@ def cmd_uninstall(args):
         """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
         ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
         out = set()
-        for arg in re.split(r"[\s'\"`;|&()<>=,]+", text):
+        args = re.split(r"[\s'\"`;|&()<>=,]+", text)
+        # 引用符の中（空白を含むパス）と、\ で逃がした空白も 1 つの引数として見る
+        args += [a or b for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', text)]
+        for line in text.splitlines():
+            try:
+                args += shlex.split(line, comments=True)
+            except ValueError:
+                pass
+        for arg in args:
             for prefix in ("${HOME}/", "$HOME/", "~/"):
                 if arg.startswith(prefix):
                     arg = os.path.join(HOME, arg[len(prefix):])

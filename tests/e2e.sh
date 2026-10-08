@@ -1797,6 +1797,11 @@ printf '#!/bin/sh\npython3 ~/.claude/brain-kit/dashboard/collect.py\n' >"$H/.cla
 printf "require('./helper.js');\n" >"$H/.claude/hooks/mine.js"
 # symlink：持ち主のフック → ~/.claude/hooks/current.sh（kit の precheck.sh を指す symlink）
 ln -s ../brain-kit/automations/precheck.sh "$H/.claude/hooks/current.sh"
+# 空白を含む持ち主のスクリプト（引用符あり・\ で逃がしたもの）→ kit の start-aoi・start-ren
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-aoi" --help\n' >"$H/.claude/hooks/my hook.sh"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-ren" --help\n' >"$H/.claude/hooks/other hook.sh"
 printf "require('child_process').execFileSync('/usr/bin/env', ['python3', '%s/.claude/brain-kit/dashboard/shot.py']);\n" "$H" >"$H/.claude/hooks/helper.js"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
@@ -1808,6 +1813,8 @@ s["hooks"].setdefault("Notification", []).append(
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine2.sh"}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "node ~/.claude/hooks/mine.js"}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/current.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh \"$HOME/.claude/hooks/my hook.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/other\\ hook.sh"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1820,6 +1827,9 @@ check "持ち主のスクリプト → 補助スクリプトが呼ぶ collect.py
 check "持ち主の node スクリプト → 相対の補助 → kit の shot.py も残る" test -f "$H/.claude/brain-kit/dashboard/shot.py"
 check ".claude の中の symlink（current.sh → precheck.sh）越しに呼ぶ kit のファイルも残る" test -f "$H/.claude/brain-kit/automations/precheck.sh"
 check "symlink はそのまま" test -L "$H/.claude/hooks/current.sh"
+check "引用符の中の空白を含むパスの持ち主のスクリプトが呼ぶ start-aoi も残る" test -f "$H/.claude/brain-kit/bin/start-aoi"
+check "\\ で逃がした空白を含むパスの持ち主のスクリプトが呼ぶ start-ren も残る" test -f "$H/.claude/brain-kit/bin/start-ren"
+check "どれも呼ばない start-mio は消す" test ! -e "$H/.claude/brain-kit/bin/start-mio"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
 H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
