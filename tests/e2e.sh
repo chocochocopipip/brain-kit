@@ -255,7 +255,7 @@ mkdir -p "$NEXT"
 while IFS= read -r -d '' f; do
   mkdir -p "$NEXT/$(dirname "$f")"
   cp "$KIT/$f" "$NEXT/$f"
-done < <(git -C "$KIT" ls-files -z)
+done < <(git -C "$KIT" ls-files --cached --others --exclude-standard -z)
 python3 - "$NEXT" <<'PYNEXT'
 import os, sys
 k = sys.argv[1]
@@ -542,7 +542,7 @@ mkdir -p "$NEXTS"
 while IFS= read -r -d '' f; do
   mkdir -p "$NEXTS/$(dirname "$f")"
   cp "$KIT/$f" "$NEXTS/$f"
-done < <(git -C "$KIT" ls-files -z)
+done < <(git -C "$KIT" ls-files --cached --others --exclude-standard -z)
 python3 - "$NEXTS" "$H" <<'PY'
 import json, sys
 k, h = sys.argv[1:]
@@ -1400,7 +1400,7 @@ check "settings の symlink: symlink のまま" test -L "$H/.claude/settings.jso
 # （記録は前の版の A、今は手で新しい版の B、kit も B、解消結果は A）
 NEXTS3="$TMP/kit-next-s3"
 mkdir -p "$NEXTS3"
-(cd "$KIT" && git ls-files -z | xargs -0 tar cf -) | (cd "$NEXTS3" && tar xf -)
+(cd "$KIT" && git ls-files --cached --others --exclude-standard -z | xargs -0 tar cf -) | (cd "$NEXTS3" && tar xf -)
 python3 - "$NEXTS3" <<'PY'
 import json, sys
 p = sys.argv[1] + "/claude/settings.snippet.json"
@@ -2133,11 +2133,235 @@ for version_case in current kit package format absent heading noheading invalid 
   fi
 done
 
+# ------------------------------------------------------------------ セッション開始時の更新のお知らせ
+section "更新のお知らせ（npm 公開版・キャッシュ・停止）"
+H="$TMP/update-notice"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.install" 2>&1
+check "通知: install が 0" test $? -eq 0
+python3 - "$H" "$KIT" <<'PY'
+import hashlib, json, os, pathlib, socket, subprocess, sys, time
+h, kit = map(pathlib.Path, sys.argv[1:])
+state = h / ".claude/brain-kit"
+hook = h / ".claude/hooks/brain-kit-update-check.py"
+manifest = state / "manifest.json"
+cache = state / "update-check.json"
+source = h / "latest.json"
+stop = state / "no-update-check"
+env = dict(os.environ, HOME=str(h), BRAIN_KIT_UPDATE_URL=source.as_uri(),
+           NO_PROXY="localhost", no_proxy="localhost")
+env.pop("BRAIN_KIT_NO_UPDATE_CHECK", None)
+m = json.loads(manifest.read_text())
+assert m["package_version"] == json.loads((kit / "package.json").read_text())["version"] == "11.0.0"
+assert os.access(str(hook), os.X_OK)
+command = 'python3 "$HOME/.claude/hooks/brain-kit-update-check.py"'
+group = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+s = json.loads((h / ".claude/settings.json").read_text())
+assert s["hooks"]["SessionStart"].count(group) == 1
+assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
+    json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+def clear():
+    if cache.exists():
+        cache.unlink()
+
+def publish(version):
+    source.write_text(json.dumps({"version": version}))
+
+def run(latest=None, url=None, extra=None, limit=4, pipe=False):
+    e = dict(env)
+    if url:
+        e["BRAIN_KIT_UPDATE_URL"] = url
+    e.update(extra or {})
+    start = time.monotonic()
+    if pipe:
+        # 書き手が stdin を閉じなくても待たない。
+        p = subprocess.Popen([sys.executable, str(hook)], env=e, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            p.wait(timeout=limit)
+            out, err = p.communicate()
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.communicate()
+        rc = p.returncode
+    else:
+        p = subprocess.run([sys.executable, str(hook)], env=e, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=limit)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    assert time.monotonic() - start < limit
+    assert rc == 0 and err == b"", (rc, err)
+    if latest:
+        expected = ("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は 11.0.0）。自動では更新しない。"
+                    "中身を見る: npx brainkit-agents@latest --update --dry-run"
+                    "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）\n" % latest)
+        assert out.decode() == expected, out
+    else:
+        assert out == b"", out
+
+for version in ("12.0.0", "11.1.0", "11.0.0", "10.1.0", "11.0.1", "11.10.0"):
+    clear(); publish(version)
+    run(version if version not in ("11.0.0", "10.1.0") else None)
+for invalid in ('{', '{}', 'null', '[]', '{"version":null}', '{"version":"next"}',
+                '{"version":"12.0"}', '{"version":"12.0.0-beta.1"}'):
+    clear(); source.write_text(invalid); run()
+    assert json.loads(cache.read_text())["latest"] is None
+clear(); publish("12.0.0"); run("12.0.0")
+publish("13.0.0"); run("12.0.0")
+run("12.0.0", url=(h / "absent.json").as_uri(), pipe=True)
+c = json.loads(cache.read_text()); c["checked_at"] -= 25 * 60 * 60
+cache.write_text(json.dumps(c)); run("13.0.0")
+# 旧 manifest は整数の版を使い、壊れた manifest は黙って終わる。
+manifest.write_text(json.dumps({"version": 11})); run("13.0.0")
+for broken in ("{", "[]", "null", '{}', '{"package_version":"odd"}'):
+    manifest.write_text(broken); run()
+manifest.unlink(); clear(); run(); assert not cache.exists()
+manifest.write_text(json.dumps(m))
+# 停止時はキャッシュを作らず、既にある場合も時刻・バイトを変えない。
+publish("12.0.0")
+for use_file in (False, True):
+    for existing in (False, True):
+        clear()
+        if existing:
+            cache.write_text(json.dumps({"checked_at": 0, "latest": "12.0.0"}))
+        before = (cache.read_bytes(), cache.stat().st_mtime_ns) if existing else None
+        if use_file:
+            stop.touch()
+        run(extra={} if use_file else {"BRAIN_KIT_NO_UPDATE_CHECK": "1"})
+        assert ((cache.read_bytes(), cache.stat().st_mtime_ns) if cache.exists() else None) == before
+        if use_file:
+            stop.unlink()
+# 書けないキャッシュでも通知できる（一時ファイルを残さない）。
+clear(); cache.mkdir(); publish("12.0.0"); run("12.0.0")
+assert not list(state.glob(".update-check-*"))
+cache.rmdir(); run("12.0.0")
+PY
+check "通知: 出力・版比較・入力・キャッシュ・停止・manifest" test $? -eq 0
+python3 - "$H" <<'PY'
+import json, os, pathlib, socket, subprocess, sys, time
+h = pathlib.Path(sys.argv[1])
+cache = h / ".claude/brain-kit/update-check.json"
+hook = h / ".claude/hooks/brain-kit-update-check.py"
+before = cache.read_bytes()
+env = dict(os.environ, HOME=str(h), NO_PROXY="localhost", no_proxy="localhost")
+env.pop("BRAIN_KIT_NO_UPDATE_CHECK", None)
+
+def clear():
+    if cache.exists():
+        cache.unlink()
+
+def run(url, limit=4):
+    start = time.monotonic()
+    r = subprocess.run([sys.executable, str(hook)], env=dict(env, BRAIN_KIT_UPDATE_URL=url),
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=limit)
+    assert time.monotonic() - start < limit
+    assert r.returncode == 0 and r.stdout == r.stderr == b"", (r.returncode, r.stdout, r.stderr)
+
+# 接続先を閉じてから使う。プロキシは localhost について無効にしてある。
+with socket.socket() as sock:
+    sock.bind(("localhost", 0))
+    offline = "http://localhost:%d/" % sock.getsockname()[1]
+clear(); run(url=offline)
+failed = cache.read_bytes()
+assert json.loads(failed)["latest"] is None
+# 別プロセスのサーバーは接続を受けるだけで応答しない。必ず kill/wait する。
+server = subprocess.Popen([sys.executable, "-u", "-c", '''
+import socket, time
+with socket.socket() as s:
+    s.bind(("localhost", 0))
+    s.listen(5)
+    print(s.getsockname()[1], flush=True)
+    with s.accept()[0]:
+        time.sleep(60)
+'''], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    url = "http://localhost:%d/" % int(server.stdout.readline())
+    run(url=url, limit=2)
+    assert cache.read_bytes() == failed
+    clear(); run(url=url, limit=6)
+    assert json.loads(cache.read_text())["latest"] is None
+finally:
+    server.kill(); server.communicate()
+cache.write_bytes(before)
+PY
+check "通知: 通信断・タイムアウト・失敗後は翌日まで通信しない" test $? -eq 0
+new "$H" --doctor >"$H.doctor" 2>&1
+check "通知: doctor は有効とキャッシュの版を表示" grep -q '更新のお知らせ.*有効.*12.0.0' "$H.doctor"
+touch "$H/.claude/brain-kit/no-update-check"
+new "$H" --doctor >"$H.doctor-off" 2>&1
+check "通知: doctor は止めてあると表示" grep -q '更新のお知らせ.*止めてある' "$H.doctor-off"
+rm "$H/.claude/brain-kit/no-update-check"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "通知: uninstall が 0" test $? -eq 0
+check "通知: 未変更のスクリプトを外す" test ! -e "$H/.claude/hooks/brain-kit-update-check.py"
+check "通知: 未変更の項目を外す" sh -c "! grep -q brain-kit-update-check.py '$H/.claude/settings.json'"
+new "$H" --doctor >"$H.doctor-none" 2>&1
+check "通知: doctor はフック無しと表示" grep -q '更新のお知らせ.*フック無し' "$H.doctor-none"
+
+section "更新のお知らせ（前の kit から追加・所有設定の保持）"
+H="$TMP/update-notice-old"
+old_install 6033393 "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes
+check "通知: 前の kit にはスクリプトが無い" test ! -e "$H/.claude/hooks/brain-kit-update-check.py"
+python3 - "$H" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]) / ".claude/settings.json"
+s = json.loads(p.read_text())
+s["model"] = "owner-model"
+s["permissions"] = {"allow": ["Bash(echo:*)"]}
+s["hooks"]["SessionStart"].insert(0, {"hooks": [{"type": "command", "command": "echo owner", "timeout": 7}]})
+p.write_text(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY
+cp "$H/.claude/settings.json" "$H.settings-before"
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "通知: 前の kit から update が 0" test $? -eq 0
+check "通知: update で実行可能なスクリプトを追加" test -x "$H/.claude/hooks/brain-kit-update-check.py"
+python3 - "$H" <<'PY'
+import hashlib, json, pathlib, sys
+h = pathlib.Path(sys.argv[1])
+p = h / ".claude/settings.json"
+s = json.loads(p.read_text())
+command = 'python3 "$HOME/.claude/hooks/brain-kit-update-check.py"'
+groups = s["hooks"]["SessionStart"]
+group = next(g for g in groups if g["hooks"][0]["command"] == command)
+assert group == {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+groups.remove(group)
+assert s == json.loads(pathlib.Path(str(h) + ".settings-before").read_text())
+m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
+assert m["package_version"] == "11.0.0"
+assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
+    json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+PY
+check "通知: update で項目と所有記録を追加し持ち主の設定を保持" test $? -eq 0
+before="$(snap "$H")"
+new "$H" --update --no-worktrees >"$H.up2" 2>&1
+check "通知: 2 回目の update が 0" test $? -eq 0
+check "通知: 2 回目の update は何も変えない" test "$before" = "$(snap "$H")"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
+for group in s["hooks"]["SessionStart"]:
+    for hook in group["hooks"]:
+        if "brain-kit-update-check.py" in hook["command"]:
+            hook["timeout"] = 20
+p.write_text(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "通知: 編集後の uninstall が 0" test $? -eq 0
+check "通知: 編集した項目が使うスクリプトを残す" test -x "$H/.claude/hooks/brain-kit-update-check.py"
+check "通知: 残す理由を表示" grep -q '残すフックが使うため' "$H.un"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert any(h["timeout"] == 20 for g in s["hooks"]["SessionStart"] for h in g["hooks"]
+           if "brain-kit-update-check.py" in h["command"])
+PY
+check "通知: 編集した項目をそのまま残す" test $? -eq 0
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
   mkdir -p "$TMP/pack"
-  (cd "$KIT" && PATH="$(dirname "$NPM"):$PATH" "$NPM" pack --silent --pack-destination "$TMP/pack" >/dev/null 2>&1)
+  (cd "$KIT" && PATH="$(dirname "$NPM"):$PATH" npm_config_cache="$TMP/npm-cache" "$NPM" pack --silent --pack-destination "$TMP/pack" >/dev/null 2>&1)
   check "npm pack が tarball を作る" sh -c "ls '$TMP/pack'/brainkit-agents-*.tgz"
   # PATH を絞っているので gzip が無い。python3 で展開する
   python3 -c 'import glob, sys, tarfile; tarfile.open(glob.glob(sys.argv[1] + "/brainkit-agents-*.tgz")[0]).extractall(sys.argv[1])' "$TMP/pack"
