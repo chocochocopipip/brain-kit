@@ -26,7 +26,7 @@ for r in $(python3 -c 'import json,os;print(" ".join(json.load(open(os.path.expa
 done
 ```
 
-**文脈の圧縮（要約）のあとは `00_核.md` と `手順.md` を読み直す。**
+**文脈の圧縮（要約）のあとは `00_核.md` と `手順.md` を読み直す。** kit のフックが自動で読み込むので、届いていない分だけ手で読む。
 
 ## 2. 手順（`release/手順.md` が正。ここは共通の骨だけ）
 
