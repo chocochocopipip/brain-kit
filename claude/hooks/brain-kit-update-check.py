@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SessionStart: npm の公開版を 1 日 1 回確かめる。新しい版があれば 1 行だけ文脈に出す（更新はしない）。"""
+"""SessionStart: キャッシュの新しい版を通知し、公開版の確認は 1 日 1 回バックグラウンドで行う。"""
+import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -31,9 +33,12 @@ def write_cache(path, value):
         fd, tmp = tempfile.mkstemp(prefix=".update-check-", dir=os.path.dirname(path))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(value, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        return True
     except Exception:
-        pass
+        return False
     finally:
         if tmp is not None:
             try:
@@ -48,23 +53,49 @@ def fetch_latest():
     def fetch():
         try:
             url = os.environ.get("BRAIN_KIT_UPDATE_URL", "https://registry.npmjs.org/brainkit-agents/latest")
-            with urllib.request.urlopen(url, timeout=3) as response:
+            with urllib.request.urlopen(url, timeout=5) as response:
                 value = json.loads(response.read(1024 * 1024).decode("utf-8"))["version"]
             result[0] = value if semver(value) else None
         except BaseException:
             pass
 
-    # DNS や少しずつ届く本文も含め、取得全体を 3 秒だけ待つ。
-    # 時間切れの worker は daemon として残し、フック終了時に一緒に終了する。
+    # DNS や少しずつ届く本文も含め、取得全体を 5 秒だけ待つ。
+    # 時間切れの worker も末尾の os._exit で必ず終了する。
     worker = threading.Thread(target=fetch, daemon=True)
     worker.start()
-    worker.join(3)
+    worker.join(5)
     return None if worker.is_alive() else result[0]
+
+
+def fresh(cache, now):
+    checked = cache.get("checked_at") if isinstance(cache, dict) else None
+    return (isinstance(checked, (int, float)) and not isinstance(checked, bool)
+            and -60 * 60 <= now - checked < 24 * 60 * 60)
+
+
+def cached_latest(cache):
+    value = cache.get("latest") if isinstance(cache, dict) else None
+    return value if semver(value) else None
+
+
+def refresh(state):
+    # 取得から保存まで排他する。失敗時には以前の成功結果を一切書き換えない。
+    with open(os.path.join(state, "update-check.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        latest = fetch_latest()
+        if latest is not None:
+            path = os.path.join(state, "update-check.json")
+            cache = read_json(path)
+            if isinstance(cache, dict) and "checked_at" in cache:
+                write_cache(path, {"checked_at": cache["checked_at"], "latest": latest})
 
 
 def main():
     state = os.path.expanduser("~/.claude/brain-kit")
     if os.environ.get("BRAIN_KIT_NO_UPDATE_CHECK") == "1" or os.path.exists(os.path.join(state, "no-update-check")):
+        return
+    if sys.argv[1:] == ["--refresh"]:
+        refresh(state)
         return
     # 入力を待たない。書き手が pipe を開いたままでも、今届いている分だけ読み捨てる。
     try:
@@ -73,7 +104,9 @@ def main():
             blocking = os.get_blocking(fd)
             try:
                 os.set_blocking(fd, False)
-                os.read(fd, 65536)
+                deadline = time.monotonic() + .02
+                while time.monotonic() < deadline and os.read(fd, 65536):
+                    pass
             finally:
                 os.set_blocking(fd, blocking)
     except Exception:
@@ -87,13 +120,7 @@ def main():
         return
     path = os.path.join(state, "update-check.json")
     cache = read_json(path)
-    now = time.time()
-    checked = cache.get("checked_at") if isinstance(cache, dict) else None
-    if isinstance(checked, (int, float)) and 0 <= now - checked < 24 * 60 * 60:
-        latest = cache.get("latest")
-    else:
-        latest = fetch_latest()
-        write_cache(path, {"checked_at": now, "latest": latest})
+    latest = cached_latest(cache)
     if semver(latest) is not None and semver(latest) > current:
         # SessionStart の stdout は Claude の文脈に入る（持ち主の画面には直接出ない。systemMessage は
         # SessionStart では捨てられる）。相棒が最初の返事で 1 行だけ伝える
@@ -101,10 +128,30 @@ def main():
               "中身を見る: npx brainkit-agents@latest --update --dry-run"
               "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）" % (latest, installed))
 
+    if fresh(cache, time.time()):
+        return
+    with open(os.path.join(state, "update-check.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        cache = read_json(path)
+        now = time.time()
+        if fresh(cache, now):
+            return
+        # 通信前に試行時刻を永続化する。保存できなければ通信しない。
+        if not write_cache(path, {"checked_at": now, "latest": cached_latest(cache)}):
+            return
+    # セッション開始は通信を待たず、独立したプロセスに任せる。
+    subprocess.Popen([sys.executable, __file__, "--refresh"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True,
+                     close_fds=True, env=os.environ)
+
 
 if __name__ == "__main__":
     try:
         main()
+    except BaseException:
+        pass
+    try:
         sys.stdout.flush()
     except BaseException:
         pass

@@ -2139,16 +2139,14 @@ H="$TMP/update-notice"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.install" 2>&1
 check "通知: install が 0" test $? -eq 0
 python3 - "$H" "$KIT" <<'PY'
-import hashlib, json, os, pathlib, socket, subprocess, sys, time
+import fcntl, hashlib, http.server, json, os, pathlib, socket, subprocess, sys, threading, time
 h, kit = map(pathlib.Path, sys.argv[1:])
 state = h / ".claude/brain-kit"
 hook = h / ".claude/hooks/brain-kit-update-check.py"
 manifest = state / "manifest.json"
 cache = state / "update-check.json"
-source = h / "latest.json"
 stop = state / "no-update-check"
-env = dict(os.environ, HOME=str(h), BRAIN_KIT_UPDATE_URL=source.as_uri(),
-           NO_PROXY="localhost", no_proxy="localhost")
+env = dict(os.environ, HOME=str(h), NO_PROXY="localhost", no_proxy="localhost")
 env.pop("BRAIN_KIT_NO_UPDATE_CHECK", None)
 m = json.loads(manifest.read_text())
 assert m["package_version"] == json.loads((kit / "package.json").read_text())["version"] == "11.0.0"
@@ -2160,131 +2158,190 @@ assert s["hooks"]["SessionStart"].count(group) == 1
 assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
     json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.server.count += 1
+        if self.server.hang:
+            self.server.release.wait()
+            return
+        body = self.server.body.encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
+server.count, server.hang, server.body = 0, False, '{}'
+server.release = threading.Event()
+threading.Thread(target=server.serve_forever, daemon=True).start()
+env["BRAIN_KIT_UPDATE_URL"] = "http://localhost:%d/" % server.server_port
+
+def poll(predicate, limit=10):
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(.02)
+    raise AssertionError("バックグラウンド処理が時間内に終わらない")
+
+def unlocked():
+    with (state / "update-check.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+def finished(count):
+    # 起動前の空きロックを完了と誤認しないよう、先に要求の到着を待つ。
+    poll(lambda: server.count == count)
+    poll(unlocked, 6)
+
 def clear():
     if cache.exists():
         cache.unlink()
+
+def seed(latest, age=25 * 3600):
+    cache.write_text(json.dumps({"checked_at": time.time() - age, "latest": latest}))
 
 def publish(version):
-    source.write_text(json.dumps({"version": version}))
+    server.body = json.dumps({"version": version})
 
-def run(latest=None, url=None, extra=None, limit=4, pipe=False):
-    e = dict(env)
-    if url:
-        e["BRAIN_KIT_UPDATE_URL"] = url
-    e.update(extra or {})
+def expected(latest):
+    if latest is None:
+        return b""
+    return ("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は 11.0.0）。自動では更新しない。"
+            "中身を見る: npx brainkit-agents@latest --update --dry-run"
+            "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）\n" % latest).encode()
+
+def run(latest=None, extra=None, pipe=False):
     start = time.monotonic()
-    if pipe:
-        # 書き手が stdin を閉じなくても待たない。
-        p = subprocess.Popen([sys.executable, str(hook)], env=e, stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            p.wait(timeout=limit)
-            out, err = p.communicate()
-        finally:
-            if p.poll() is None:
-                p.kill()
-                p.communicate()
-        rc = p.returncode
-    else:
-        p = subprocess.run([sys.executable, str(hook)], env=e, stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=limit)
-        rc, out, err = p.returncode, p.stdout, p.stderr
-    assert time.monotonic() - start < limit
-    assert rc == 0 and err == b"", (rc, err)
-    if latest:
-        expected = ("brain-kit の更新のお知らせ: brain-kit %s が出ている（今は 11.0.0）。自動では更新しない。"
-                    "中身を見る: npx brainkit-agents@latest --update --dry-run"
-                    "（持ち主への最初の返事の冒頭で、この 1 行だけをそのまま伝える。更新はしない）\n" % latest)
-        assert out.decode() == expected, out
-    else:
-        assert out == b"", out
+    p = subprocess.Popen([sys.executable, str(hook)], env=dict(env, **(extra or {})),
+                         stdin=subprocess.PIPE if pipe else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        if pipe:
+            p.stdin.write(b'{}\n')
+            p.stdin.flush()
+            p.wait(timeout=1)
+        out, err = p.communicate(timeout=1)
+        assert time.monotonic() - start < 1
+        assert (p.returncode, out, err) == (0, expected(latest), b""), (p.returncode, out, err)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.communicate()
 
-for version in ("12.0.0", "11.1.0", "11.0.0", "10.1.0", "11.0.1", "11.10.0"):
-    clear(); publish(version)
-    run(version if version not in ("11.0.0", "10.1.0") else None)
-for invalid in ('{', '{}', 'null', '[]', '{"version":null}', '{"version":"next"}',
-                '{"version":"12.0"}', '{"version":"12.0.0-beta.1"}'):
-    clear(); source.write_text(invalid); run()
-    assert json.loads(cache.read_text())["latest"] is None
-clear(); publish("12.0.0"); run("12.0.0")
-publish("13.0.0"); run("12.0.0")
-run("12.0.0", url=(h / "absent.json").as_uri(), pipe=True)
-c = json.loads(cache.read_text()); c["checked_at"] -= 25 * 60 * 60
-cache.write_text(json.dumps(c)); run("13.0.0")
-# 旧 manifest は整数の版を使い、壊れた manifest は黙って終わる。
-manifest.write_text(json.dumps({"version": 11})); run("13.0.0")
-for broken in ("{", "[]", "null", '{}', '{"package_version":"odd"}'):
-    manifest.write_text(broken); run()
-manifest.unlink(); clear(); run(); assert not cache.exists()
-manifest.write_text(json.dumps(m))
-# 停止時はキャッシュを作らず、既にある場合も時刻・バイトを変えない。
-publish("12.0.0")
-for use_file in (False, True):
-    for existing in (False, True):
-        clear()
-        if existing:
-            cache.write_text(json.dumps({"checked_at": 0, "latest": "12.0.0"}))
-        before = (cache.read_bytes(), cache.stat().st_mtime_ns) if existing else None
-        if use_file:
-            stop.touch()
-        run(extra={} if use_file else {"BRAIN_KIT_NO_UPDATE_CHECK": "1"})
-        assert ((cache.read_bytes(), cache.stat().st_mtime_ns) if cache.exists() else None) == before
-        if use_file:
-            stop.unlink()
-# 書けないキャッシュでも通知できる（一時ファイルを残さない）。
-clear(); cache.mkdir(); publish("12.0.0"); run("12.0.0")
-assert not list(state.glob(".update-check-*"))
-cache.rmdir(); run("12.0.0")
-PY
-check "通知: 出力・版比較・入力・キャッシュ・停止・manifest" test $? -eq 0
-python3 - "$H" <<'PY'
-import json, os, pathlib, socket, subprocess, sys, time
-h = pathlib.Path(sys.argv[1])
-cache = h / ".claude/brain-kit/update-check.json"
-hook = h / ".claude/hooks/brain-kit-update-check.py"
-before = cache.read_bytes()
-env = dict(os.environ, HOME=str(h), NO_PROXY="localhost", no_proxy="localhost")
-env.pop("BRAIN_KIT_NO_UPDATE_CHECK", None)
-
-def clear():
-    if cache.exists():
-        cache.unlink()
-
-def run(url, limit=4):
-    start = time.monotonic()
-    r = subprocess.run([sys.executable, str(hook)], env=dict(env, BRAIN_KIT_UPDATE_URL=url),
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=limit)
-    assert time.monotonic() - start < limit
-    assert r.returncode == 0 and r.stdout == r.stderr == b"", (r.returncode, r.stdout, r.stderr)
-
-# 接続先を閉じてから使う。プロキシは localhost について無効にしてある。
-with socket.socket() as sock:
-    sock.bind(("localhost", 0))
-    offline = "http://localhost:%d/" % sock.getsockname()[1]
-clear(); run(url=offline)
-failed = cache.read_bytes()
-assert json.loads(failed)["latest"] is None
-# 別プロセスのサーバーは接続を受けるだけで応答しない。必ず kill/wait する。
-server = subprocess.Popen([sys.executable, "-u", "-c", '''
-import socket, time
-with socket.socket() as s:
-    s.bind(("localhost", 0))
-    s.listen(5)
-    print(s.getsockname()[1], flush=True)
-    with s.accept()[0]:
-        time.sleep(60)
-'''], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 try:
-    url = "http://localhost:%d/" % int(server.stdout.readline())
-    run(url=url, limit=2)
-    assert cache.read_bytes() == failed
-    clear(); run(url=url, limit=6)
-    assert json.loads(cache.read_text())["latest"] is None
+    # 初回は無出力、次のセッションからキャッシュの版だけを知らせる。
+    for version in ("12.0.0", "11.1.0", "11.0.0", "10.1.0", "11.0.1", "11.10.0"):
+        clear(); publish(version)
+        count = server.count
+        run()
+        poll(lambda: json.loads(cache.read_text())["latest"] == version)
+        finished(count + 1)
+        run(version if version not in ("11.0.0", "10.1.0") else None)
+        assert server.count == count + 1
+    for invalid in ('{', '{}', 'null', '[]', '{"version":null}', '{"version":"next"}',
+                    '{"version":"12.0"}', '{"version":"12.0.0-beta.1"}'):
+        clear(); server.body = invalid
+        count = server.count
+        run(); finished(count + 1); run()
+        assert json.loads(cache.read_text())["latest"] is None
+        assert server.count == count + 1
+    clear(); publish("12.0.0")
+    count = server.count
+    run(); finished(count + 1)
+    publish("13.0.0")
+    run("12.0.0"); run("12.0.0", pipe=True)
+    assert server.count == count + 1
+    seed("12.0.0")
+    run("12.0.0"); finished(count + 2); run("13.0.0")
+    assert server.count == count + 2
+    # 1 時間以内の未来時刻は新鮮、それ以上は再試行する。
+    seed("13.0.0", -1800); run("13.0.0")
+    assert server.count == count + 2
+    seed("13.0.0", -7200); run("13.0.0"); finished(count + 3)
+    # 他の処理がロックを持っていても、既存の通知を失わず待たない。
+    seed("12.0.0")
+    with (state / "update-check.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        run("12.0.0")
+    assert server.count == count + 3
+    seed("12.0.0"); publish("14.0.0")
+    count = server.count
+    processes = [subprocess.Popen([sys.executable, str(hook)], env=env,
+                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(8)]
+    for p in processes:
+        out, err = p.communicate(timeout=2)
+        assert p.returncode == 0 and err == b"" and out in (expected("12.0.0"), expected("14.0.0"))
+    finished(count + 1)
+    assert json.loads(cache.read_text())["latest"] == "14.0.0"
+    assert server.count == count + 1
+    # 応答が無い場合もフックは即座に戻り、子は 5 秒でロックを解放する。
+    seed("12.0.0"); server.hang = True
+    count = server.count
+    start = time.monotonic()
+    run("12.0.0"); finished(count + 1)
+    assert time.monotonic() - start < 6.5
+    c = json.loads(cache.read_text())
+    assert c["latest"] == "12.0.0" and 0 <= time.time() - c["checked_at"] < 10
+    before = cache.read_bytes()
+    run("12.0.0")
+    assert cache.read_bytes() == before and server.count == count + 1
+    server.hang = False
+    # 保存できなければ試行しない。残った一時ファイルもない。
+    clear(); cache.mkdir()
+    count = server.count
+    run(); run()
+    time.sleep(.2)
+    assert server.count == count and not list(state.glob(".update-check-*"))
+    cache.rmdir()
+    # 閉じたポートへの失敗は無出力で、試行時刻だけが残る。
+    with socket.socket() as sock:
+        sock.bind(("localhost", 0))
+        offline = "http://localhost:%d/" % sock.getsockname()[1]
+    for previous in (None, "12.0.0"):
+        seed(previous)
+        run(previous, extra={"BRAIN_KIT_UPDATE_URL": offline})
+        # 接続失敗は要求数で追えないため、子の起動時間を取ってから排他も確認する。
+        time.sleep(.5); poll(unlocked, 6)
+        c = json.loads(cache.read_text())
+        assert c["latest"] == previous and time.time() - c["checked_at"] < 10
+        run(previous)
+    assert server.count == count
+    # 停止時はキャッシュの内容・時刻も変わらない。
+    for use_file in (False, True):
+        for existing in (False, True):
+            clear()
+            if existing:
+                seed("12.0.0")
+            before = (cache.read_bytes(), cache.stat().st_mtime_ns) if existing else None
+            if use_file:
+                stop.touch()
+            run(extra={} if use_file else {"BRAIN_KIT_NO_UPDATE_CHECK": "1"})
+            assert ((cache.read_bytes(), cache.stat().st_mtime_ns) if cache.exists() else None) == before
+            if use_file:
+                stop.unlink()
+    seed("12.0.0", 0)
+    manifest.write_text(json.dumps({"version": 11})); run("12.0.0")
+    clear()
+    for broken in ("{", "[]", "null", '{}', '{"package_version":"odd"}'):
+        manifest.write_text(broken); run(); assert not cache.exists()
+    manifest.unlink(); run(); assert not cache.exists()
+    manifest.write_text(json.dumps(m))
+    time.sleep(.2)
+    assert server.count == count
+    seed("12.0.0", 0)
 finally:
-    server.kill(); server.communicate()
-cache.write_bytes(before)
+    server.release.set()
+    server.shutdown()
+    server.server_close()
 PY
-check "通知: 通信断・タイムアウト・失敗後は翌日まで通信しない" test $? -eq 0
+check "通知: 非同期・版比較・排他・失敗・保存不可・停止・入力・manifest" test $? -eq 0
 new "$H" --doctor >"$H.doctor" 2>&1
 check "通知: doctor は有効とキャッシュの版を表示" grep -q '更新のお知らせ.*有効.*12.0.0' "$H.doctor"
 touch "$H/.claude/brain-kit/no-update-check"

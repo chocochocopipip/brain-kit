@@ -10,7 +10,7 @@
 > npx github:chocochocopipip/brain-kit --update --dry-run      # already installed (v1–v9 too): see what changes
 > npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
-> Update notice: a SessionStart hook checks the published npm release once a day; if it is newer, Claude mentions it in one line in its first reply. Silent offline, never auto-updates; opt out with `BRAIN_KIT_NO_UPDATE_CHECK=1` or `~/.claude/brain-kit/no-update-check`.
+> Update notice: a SessionStart hook checks the published npm release in the background at most once a day; from the following session, Claude mentions a cached newer release in one line in its first reply. Fetch failures are silent; never auto-updates; opt out with `BRAIN_KIT_NO_UPDATE_CHECK=1` or `~/.claude/brain-kit/no-update-check`.
 >
 > `--uninstall --dry-run` previews removal; `--uninstall` removes only kit files and owned settings under `~/.claude`. Your brain is never touched; `--rollback` restores them.
 >
@@ -152,7 +152,7 @@ npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か�
 
 clone してあるなら `git pull && ./install.sh --update`。
 
-セッション開始時、kit のフック（SessionStart）が npm の公開版（`brainkit-agents/latest`）を確認し、今より新しい版があれば 1 行のお知らせを Claude の文脈に入れる。相棒（どの人格でも）が最初の返事の冒頭でその 1 行と、更新内容を見るコマンドを伝える（SessionStart のフックは持ち主の画面に直接は書けないため）。確認は 24 時間に 1 回（失敗時も翌日まで再試行しない）。オフラインでは何も表示せず、**自動では更新しない**。GitHub の main から入れて npm より先の版を使っている場合も知らせない。
+セッション開始時、kit のフック（SessionStart）がキャッシュを読み、今より新しい版が記録されていれば 1 行のお知らせを Claude の文脈に入れる。相棒（どの人格でも）が最初の返事の冒頭でその 1 行と、更新内容を見るコマンドを伝える（SessionStart のフックは持ち主の画面に直接は書けないため）。npm の公開版（`brainkit-agents/latest`）の確認はバックグラウンドで最大 24 時間に 1 回行い、開始時には通信を待たない。お知らせは確認した次のセッションから出る（失敗時も翌日まで再試行しない）。通信失敗は表示せず、以前確認できた版は保持する。**自動では更新しない**。GitHub の main から入れて npm より先の版を使っている場合も知らせない。
 止めるには Claude Code 起動時に環境変数 `BRAIN_KIT_NO_UPDATE_CHECK=1` を設定するか、`touch ~/.claude/brain-kit/no-update-check` でファイルを作る。ファイルを消せば再開する。`--doctor` の「更新のお知らせ」で有効・止めてある・フック無しと、キャッシュにある最新の版を見られる（doctor は通信しない）。
 
 - **外すときは `--uninstall`**：機械側の manifest に記録された `~/.claude` の未変更の kit ファイル・base・記録と、未変更の所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定や permissions は残す。外したあとも残るフック・statusLine が使う kit のファイル（持ち主のスクリプト経由・symlink 経由も、書かれたパスから辿れるもの）と、そこへ辿り着くディレクトリも残す。確認のあとに計画を作り直し、確認の間に変わっていれば何も変えずに止める。brain 全体（`.brain-kit` と kit ファイルも）・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない。記録が無い古い導入は先に `--update` が必要。`--rollback` で元に戻せる（brain のコミットは増えない）。残る設定を使い `./install.sh --update` で再導入できる
