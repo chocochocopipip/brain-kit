@@ -54,7 +54,7 @@ flowchart LR
 
 - **Labels and comments are the signal.** A message between sessions only helps; it is never your approval.
 - **Gates that stay with you:** the `agent-ready` label and permission dialogs. No persona passes them on its own.
-- **Release says "released"** only when the main sha, the deploy READY and a SELECT all agree. A conflict or red CI goes straight back to dev for a rebase, and a changed head is reviewed again. Type A (no migration, no production SQL, no visual change, no money or permission code, a repository allowed in `release/手順.md`) is the only case where review hands over directly, with its own instruction comment.
+- **Release says "released"** only when main's sha has moved, production is READY on that sha, and — for a migration or a data fix — a SELECT shows the expected values. A conflict or red CI goes straight back to dev for a rebase, and a changed head is reviewed again. Type A (no migration, no production SQL, no visual change, no money or permission code, a repository allowed in `release/手順.md`) is the only case where review hands over directly, with its own instruction comment.
 - Personas do not write into each other's areas (the one exception: the partner scores reviews in `review/評価/`). Dev, review and release write in their own worktrees and merge into main. After context compaction, a hook reloads the persona's core files from main.
 - The partner keeps the dashboard (ask it to "make the dashboard"): counts per stage, your turn, today's plan, stalled work.
 
@@ -63,12 +63,12 @@ flowchart LR
 | Symptom | Cause | Fix |
 |---|---|---|
 | A persona's window sits at a prompt and never starts | First start of Claude Code in a folder (`~/brain` and each worktree) asks "Do you trust the files in this folder?". start-all prints which tab, window or tmux window | Go there, choose the first option "Yes, proceed / Yes, I trust this folder" and press Enter. Once per folder. tmux: `tmux attach -t brain-kit`, then Ctrl-b w |
-| The same persona runs twice | start-all was run again after it said "まだ見えない" (not visible yet), or a session was opened by hand (`claude`, then `/<id>`). start-all only recognizes a `claude` process whose last argument is `/<id>`, which is how `start-<id>` launches it | Exit the extra session in its window and confirm with `~/.claude/brain-kit/bin/start-all --status`. Do not rerun start-all for a persona that is not visible yet; look at its tab first. Open personas with `start-all` or `~/.claude/brain-kit/bin/start-<id>` |
+| The same persona runs twice | start-all was run again after it said "not visible yet" (Japanese install: 「まだ見えない」), or a session was opened by hand (`claude`, then `/<id>`). start-all only recognizes a `claude` process whose last argument is `/<id>`, which is how `start-<id>` launches it | Exit the extra session in its window and confirm with `~/.claude/brain-kit/bin/start-all --status`. Do not rerun start-all for a persona that is not visible yet; look at its tab first. Open personas with `start-all` or `~/.claude/brain-kit/bin/start-<id>` |
 | A persona stops: a permission prompt or the classifier blocked it | Intended. Personas do not retry a blocked action in another form and never hand it to another persona; permission dialogs are your gate | You decide: approve it in that window, or add a rule to `permissions.allow` in `~/.claude/settings.json` yourself (general Claude Code practice; the kit itself does not guide this step). The kit only adds a three-line minimal example when `permissions` is missing and never touches it afterwards. For the release persona alone, see `--release-permissions` below |
 | Install stops: `~/brain` already exists | An earlier brain-kit, or your own vault, is there | brain-kit already there: `--update`. Your own vault: `--brain-merge` (adds only what is missing) or `--brain <dir>` |
 | `--doctor`, `--update` or install warns: "brain に main が無い" / "the brain has no main branch" | The brain was created on another branch (e.g. `master`, from git's `init.defaultBranch`, before the kit fixed this). The start scripts and skills merge `main`, so that merge silently does nothing | The kit does not rename it for you. Run the command it prints (`git -C ~/brain branch -m <branch> main`, plus a `push -u` when a remote is set), then switch the remote's default branch to `main` and delete the old branch yourself |
-| "別の brain-kit … がこの HOME で動いている" | install, `--update`, `--resolve`, `--uninstall` and `--rollback` run one at a time per HOME | Nothing was changed. Wait for the other one to finish, then run again |
-| `--rollback` stops: "どれから戻すか決められない" | A backup record is broken, or an unnumbered backup from an older kit came after a numbered one | Nothing was changed. Compare `files/` and `meta.json` in each `~/.claude/backup-brain-kit-*/` and restore by hand |
+| "Another brain-kit run (…) is active in this HOME" (Japanese: 「別の brain-kit … がこの HOME で動いている」) | install, `--update`, `--resolve`, `--uninstall` and `--rollback` run one at a time per HOME | Nothing was changed. Wait for the other one to finish, then run again |
+| `--rollback` stops: "Cannot decide which backup to restore first" or "Cannot decide which to restore first" (Japanese: 「どれから戻すか決められない」) | A backup record is broken, or an unnumbered backup from an older kit came after a numbered one | Nothing was changed. Compare `files/` and `meta.json` in each `~/.claude/backup-brain-kit-*/` and restore by hand |
 
 ### Update and roll back
 
@@ -137,7 +137,7 @@ flowchart LR
 
 - **ラベルとコメントが合図。**セッションどうしの伝言は補助で、あなたの承認ではない。
 - **あなたに残る関門**：`agent-ready` ラベルの付与と権限ダイアログの承諾。どの人格も自分で通さない。
-- **リリースが「入った」と言う**のは main の sha・配信の READY・SELECT の 3 つがそろってから。衝突・CI の赤は開発に直接返して乗せ直させ、head が変わればレビューが読み直す。型 A（migration 無し・本番データの SQL 無し・見た目が変わらない・お金と権限に触らない・`release/手順.md` で許したリポジトリ）だけは、レビューが指示のコメントを書いて直接渡してよい。
+- **リリースが「入った」と言う**のは main の sha が進み、本番の配信がその sha で READY になり、migration やデータ修正があれば SELECT で読んだ値が合ってから。衝突・CI の赤は開発に直接返して乗せ直させ、head が変わればレビューが読み直す。型 A（migration 無し・本番データの SQL 無し・見た目が変わらない・お金と権限に触らない・`release/手順.md` で許したリポジトリ）だけは、レビューが指示のコメントを書いて直接渡してよい。
 - 人格どうしは互いの領域に書かない（例外は相棒がレビューを採点する `review/評価/`）。開発・レビュー・リリースは自分の worktree で書いて main に取り込む。文脈の圧縮（要約）のあとは、フックが main から人格の核を読み直す。
 - 工程表（相棒に「工程表を作って」と言う）は段ごとの本数・持ち主の番・今日の予定・止まっている仕事を 1 枚で見せる。
 
@@ -440,7 +440,7 @@ kit の版だけを見る: `./install.sh --version`（`npx brainkit-agents --ver
   NG は開発と直接往復する。見逃しは相棒が 1 日 1 回 `review/評価/` に付け、レビューが規準に足して版を上げる
 - **自分を直す雛形**（空の表と短い使い方。中身は持ち主の運用で埋まる）：前の版の規準の写し `review/規準の版/`、月 1 回の答えを伏せた読み直し `review/読み直し/`（答えは相棒だけが持つ `<相棒名>/21_読み直しの答え.md`）、レビューの採点表 `review/評価/_テンプレート.md`、4 人をまたいだ振り返りの表 `<相棒名>/20_振り返り.md`。使い方の README と写して使う雛形は kit のもの（更新で上がる）、答えと振り返りの表は持ち主のもの（無ければ足すだけ）
 - **マージと本番はリリース（skill `<リリースid>`）だけ。**相棒と持ち主が確かめた PR に、相棒が `<リリースid>` ラベルと**指示のコメント**を付けたときだけ入れる。
-  入ったと言うのは main の sha・配信の READY・SELECT の 3 つがそろってから。止められたら回避せず相棒に返す。
+  入ったと言うのは main の sha が進み、本番の配信がその sha で READY、migration やデータ修正は SELECT で読んだ値、の 3 つがそろってから。止められたら回避せず相棒に返す。
   **型 A**（migration 無し・本番データの SQL 無し・見た目が変わらない・お金の計算と権限の門に触らない・`手順.md` で許したリポジトリ）だけは、レビューが OK と一緒に直接渡してよい
 - **相棒が決めてよい範囲**は `<相棒名>/03_任せる範囲.md`。それ以外は持ち主に聞く。迷ったら聞く側
 - **振り返り**：4 人が手順から外れた動きを相棒が 1 日 1 回 `<相棒名>/20_振り返り.md` に 1 行ずつ残し、効く人の skill か手順に返す
