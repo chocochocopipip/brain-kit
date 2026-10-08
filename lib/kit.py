@@ -1905,10 +1905,11 @@ def plan_uninstall(args):
             return [real]
         return []
 
-    def named_files(text, here=None):
-        """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
-        ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
-        out = set()
+    def named_files(text, heres=()):
+        """text に書かれた ~/.claude の中のファイル。(書かれた形のパス, 指す先の一覧) を返す。
+        絶対・~/・$HOME/・${HOME}/ の形と、heres（読んだファイルが置かれたディレクトリ。symlink の別名の側も）
+        からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
+        out = {}
         args = re.split(r"[\s'\"`;|&()<>=,]+", text)
         # 引用符の中（空白を含むパス）と、\ で逃がした空白も 1 つの引数として見る
         args += [a or b for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', text)]
@@ -1921,49 +1922,62 @@ def plan_uninstall(args):
                 args += list(lex)
             except ValueError:
                 pass
+        found = []
         for arg in args:
             for prefix in ("${HOME}/", "$HOME/", "~/"):
                 if arg.startswith(prefix):
                     arg = os.path.join(HOME, arg[len(prefix):])
-            if not arg.startswith(os.sep):
-                arg = os.path.join(here, arg) if here and "/" in arg else ""
-            if arg and os.path.abspath(arg).startswith(claude + os.sep):
-                out.update(canonical(arg))
-        if here and os.path.isdir(here):
-            for name in sorted(os.listdir(here)):
-                if name in text:
-                    out.update(canonical(os.path.join(here, name)))
+            if arg.startswith(os.sep):
+                found.append(arg)
+            elif "/" in arg:
+                found.extend(os.path.join(here, arg) for here in heres)
+        for here in heres:
+            if os.path.isdir(here):
+                found.extend(os.path.join(here, name) for name in sorted(os.listdir(here)) if name in text)
+        for path in found:
+            path = os.path.abspath(path)
+            if path.startswith(claude + os.sep) and canonical(path):
+                out.setdefault(path, canonical(path))
         for path in candidates:
             if any(f in text for f in forms(path)):
-                out.update(canonical(path) or [path])
-        return sorted(out)
+                out.setdefault(path, canonical(path) or [path])
+        return sorted(out.items())
 
     # 起点：残る command に書かれた ~/.claude の中のファイル（kit のものも持ち主のスクリプトも）。
     # そこから、読んだファイルに書かれたファイルを何段でも辿る（session-end-brain.sh → "$HOOK_DIR/brain-digest.js"、
-    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。見たものは飛ばす。1 MiB を超えるファイルは読まない
+    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。相対パスと同じディレクトリのファイル名は、
+    # 書かれた形（symlink の別名）のディレクトリと実体のディレクトリの両方から探す。
+    # 同じ実体を同じディレクトリから見たら飛ばす。先頭 1 MiB だけ読む
     queue = []
+
+    def found(items, why):
+        for written, targets in items:
+            for target in targets:
+                mark(target, why)
+                dirs = {os.path.dirname(written), os.path.dirname(os.path.realpath(written)),
+                        os.path.dirname(target)}
+                queue.append((target, dirs))
+
     for part, command in commands:
-        for path in named_files(command):
-            mark(path, part)
-            queue.append(path)
+        found(named_files(command), part)
     seen = set()
     limit = 1024 * 1024
     while queue:
-        user = queue.pop(0)
-        if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
+        user, dirs = queue.pop(0)
+        real = os.path.realpath(user)
+        dirs = {d for d in dirs if (real, d) not in seen}
+        if not dirs or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
             continue
-        seen.add(user)
-        # 先頭の 1 MiB を読む。UTF-8 でなくても ASCII のパスは拾えるように、読めない文字だけ置き換える
+        seen.update((real, d) for d in dirs)
+        # UTF-8 でなくても ASCII のパスは拾えるように、読めない文字だけ置き換える
         try:
             with open(user, "rb") as f:
                 text = f.read(limit).decode("utf-8", "replace")
         except (IOError, OSError) as e:
             die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
                 "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
-        for path in named_files(text, os.path.dirname(user)):
-            if path != user:
-                mark(path, "%s から" % os.path.basename(user))
-                queue.append(path)
+        found([(w, [t for t in ts if t != user]) for w, ts in named_files(text, sorted(dirs))],
+              "%s から" % os.path.basename(user))
     return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
                 settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
                 unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,

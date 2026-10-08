@@ -1899,6 +1899,25 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "別名: uninstall が 0" test $? -eq 0
 check "別名で読まれる skills/ren/SKILL.md は消さない" test -f "$H/.claude/skills/ren/SKILL.md"
 check "別名: 読まれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# symlink の別名から相対で呼ぶ：hooks/wrapper.sh → ../own/wrapper.sh（実体）が ./session-end-brain.sh を呼ぶ
+# （別名のディレクトリ hooks/ から見た相対）→ hooks/session-end-brain.sh を消さない
+H="$TMP/uninstall-aliasrel"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # スクリプトの中で展開させる
+printf '#!/bin/sh\ncd -- "$(dirname -- "$0")" || exit 1\nsh ./session-end-brain.sh\n' >"$H/.claude/own/wrapper.sh"
+ln -s ../own/wrapper.sh "$H/.claude/hooks/wrapper.sh"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/wrapper.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "別名からの相対: uninstall が 0" test $? -eq 0
+check "別名のディレクトリから相対で呼ぶ session-end-brain.sh は消さない" test -f "$H/.claude/hooks/session-end-brain.sh"
+check "別名からの相対: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 計画のときには無かった持ち主のスクリプトが、確認を待つ間に作られ、kit のファイルを呼ぶ → 止まる
 H="$TMP/uninstall-appear"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
