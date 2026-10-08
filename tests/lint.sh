@@ -57,6 +57,8 @@ portability() {
     rule "$file" 'stat の書式指定' '(^|[^[:alnum:]_])stat[[:space:]]+-c([[:space:]]|$)' || return 2
     rule "$file" 'xargs の空入力指定' '(^|[^[:alnum:]_])xargs[[:space:]]+-r([[:space:]]|$)' || return 2
     rule "$file" 'find の書式指定' '(^|[^[:alnum:]_])find[[:space:]].*-printf([[:space:]]|$)' || return 2
+    # macOS の bash 3.2 は UTF-8 のロケールで、変数名の直後の全角文字を名前の続きと読む（unbound variable）
+    LC_ALL=C rule "$file" '変数の直後の全角文字' "\\\$[A-Za-z_][A-Za-z0-9_]*"$'[\x80-\xff]' || return 2
   done
   return "$found"
 }
@@ -79,14 +81,14 @@ if [ "$self_test" = 1 ]; then
   printf '%s\n' '#!/usr/bin/env bash' 'rm $1' >"$TMP/引用.sh"
   # shellcheck disable=SC2016
   printf '%s\n' '#!/usr/bin/env bash' 'rm $1' \
-    'declare -A values' 'mapfile values' "sed -i 's/a/b/' f" 'readlink -f f' >"$TMP/違反.sh" # lint-ok: 違反の見本
+    'declare -A values' 'mapfile values' "sed -i 's/a/b/' f" 'readlink -f f' 'echo "$1"' 'echo "（$HOME）"' >"$TMP/違反.sh" # lint-ok: 違反の見本
   # shellcheck disable=SC2016
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$1"' >"$TMP/正常.sh"
   # コメントと理由付きの除外も確かめる。
   printf '%s\n' '# mapfile values' 'true # mapfile values # lint-ok: 検査から除く見本' >>"$TMP/正常.sh" # lint-ok: 除外の見本
   checks "$TMP/違反.sh" >"$TMP/結果" 2>&1; rc=$?
   [ "$rc" = 1 ] || { echo 'NG: 違反を検出できない'; exit 1; }
-  for label in '連想配列' '配列の一括読み込み' 'sed の退避指定なし' 'リンクの絶対化'; do
+  for label in '連想配列' '配列の一括読み込み' 'sed の退避指定なし' 'リンクの絶対化' '変数の直後の全角文字'; do
     grep -q -F ": $label" "$TMP/結果" || { echo "NG: $label を検出できない"; exit 1; }
   done
   if [ "$portability_only" = 0 ]; then

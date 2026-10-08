@@ -352,9 +352,9 @@ if sys.argv[2] != 'none':
 PY
   HOME="$hm" BRAIN_KIT_UPDATE_URL=file:///nonexistent python3 "$KIT/claude/hooks/brain-kit-update-check.py" </dev/null >"$hm.notice"
   if [ "$c_want" = en ]; then
-    check "SessionStart 言語（config $c_cfg・manifest $c_man）は English" grep -q 'brain-kit update notice:' "$hm.notice"
+    check "SessionStart 言語（config ${c_cfg}・manifest ${c_man}）は English" grep -q 'brain-kit update notice:' "$hm.notice"
   else
-    check "SessionStart 言語（config $c_cfg・manifest $c_man）は日本語" grep -q 'brain-kit の更新のお知らせ' "$hm.notice"
+    check "SessionStart 言語（config ${c_cfg}・manifest ${c_man}）は日本語" grep -q 'brain-kit の更新のお知らせ' "$hm.notice"
   fi
 done 3<<'CASES'
 en ja en
@@ -403,11 +403,11 @@ PY
     case "$2" in none) ;; *) printf '{"lang": "%s"}\n' "$2" >"$hm/.claude/brain-kit/manifest.json" ;; esac
     HOME="$hm" HOOK_PROMPT="$hm.prompt" PATH="$TMP/lang-hook-bin:$PATH" \
       bash "$KIT/claude/hooks/session-end-brain.sh" <"$TMP/lang-hook-input"
-    check "SessionEnd 言語（config $1・manifest $2）が 0" test $? -eq 0
+    check "SessionEnd 言語（config ${1}・manifest ${2}）が 0" test $? -eq 0
     if [ "$3" = en ]; then
-      check "SessionEnd 言語（config $1・manifest $2）は English" grep -q '### Done' "$hm/brain/daily/$(date +%F).md"
+      check "SessionEnd 言語（config ${1}・manifest ${2}）は English" grep -q '### Done' "$hm/brain/daily/$(date +%F).md"
     else
-      check "SessionEnd 言語（config $1・manifest $2）は日本語" grep -q '### やったこと' "$hm/brain/daily/$(date +%F).md"
+      check "SessionEnd 言語（config ${1}・manifest ${2}）は日本語" grep -q '### やったこと' "$hm/brain/daily/$(date +%F).md"
     fi
   done 3<<'CASES'
 en ja en

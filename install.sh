@@ -198,7 +198,7 @@ fi
 case "$MODE" in local|base) ;; *) msg 'error: --mode は local か base' 'error: --mode must be local or base' >&2; exit 2 ;; esac
 if [ "$MODE" = base ]; then
   machine="$(hostname 2>/dev/null || echo '?')"
-  msg "  base: この機（$machine）を母艦にする。brain も Claude Code もここに置く。" "  base: use this machine ($machine) as the host for brain and Claude Code."
+  msg "  base: この機（${machine}）を母艦にする。brain も Claude Code もここに置く。" "  base: use this machine ($machine) as the host for brain and Claude Code."
   msg '        手元の PC からではなく、母艦の上（SSH か WSL のターミナル）で実行していること。' '        Run on the host (SSH or WSL terminal), not on your local PC.'
   confirm "$(msg '  いま母艦の上にいる？' '  Are you on the host now?')" || { msg '  母艦に入ってから実行する。手元の PC なら --mode local' '  Run on the host. For your local PC, use --mode local'; exit 1; }
 fi
