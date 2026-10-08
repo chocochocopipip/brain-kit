@@ -18,6 +18,7 @@
 #   ./install.sh --resolve <file> [--from <merged file>]   解消結果を記録する。省略時は今の内容
 #   ./install.sh --resolve --keep <file>                 今の内容を保って解消する
 #                                     settings.json も指定できる。--dry-run で書く前に確認する
+#   ./install.sh --uninstall [--dry-run] [--yes]  ~/.claude の kit だけを外す。brain は触らない
 #   ./install.sh --rollback           直前の resolve・更新・install を退避から戻す。--dry-run で中身だけ
 #   ./install.sh --doctor             何も変えず、版・人格・古いもの・手で直したもの・CLI・Orca・gh を表で出す
 #
@@ -39,6 +40,7 @@ PYARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --uninstall) ACTION=uninstall; shift ;;
     --update)   ACTION=update; shift ;;
     --resolve)  ACTION=resolve; shift ;;
     --rollback) ACTION=rollback; shift ;;
@@ -52,7 +54,7 @@ while [ $# -gt 0 ]; do
       PYARGS+=("$1" "$2"); shift 2 ;;
     --brain-merge|--no-worktrees|--dry-run|--diff|--keep)
       PYARGS+=("$1"); shift ;;
-    -h|--help)  sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,34p' "$0"; exit 0 ;;
     -*) echo "使えない引数: $1" >&2; exit 2 ;;
     *)
       if [ "$ACTION" != resolve ] || [ -n "$TARGET" ]; then
@@ -71,6 +73,7 @@ kit() { python3 "$KIT/lib/kit.py" "$@" ${PYARGS[@]+"${PYARGS[@]}"}; }
 need python3
 case "$ACTION" in
   doctor)   kit doctor; exit $? ;;
+  uninstall) kit uninstall; exit $? ;;
   rollback) kit rollback; exit $? ;;
   update)   need git; kit update; exit $? ;;
   resolve)  need git; kit resolve; exit $? ;;

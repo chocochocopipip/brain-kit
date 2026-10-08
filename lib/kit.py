@@ -5,6 +5,7 @@
   kit.py install  [名前などの引数]      新しく入れる
   kit.py update   [--dry-run] [...]    kit のものだけを新しい版に上げる（持ち主のものには触らない）
   kit.py resolve  --target <file>     確認した解消結果を退避して記録する
+  kit.py uninstall [--dry-run] [--yes]  この機の kit だけを外す
   kit.py rollback                      直前の更新（か install）を戻す
   kit.py doctor                        何も変えずに状態を表で出す
 
@@ -21,6 +22,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1735,7 +1737,358 @@ def cmd_resolve(args):
         print("退避: %s（--rollback でこの解消を戻せる）" % tilde(bdir))
 
 
+# ------------------------------------------------------------------ uninstall（機械側の記録だけを使う）
+def cmd_uninstall(args):
+    # HOME に // が混ざっても（macOS の TMPDIR は / で終わる）比べられるように、正規化した形だけを使う
+    claude, claude_manifest, kit_state = (os.path.abspath(p) for p in (CLAUDE, CLAUDE_MANIFEST, KIT_STATE))
+    brain = os.path.abspath(os.path.expanduser(args.brain))
+    manifest = load_json(claude_manifest, {}) or {}
+    if not manifest.get("files"):
+        die("kit の記録が無い（v1〜v9 の導入か、未導入）。先に --update で記録を作る")
+    cfg = load_json(config_path(brain))
+    protected = [brain]
+    if cfg:
+        protected.append(cfg["brain"])
+        protected.extend(worktree_of(cfg, r) for r in WORKTREE_ROLES if r in cfg["personas"])
+    protected = [os.path.abspath(p) for p in protected]
+    settings_path = os.path.join(claude, "settings.json")
+    base = os.path.join(kit_state, "base")
+    conflicts = os.path.join(kit_state, "conflicts")
+    remove, keep, unsafe = set(), set(), set()
+
+    def inside(path, directory):
+        return path == directory or path.startswith(directory + os.sep)
+
+    def safe(path):
+        parent = os.path.realpath(os.path.dirname(path))
+        real = os.path.realpath(path)
+        return (path.startswith(claude + os.sep) and
+                inside(parent, os.path.realpath(claude)) and not os.path.islink(path) and
+                not any(p.startswith("backup-brain-kit-") for p in
+                        os.path.relpath(path, claude).split(os.sep) +
+                        os.path.relpath(real, os.path.realpath(claude)).split(os.sep)) and
+                not any(inside(path, p) or inside(real, os.path.realpath(p)) for p in protected))
+
+    rendered, expected = {}, {}
+    if cfg:
+        rendered = {os.path.abspath(dst): (src, flags) for src, dst, flags in load_kitfiles(cfg)}
+    for key, ent in manifest["files"].items():
+        path = os.path.abspath(os.path.join(HOME, key))
+        if not safe(path) or path in (settings_path, claude_manifest) or inside(path, conflicts):
+            unsafe.add(path)
+            continue
+        if os.path.lexists(path):
+            if os.path.isfile(path) and sha(open_bytes(path)) == ent.get("sha"):
+                remove.add(path)
+                expected[path] = ent.get("sha")
+            else:
+                keep.add(path)
+        new = path + ".new"
+        if os.path.lexists(new):
+            if not safe(new):
+                unsafe.add(new)
+            elif os.path.isfile(new) and path in rendered and open_bytes(new) == as_bytes(
+                    source_text(rendered[path][0], cfg, rendered[path][1])):
+                remove.add(new)
+                expected[new] = sha(open_bytes(new))
+            else:
+                keep.add(new)
+
+    # base は kit の原文。symlink はたどらず、その他の状態や衝突資料は残す。
+    other = set()
+    directories = set()
+    for root, dirs, files in os.walk(kit_state, followlinks=False):
+        dirs.sort()
+        for name in files + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
+            path = os.path.join(root, name)
+            if path == claude_manifest or path in remove or path in keep or path in unsafe:
+                continue
+            # base は記録のある kit のファイルの原文だけを消す（記録の sha と一致するもの）。ほかは残す
+            ent = manifest["files"].get(os.path.relpath(path, base)) if inside(path, base) else None
+            if ent and safe(path) and os.path.isfile(path) and sha(open_bytes(path)) == ent.get("sha"):
+                remove.add(path)
+                expected[path] = ent.get("sha")
+            else:
+                other.add(path)
+        if inside(root, base) and safe(root):
+            directories.add(root)
+    # manifest 自体が symlink なら参照先も記録もそのまま残す。
+    if safe(claude_manifest) and os.path.isfile(claude_manifest):
+        remove.add(claude_manifest)
+        expected[claude_manifest] = sha(open_bytes(claude_manifest))
+    else:
+        unsafe.add(claude_manifest)
+
+    cur, settings_raw = {}, None
+    if os.path.lexists(settings_path):
+        try:
+            settings_raw = open_bytes(settings_path)
+            cur = json.loads(settings_raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            die("settings.json が JSON として読めない: %s" % e)
+        if not isinstance(cur, dict):
+            die("settings.json は JSON オブジェクトにする")
+    pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
+    settings_remove, settings_keep = [], []
+    for part, values in manifest.get("settings", {}).items():
+        if part != "statusLine" and part not in ("enabledPlugins", "extraKnownMarketplaces") and not part.startswith("hooks."):
+            continue
+        entries = [("", values)] if part == "statusLine" else values.items()
+        for key, recorded in entries:
+            entry = (part, key)
+            old = settings_get(cur, entry)
+            if old is None:
+                continue
+            if settings_sha(old) != recorded or entry in pending:
+                settings_keep.append(settings_name(entry))
+                continue
+            settings_remove.append(settings_name(entry))
+            if part.startswith("hooks."):
+                event = part[6:]
+                groups = cur["hooks"][event]
+                groups.remove(old)
+                if not groups:
+                    del cur["hooks"][event]
+                if not cur["hooks"]:
+                    del cur["hooks"]
+            elif part == "statusLine":
+                del cur[part]
+            else:
+                del cur[part][key]
+                if not cur[part]:
+                    del cur[part]
+    settings_writable = safe(settings_path)
+    # 外したあとも settings.json に残るフック・statusLine（持ち主が変えた kit の項目・衝突待ち・持ち主が足したもの）が
+    # 呼ぶ kit のファイルは消さない。消すと、残したフックが無いファイルを呼び続ける。
+    # command の文字列に、そのファイルのパス（絶対パス・~/・$HOME/・${HOME}/ の形）が含まれていれば「使う」とみなす。
+    remaining = cur if settings_writable else (json.loads(settings_raw.decode("utf-8")) if settings_raw else {})
+    commands = []
+    for event, groups in (remaining.get("hooks") or {}).items():
+        for group in groups if isinstance(groups, list) else []:
+            for hook in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                    commands.append(("hooks." + event, hook["command"]))
+    status = remaining.get("statusLine")
+    if isinstance(status, dict) and isinstance(status.get("command"), str):
+        commands.append(("statusLine", status["command"]))
+    used = {}
+
+    def forms(path):
+        out = {path}
+        for home in {HOME, os.path.abspath(HOME)}:
+            if path.startswith(os.path.abspath(home) + os.sep):
+                rel = os.path.relpath(path, os.path.abspath(home))
+                out.update([os.path.join(home, rel), "~/" + rel, "$HOME/" + rel, "${HOME}/" + rel])
+        return out
+
+    candidates = sorted((remove | keep) - {claude_manifest})   # 記録のある kit のファイル（変えたものも）
+
+    def mark(path, why):
+        if path in remove:
+            used[path] = why
+            remove.discard(path)
+
+    # 辿るときは ~/.claude の中の symlink もたどる（消すかどうかの safe() とは別。読むだけ）。
+    # 指す先が記録のある kit のファイルなら、その記録のパスとして残す
+    real_claude = os.path.realpath(claude)
+    by_real = {os.path.realpath(c): c for c in candidates}
+
+    def canonical(path):
+        real = os.path.realpath(path)
+        if real in by_real:
+            return by_real[real]
+        if real.startswith(real_claude + os.sep) and os.path.isfile(real):
+            return real
+        return None
+
+    looked = {}   # 辿るときに読んだファイルとディレクトリ。確認のあとで変わっていれば止める
+
+    def named_files(text, here=None):
+        """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
+        ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
+        out = set()
+        args = re.split(r"[\s'\"`;|&()<>=,]+", text)
+        # 引用符の中（空白を含むパス）と、\ で逃がした空白も 1 つの引数として見る
+        args += [a or b for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', text)]
+        for line in text.splitlines():
+            try:
+                args += shlex.split(line, comments=True)
+            except ValueError:
+                pass
+        for arg in args:
+            for prefix in ("${HOME}/", "$HOME/", "~/"):
+                if arg.startswith(prefix):
+                    arg = os.path.join(HOME, arg[len(prefix):])
+            if not arg.startswith(os.sep):
+                arg = os.path.join(here, arg) if here and "/" in arg else ""
+            if arg and os.path.abspath(arg).startswith(claude + os.sep) and canonical(arg):
+                out.add(canonical(arg))
+        if here and os.path.isdir(here):
+            looked[("dir", here)] = sorted(os.listdir(here))
+            out.update(canonical(os.path.join(here, name)) for name in sorted(os.listdir(here))
+                       if name in text and canonical(os.path.join(here, name)))
+        for path in candidates:
+            if any(f in text for f in forms(path)):
+                out.add(path)
+        return sorted(out)
+
+    # 起点：残る command に書かれた ~/.claude の中のファイル（kit のものも持ち主のスクリプトも）。
+    # そこから、読んだファイルに書かれたファイルを何段でも辿る（session-end-brain.sh → "$HOOK_DIR/brain-digest.js"、
+    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。見たものは飛ばす。1 MiB を超えるファイルは読まない
+    queue = []
+    for part, command in commands:
+        for path in named_files(command):
+            mark(path, part)
+            queue.append(path)
+    seen = set()
+
+    def fingerprint(path):
+        try:
+            return (os.path.realpath(path), sha(open_bytes(path)))
+        except (IOError, OSError):
+            return None
+    while queue:
+        user = queue.pop(0)
+        if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
+            continue
+        seen.add(user)
+        try:
+            big = os.path.getsize(user) > 1024 * 1024
+        except OSError:
+            big = True
+        text = "" if big else (read_text(user) or "")
+        looked[("file", user)] = fingerprint(user)
+        for path in named_files(text, os.path.dirname(user)):
+            if path != user:
+                mark(path, "%s から" % os.path.basename(user))
+                queue.append(path)
+    untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
+    if cfg:
+        untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
+    untouched.extend(["GitHub のラベル", "Codex CLI", "~/.claude/backup-brain-kit-*（既存の退避）"])
+    if os.path.lexists(conflicts):
+        untouched.append(tilde(conflicts) + "（持ち主のマージ結果を含むことがある）")
+    untouched.extend(tilde(p) for p in sorted(other))
+
+    def show(title, rows):
+        say("%s: %d 件" % (title, len(rows)))
+        for row in rows:
+            print("  " + row)
+
+    show("消すもの", [tilde(p) for p in sorted(remove)])
+    show("残すもの（持ち主が変えた）", [tilde(p) for p in sorted(keep)])
+    show("残すもの（残すフックが使うため）", ["%s（%s）" % (tilde(p), used[p]) for p in sorted(used)])
+    print("  持ち主が変えた kit のファイル（残す）。.new も今の kit と一致しなければ残す。")
+    show("settings.json から外す項目" + ("（手動）" if not settings_writable else ""), settings_remove)
+    if not settings_writable:
+        print("  settings.json は symlink などのため書かない。上の項目は手で外す。")
+    show("settings.json に残す項目", settings_keep)
+    print("  permissions と記録にない項目は持ち主のものとして残す。")
+    show("触らないもの", untouched)
+    print("  その他の kit 状態: %d 件（残す）" % len(other))
+    show("触らない（記録が ~/.claude の外・symlink など）", [tilde(p) for p in sorted(unsafe)])
+    if args.dry_run:
+        print("--dry-run なので何も変えていない。退避も作らない。")
+        return
+    if not args.yes:
+        if not interactive(args):
+            die("実行には --yes が要る。先に --dry-run で確認できる", 2)
+        if ask("実行する？ [y/N]", args=args).lower() not in ("y", "yes"):
+            print("中止した。何も変えていない。")
+            return
+    # 確認を待つ間に settings.json が変わったら、古い計画で上書きしない（何も変えずに止める）
+    now_raw = open_bytes(settings_path) if os.path.lexists(settings_path) and not os.path.isdir(settings_path) else None
+    if now_raw != settings_raw or safe(settings_path) != settings_writable:
+        die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+    # 残すフックが使うものを調べたときに読んだスクリプト・ディレクトリが変わっていたら、計画が古い。何も変えずに止める
+    for (kind, path), before in sorted(looked.items()):
+        now = (sorted(os.listdir(path)) if os.path.isdir(path) else None) if kind == "dir" else fingerprint(path)
+        if now != before:
+            die("確認の間に %s が変わった（残すフックが使うものを調べ直す）。何も変えていない。もう一度 --uninstall を実行する"
+                % tilde(path), 1)
+
+    def unchanged(path):
+        # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる
+        return (safe(path) and os.path.isfile(path) and not os.path.islink(path) and
+                sha(open_bytes(path)) == expected.get(path))
+
+    backup = Backup("uninstall", {"brain": brain, "from": VERSION, "to": None})
+    backup.meta.update(removed=[], written={})
+
+    def drop(path):
+        if not unchanged(path):
+            remove.discard(path)
+            keep.add(path)
+            print("  残す（確認の間に変わった）: %s" % tilde(path))
+            return
+        backup.save(path)
+        backup.meta["removed"].append(path)
+        backup._journal()
+        os.remove(path)
+        directories.add(os.path.dirname(path))
+
+    if settings_remove and settings_writable:
+        # settings.json を先に書く。退避してから書く直前にもう一度確かめ、隣の一時ファイルから置き換える
+        # （途中で落ちても元のバイトか書き終えた版のどちらかが残る。権限は元のまま）
+        text = json.dumps(cur, ensure_ascii=False, indent=2) + "\n"
+        backup.save(settings_path)
+        if open_bytes(settings_path) != settings_raw or not safe(settings_path):
+            # 何も変えていない退避なので、--rollback の対象にしない（持ち主の新しい settings.json を古い版で戻さない）
+            backup.meta.update(rolled_back=True, aborted=True)
+            backup._journal()
+            die("書く直前に settings.json が変わった。何も変えていない（--rollback は要らない）", 1)
+        backup.meta["written"][settings_path] = sha(text)
+        backup._journal()
+        fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=claude)
+        try:
+            with io.open(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, os.stat(settings_path).st_mode & 0o7777)
+            os.replace(tmp, settings_path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    for path in sorted(remove - {claude_manifest}):
+        drop(path)
+    if claude_manifest in remove:
+        drop(claude_manifest)
+        directories.add(kit_state)
+    stops = {claude} | {os.path.join(claude, p) for p in ("skills", "hooks", "agents")}
+    for directory in sorted(directories, key=len, reverse=True):
+        while directory not in stops and safe(directory):
+            try:
+                os.rmdir(directory)
+            except OSError:
+                break
+            directory = os.path.dirname(directory)
+    bdir = backup.close()
+    print("消したファイル: %d 件、残したファイル: %d 件。settings: 外した %d 件、残した %d 件。" % (
+        len(remove), len(keep | other | unsafe | set(used)), len(settings_remove) if settings_writable else 0,
+        len(settings_keep) + (len(settings_remove) if not settings_writable else 0)))
+    if bdir:
+        print("退避: %s（--rollback で戻せる。要らなくなったら手で消す）" % tilde(bdir))
+    print("brain/.brain-kit/config.json は残っている。./install.sh --update で ~/.claude 側を入れ直せる。")
+
+
 # ------------------------------------------------------------------ rollback
+def restore_atomic(src, path):
+    """退避から戻す。隣の一時ファイルに写して fsync してから置き換える（途中で落ちても戻す前の中身が残り、もう一度戻せる）。
+    symlink は今までどおり指す先に戻す。"""
+    dst = os.path.realpath(path) if os.path.islink(path) else path
+    fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(dst) + ".", dir=os.path.dirname(dst))
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp)
+        with open(tmp, "rb") as f:            # 読み取り専用（0444 など）の退避でも開ける形で fsync する
+            os.fsync(f.fileno())
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def backup_order(meta, directory):
     stamp = meta.get("stamp", "")
     suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
@@ -1758,10 +2111,29 @@ def cmd_rollback(args):
     cands.sort()
     stamp, d, meta = cands[-1]
     bdir = os.path.join(CLAUDE, d)
-    say("戻す: %s（%s、v%s → v%s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), meta.get("to"),
+    target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
+    say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
                                         "（--dry-run: 何も変えない）" if args.dry_run else ""))
     restored, removed, left = [], [], []
+    gone = set(meta.get("removed", []))
+    written = meta.get("written", {})
     for path in meta.get("overwritten", []):
+        # uninstall で外したものは、今も無いときだけ戻す。書いた settings.json は書いたときのままのときだけ戻す。
+        # 外したあとに持ち主が作り直したもの・書き換えたもの・symlink に差し替えたものは上書きしない
+        if path in gone:
+            parent = os.path.realpath(os.path.dirname(path))
+            if os.path.lexists(path) or not (parent == os.path.realpath(CLAUDE) or
+                                             parent.startswith(os.path.realpath(CLAUDE) + os.sep)):
+                left.append(path)
+                continue
+        elif path in written:
+            if os.path.islink(path) or not os.path.isfile(path) or sha(open_bytes(path)) != written[path]:
+                left.append(path)
+                continue
+        elif meta.get("kind") == "uninstall":
+            # 退避したあと、消す・書く前に止まったもの（記録が書けなかったなど）。今の中身が持ち主のものなので戻さない
+            left.append(path)
+            continue
         restored.append(path)
     for path, h in meta.get("added", {}).items():
         cur = None
@@ -1776,7 +2148,7 @@ def cmd_rollback(args):
     for p in removed:
         print("  消す（更新で足したもの）: %s" % tilde(p))
     for p in left:
-        print("  残す（足したあとに書き換えられている）: %s" % tilde(p))
+        print("  残す（%sあとに書き換えられている・作られている）: %s" % ("外した" if gone or written else "足した", tilde(p)))
     for w in meta.get("worktrees", []):
         print("  worktree を外す: %s（中身に変更があれば残す）" % tilde(w["path"]))
     if args.dry_run:
@@ -1785,7 +2157,7 @@ def cmd_rollback(args):
         src = os.path.join(bdir, "files", path.lstrip(os.sep))
         if not os.path.isdir(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
-        shutil.copy2(src, path)
+        restore_atomic(src, path)
     for path in removed:
         os.remove(path)
         d = os.path.dirname(path)
@@ -1801,7 +2173,7 @@ def cmd_rollback(args):
         if w.get("new_branch"):
             if run(["git", "-C", brain, "branch", "-d", w["branch"]])[0] != 0:
                 print("  warn: ブランチ %s は main に入っていない変更があるので残した" % w["branch"])
-    if brain and os.path.isdir(brain):
+    if meta.get("kind") != "uninstall" and brain and os.path.isdir(brain):
         commit_brain({"brain": brain}, restored + removed, "brain-kit: 更新を戻した（%s）" % d)
     meta["rolled_back"] = True
     meta["rolled_back_at"] = datetime.datetime.now().isoformat(timespec="seconds")
@@ -1987,7 +2359,7 @@ def cmd_doctor(args):
 # ------------------------------------------------------------------ 入口
 def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
-    ap.add_argument("cmd", choices=["install", "update", "resolve", "rollback", "doctor", "detect"])
+    ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
     ap.add_argument("--target")
     ap.add_argument("--from", dest="from_file")
     ap.add_argument("--keep", action="store_true")
@@ -2012,6 +2384,8 @@ def main(argv):
         cmd_update(args)
     elif args.cmd == "resolve":
         cmd_resolve(args)
+    elif args.cmd == "uninstall":
+        cmd_uninstall(args)
     elif args.cmd == "rollback":
         cmd_rollback(args)
     elif args.cmd == "doctor":

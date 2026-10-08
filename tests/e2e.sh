@@ -1467,6 +1467,399 @@ assert json.load(open(h + "/.claude/settings.json"))["hooks"]["TeammateIdle"] ==
 PY
 check "--from で残した外れた項目: 次の更新で消さない" test $? -eq 0
 
+# ------------------------------------------------------------------ uninstall（brain は全部そのまま）
+section "uninstall と rollback・再導入"
+H="$TMP/uninstall"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes >"$H.log" 2>&1
+check "uninstall 用の新規導入" test $? -eq 0
+printf '\n持ち主の追記\n' >>"$H/.claude/CLAUDE.md"
+mkdir -p "$H/.claude/skills/mine"
+printf 'owner skill\n' >"$H/.claude/skills/mine/SKILL.md"
+printf 'owner memory\n' >"$H/brain/Aoi/owner.md"
+git -C "$H/brain" add Aoi/owner.md
+git -C "$H/brain" commit -qm 'owner memory'
+python3 - "$H" <<'PY'
+import json, os, sys
+p = os.path.join(sys.argv[1], '.claude/settings.json')
+s = json.load(open(p))
+s['hooks']['SessionEnd'][0]['timeout'] = 987
+s['hooks']['Stop'].append({'hooks': [{'type': 'command', 'command': 'echo owner'}]})
+open(p, 'w').write(json.dumps(s, ensure_ascii=False, indent=2) + '\n')
+PY
+chmod 600 "$H/.claude/settings.json"
+before="$(snap "$H")"; own="$(owner_snap "$H" Aoi)"
+brain_before="$(snap "$H" | grep ' brain/')"
+head_before="$(git -C "$H/brain" rev-parse HEAD)"
+cat "$H/.claude/settings.json" >"$H.settings-before"
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H" --uninstall --dry-run >"$H.dry" 2>&1
+check "uninstall dry-run が 0" test $? -eq 0
+check "dry-run は何も書かない" test "$before" = "$(snap "$H")"
+check "dry-run は退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+check "dry-run は編集済み CLAUDE.md を「残すもの」に出す" sh -c "awk '/^残すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF '.claude/CLAUDE.md'"
+check "dry-run は編集済み CLAUDE.md を「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -v '/base/' | grep -qF '.claude/CLAUDE.md'"
+new "$H" --uninstall </dev/null >"$H.no" 2>&1
+check "非対話は --yes が必要（exit 2）" test $? -eq 2
+check "確認前は変更なし" test "$before" = "$(snap "$H")"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "uninstall が 0" test $? -eq 0
+for s in aoi ren mio sora setup grilling; do check "kit skill $s を削除" test ! -e "$H/.claude/skills/$s/SKILL.md"; done
+check "残した SessionEnd の項目が呼ぶ session-end-brain.sh は残す" test -f "$H/.claude/hooks/session-end-brain.sh"
+check "uninstall の出力に「残すフックが使うため」" grep -q '残すフックが使うため' "$H.un"
+check "残すスクリプトが呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
+for p in brain-kit/bin/heavy-lock brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
+  check "$p を削除" test ! -e "$H/.claude/$p"
+done
+check "編集した CLAUDE.md を保持" grep -q '持ち主の追記' "$H/.claude/CLAUDE.md"
+check "持ち主 skill を保持" test -f "$H/.claude/skills/mine/SKILL.md"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s['hooks']['SessionEnd'][0]['timeout'] == 987
+assert s['hooks']['Stop'] == [{'hooks': [{'type': 'command', 'command': 'echo owner'}]}]
+assert 'statusLine' not in s
+assert not any('pr-review-toolkit' in k for k in s.get('enabledPlugins', {}))
+assert 'permissions' in s
+PY
+check "settings は持ち主の hook・変更・permissions を保ち kit の項目だけ削除" test $? -eq 0
+check "settings の権限（600）を保つ" python3 -c 'import os, sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o777 != 0o600)' "$H/.claude/settings.json"
+check "settings の一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
+check "持ち主の brain は同一" test "$own" = "$(owner_snap "$H" Aoi)"
+check "brain 全体（kit の記録も）は同一" test "$brain_before" = "$(snap "$H" | grep ' brain/')"
+check "brain HEAD は同一" test "$head_before" = "$(git -C "$H/brain" rev-parse HEAD)"
+for w in ren mio sora; do check "worktree $w を保持" test -d "$H/brain-$w"; done
+new "$H" --rollback >"$H.rb" 2>&1
+check "uninstall の rollback が 0" test $? -eq 0
+check "rollback で全バイトと実行権限が戻る" test "$before" = "$(snap "$H")"
+check "settings のバイトが戻る" cmp -s "$H.settings-before" "$H/.claude/settings.json"
+new "$H" --uninstall --yes >"$H.un2" 2>&1
+check "再 uninstall が 0" test $? -eq 0
+new "$H" --update --no-worktrees >"$H.reinstall" 2>&1
+check "update で再導入できる" test $? -eq 0
+for s in aoi ren mio sora setup grilling; do check "再導入 skill $s" test -f "$H/.claude/skills/$s/SKILL.md"; done
+
+section "uninstall の範囲と symlink"
+printf 'outside\n' >"$H/outside.txt"
+python3 - "$H" <<'PY'
+import hashlib, json, os, sys
+h = sys.argv[1]
+p = os.path.join(h, '.claude/brain-kit/manifest.json')
+m = json.load(open(p))
+sha = hashlib.sha256(open(os.path.join(h, 'outside.txt'), 'rb').read()).hexdigest()
+for key in ('../outside.txt', 'outside.txt'):
+    m['files'][key] = {'sha': sha}
+open(p, 'w').write(json.dumps(m))
+PY
+mv "$H/.claude/settings.json" "$H/settings-target.json"
+cat "$H/settings-target.json" >"$H.settings-target-before"
+ln -s "$H/settings-target.json" "$H/.claude/settings.json"
+new "$H" --uninstall --yes >"$H.edge" 2>&1
+check "symlink があっても uninstall が 0" test $? -eq 0
+check "範囲外のファイルを保持" test -f "$H/outside.txt"
+check "settings は symlink のまま" test -L "$H/.claude/settings.json"
+check "symlink の参照先は同一" cmp -s "$H.settings-target-before" "$H/settings-target.json"
+H="$TMP/uninstall-empty"; mkdir -p "$H"
+new "$H" --uninstall --yes >"$H.log" 2>&1
+check "manifest が無ければ失敗" test $? -ne 0
+
+section "uninstall の .new・衝突資料・不正な settings"
+H="$TMP/uninstall-state"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes >"$H.log" 2>&1
+cp "$H/.claude/skills/aoi/SKILL.md" "$H/.claude/skills/aoi/SKILL.md.new"
+printf 'owner merge\n' >"$H/.claude/skills/ren/SKILL.md.new"
+mkdir -p "$H/.claude/brain-kit/conflicts/test"
+printf 'merged\n' >"$H/.claude/brain-kit/conflicts/test/merged.md"
+printf 'state\n' >"$H/.claude/brain-kit/owner.lock"
+cp "$H/.claude/settings.json" "$H.settings-good"
+printf '{broken' >"$H/.claude/settings.json"
+before="$(snap "$H")"
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H" --uninstall --yes >"$H.bad" 2>&1
+check "不正 JSON は失敗" test $? -ne 0
+check "不正 JSON ならファイルを削除しない" test "$before" = "$(snap "$H")"
+check "不正 JSON なら退避も作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+cp "$H.settings-good" "$H/.claude/settings.json"
+python3 - "$H" <<'PY'
+import hashlib, json, os, sys
+h = sys.argv[1]
+p = os.path.join(h, '.claude/brain-kit/manifest.json')
+m = json.load(open(p))
+# 範囲内に見えても参照先が brain や退避なら外さない。
+os.symlink(os.path.join(h, 'brain/Aoi'), os.path.join(h, '.claude/owner-link'))
+backups = [d for d in os.listdir(os.path.join(h, '.claude')) if d.startswith('backup-brain-kit-')]
+b = os.path.join(h, '.claude', backups[0])
+open(os.path.join(b, 'keep.txt'), 'w').write('backup')
+os.symlink(b, os.path.join(h, '.claude/backup-link'))
+for key in ('.claude/owner-link/00_核.md', '.claude/backup-link/keep.txt'):
+    m['files'][key] = {'sha': hashlib.sha256(open(os.path.join(h, key), 'rb').read()).hexdigest()}
+entry = ['statusLine', '']
+m.setdefault('settings_conflicts', []).append(entry)
+open(p, 'w').write(json.dumps(m))
+PY
+before="$(snap "$H")"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "状態付き uninstall が 0" test $? -eq 0
+check "kit と同一の .new は削除" test ! -e "$H/.claude/skills/aoi/SKILL.md.new"
+check "編集した .new を保持" grep -q 'owner merge' "$H/.claude/skills/ren/SKILL.md.new"
+check "衝突資料を保持" test -f "$H/.claude/brain-kit/conflicts/test/merged.md"
+check "未登録の状態を保持" test -f "$H/.claude/brain-kit/owner.lock"
+check "brain を指すディレクトリ symlink の中は削除しない" test -f "$H/.claude/owner-link/00_核.md"
+check "退避を指すディレクトリ symlink の中は削除しない" test -f "$H/.claude/backup-link/keep.txt"
+check "未変更でも settings の衝突項目は残す" grep -q 'statusLine' "$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "状態・.new も rollback で戻る" test "$before" = "$(snap "$H")"
+
+section "uninstall の確認中の変更・base・戻すときの作り直し"
+H="$TMP/uninstall-race"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf 'owner note\n' >"$H/.claude/brain-kit/base/owner-note.md"
+printf '\n持ち主の追記\n' >>"$H/.claude/brain-kit/base/.claude/skills/ren/SKILL.md"
+# 確認を待つ間に settings.json が変わったら、何も変えずに止まる
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+{ sleep 3; printf '{"owner": true}\n' >"$H/.claude/settings.json"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race1" 2>&1
+check "確認中に settings が変わると止まる" test $? -ne 0
+check "止まったとき settings は持ち主の書いたまま" grep -q '"owner": true' "$H/.claude/settings.json"
+check "止まったとき kit の skill は消えていない" test -f "$H/.claude/skills/aoi/SKILL.md"
+check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+# 確認を待つ間に kit の skill を持ち主が書き換えたら、それは消さない
+{ sleep 3; printf 'edited while waiting\n' >>"$H/.claude/skills/mio/SKILL.md"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race2" 2>&1
+check "確認中の書き換え: uninstall が 0" test $? -eq 0
+check "確認中に書き換えた skill は残す" grep -q 'edited while waiting' "$H/.claude/skills/mio/SKILL.md"
+check "ほかの kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+check "記録の無い base のファイルは残す" test -f "$H/.claude/brain-kit/base/owner-note.md"
+check "書き換えた base は残す" grep -q '持ち主の追記' "$H/.claude/brain-kit/base/.claude/skills/ren/SKILL.md"
+check "書き換えていない base は消す" test ! -e "$H/.claude/brain-kit/base/.claude/skills/aoi/SKILL.md"
+# 外したあとに持ち主が作り直したものは、--rollback でも上書きしない
+mkdir -p "$H/.claude/skills/aoi"
+printf 'owner recreated\n' >"$H/.claude/skills/aoi/SKILL.md"
+printf '{"owner": "after"}\n' >"$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "作り直しがあっても rollback が 0" test $? -eq 0
+check "作り直した skill は上書きしない" grep -q 'owner recreated' "$H/.claude/skills/aoi/SKILL.md"
+check "書き換えた settings は上書きしない" grep -q '"owner": "after"' "$H/.claude/settings.json"
+check "ほかの外したものは戻る" test -f "$H/.claude/skills/sora/SKILL.md"
+check "manifest も戻る" test -f "$H/.claude/brain-kit/manifest.json"
+
+section "uninstall の settings.json：置き換えの失敗と書く直前の変更"
+# kit.py を読み込み、os.replace（settings.json だけ）か退避の直後を差し替えて uninstall を走らせる
+uninstall_fault() { # uninstall_fault <home> <replace|race>
+  HOME="$1" python3 - "$KIT/lib/kit.py" "$2" <<'PY2'
+import os, runpy, sys
+from unittest import mock
+g = runpy.run_path(sys.argv[1], run_name="kit_under_test")
+mode = sys.argv[2]
+settings = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+real_replace, real_save = os.replace, g["Backup"].save
+def replace(src, dst, *a, **k):
+    if os.path.basename(dst) == "settings.json":
+        raise OSError("injected: replace failed")
+    return real_replace(src, dst, *a, **k)
+def save(self, path):
+    real_save(self, path)
+    if os.path.basename(path) == "settings.json":
+        with open(settings, "a") as f:     # 退避のあと、書く直前に持ち主が保存した
+            f.write("\n")
+real_copy2 = g["shutil"].copy2
+def copy2(src, dst, *a, **k):
+    # settings.json を戻す途中で容量不足：半分だけ書いて落ちる
+    if os.path.basename(src) == "settings.json":
+        with open(src, "rb") as f:
+            data = f.read()
+        with open(dst, "wb") as f:
+            f.write(data[: len(data) // 2])
+        raise OSError("injected: copy failed")
+    return real_copy2(src, dst, *a, **k)
+real_journal = g["Backup"]._journal
+def journal(self):
+    # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
+    if any(os.path.basename(p) == "settings.json" for p in self.meta["overwritten"]) and not self.meta.get("journal_failed"):
+        if not self.meta.get("written"):
+            real_journal(self)              # 退避そのものは記録に残る
+            self.meta["journal_failed"] = True
+            return
+    if self.meta.get("journal_failed"):
+        raise OSError("injected: journal failed")
+    return real_journal(self)
+patches = {"replace": [mock.patch.object(os, "replace", replace)],
+           "race": [mock.patch.object(g["Backup"], "save", save)],
+           "journal": [mock.patch.object(g["Backup"], "_journal", journal)],
+           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)]}[mode]
+for p in patches:
+    p.start()
+try:
+    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--yes"])
+except SystemExit as e:
+    sys.exit(e.code or 0)
+except OSError as e:
+    print("raised: %s" % e)
+    sys.exit(3)
+PY2
+}
+H="$TMP/uninstall-fault"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-orig"
+uninstall_fault "$H" replace >"$H.replace" 2>&1
+check "置き換えが失敗すると uninstall は 0 以外" test $? -ne 0
+check "置き換えが失敗しても settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "置き換えが失敗しても一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
+check "置き換えが失敗したら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+new "$H" --rollback >"$H.rb" 2>&1
+check "置き換えの失敗のあとの rollback が 0" test $? -eq 0
+check "rollback のあとも settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+uninstall_fault "$H" race >"$H.race" 2>&1
+check "書く直前の変更で uninstall は 0 以外" test $? -ne 0
+printf '\n' >>"$H.settings-orig"
+check "書く直前の持ち主の変更を上書きしない" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "書く直前の変更なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+new "$H" --rollback --dry-run >"$H.rb2" 2>&1
+check "止めた退避は rollback の対象にしない" sh -c "! grep -q '（uninstall、' '$H.rb2'"
+# 退避のあと「書いた」印の記録に失敗して止まり、そのあと持ち主が settings.json を変えた → rollback は上書きしない
+H="$TMP/uninstall-journal"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+uninstall_fault "$H" journal >"$H.journal" 2>&1
+check "記録の失敗で uninstall は 0 以外" test $? -ne 0
+check "記録の失敗なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+printf '{"owner": "edited after failure"}\n' >"$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "記録の失敗のあとの rollback が 0" test $? -eq 0
+check "記録の失敗のあとの持ち主の settings を rollback で上書きしない" grep -q 'edited after failure' "$H/.claude/settings.json"
+# rollback が settings.json を戻す途中で落ちても、途中の中身を残さず、もう一度の rollback で元のバイトに戻る
+H="$TMP/uninstall-rbfail"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-orig"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-after"
+uninstall_fault "$H" rollback >"$H.rbfail" 2>&1
+check "戻す途中の失敗で rollback は 0 以外" test $? -ne 0
+check "戻す途中で落ちても settings.json は途中の中身にならない" cmp -s "$H.settings-after" "$H/.claude/settings.json"
+check "戻す途中で落ちても一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
+new "$H" --rollback >"$H.rb" 2>&1
+check "もう一度の rollback が 0" test $? -eq 0
+check "もう一度の rollback で settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "もう一度の rollback で kit の skill も戻る" test -f "$H/.claude/skills/aoi/SKILL.md"
+# 読み取り専用の settings.json（0444）と kit の実行ファイル（0555）も、外して戻すとバイトと権限が戻る
+H="$TMP/uninstall-readonly"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+chmod 444 "$H/.claude/settings.json"; chmod 555 "$H/.claude/brain-kit/bin/start-aoi"
+cp "$H/.claude/settings.json" "$H.settings-orig"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "読み取り専用でも uninstall が 0" test $? -eq 0
+check "読み取り専用の kit の実行ファイルも消す" test ! -e "$H/.claude/brain-kit/bin/start-aoi"
+new "$H" --rollback >"$H.rb" 2>&1
+check "読み取り専用でも rollback が 0" test $? -eq 0
+check "読み取り専用の settings.json が元のバイトに戻る" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+mode_is() { python3 -c 'import os, sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o777 != int(sys.argv[2], 8))' "$1" "$2"; }
+check "settings.json の権限 444 が戻る" mode_is "$H/.claude/settings.json" 444
+check "kit の実行ファイルの権限 555 が戻る" mode_is "$H/.claude/brain-kit/bin/start-aoi" 555
+
+section "uninstall：残すフックが使う kit のファイル"
+# 持ち主が SessionEnd の timeout だけを変えた → 項目は残すので、項目が呼ぶスクリプトも残す
+H="$TMP/uninstall-hookref"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
+# 持ち主が足したフックが kit のスクリプトを ~ の形で呼ぶ
+s["hooks"].setdefault("Notification", []).append(
+    {"hooks": [{"type": "command", "command": "~/.claude/brain-kit/dashboard/collect.py --quiet"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --dry-run >"$H.dry" 2>&1
+check "dry-run: SessionEnd のスクリプトを「残すフックが使うため」に出す" sh -c "awk '/^残すもの（残すフックが使うため）/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF 'hooks/session-end-brain.sh'"
+check "dry-run: 持ち主のフックが呼ぶ collect.py も「残すフックが使うため」に出す" sh -c "awk '/^残すもの（残すフックが使うため）/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF 'dashboard/collect.py'"
+check "dry-run: SessionEnd のスクリプトを「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -v '/base/' | grep -qF 'hooks/session-end-brain.sh'"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "uninstall が 0" test $? -eq 0
+check "timeout だけ変えた SessionEnd の項目は残る" grep -q 'session-end-brain.sh' "$H/.claude/settings.json"
+check "その項目が呼ぶ session-end-brain.sh も残る" test -x "$H/.claude/hooks/session-end-brain.sh"
+check "持ち主のフックが呼ぶ collect.py も残る" test -f "$H/.claude/brain-kit/dashboard/collect.py"
+check "残す session-end-brain.sh が呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
+check "どのフックも呼ばない kit のファイルは消す" test ! -e "$H/.claude/brain-kit/bin/heavy-lock"
+check "どのフックも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 持ち主が session-end-brain.sh を書き換え、SessionEnd の項目も変えた → 書き換えたスクリプトが呼ぶ brain-digest.js も残す
+# 持ち主のスクリプト（kit の外）が kit の heavy-lock を呼ぶ → heavy-lock も残す
+H="$TMP/uninstall-hookref-edited"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf '\n# 持ち主の追記\n' >>"$H/.claude/hooks/session-end-brain.sh"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >"$H/.claude/hooks/mine.sh"
+chmod +x "$H/.claude/hooks/mine.sh"
+# 2 段：持ち主のフック → 持ち主の mine2.sh → 持ち主の helper.sh → kit の collect.py
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\nexec "$HOME/.claude/own/helper.sh"\n' >"$H/.claude/hooks/mine2.sh"
+printf '#!/bin/sh\npython3 ~/.claude/brain-kit/dashboard/collect.py\n' >"$H/.claude/own/helper.sh"
+# 相対：持ち主のフック → node の mine.js → require('./helper.js') → kit の shot.py
+printf "require('./helper.js');\n" >"$H/.claude/hooks/mine.js"
+# symlink：持ち主のフック → ~/.claude/hooks/current.sh（kit の precheck.sh を指す symlink）
+ln -s ../brain-kit/automations/precheck.sh "$H/.claude/hooks/current.sh"
+# 空白を含む持ち主のスクリプト（引用符あり・\ で逃がしたもの）→ kit の start-aoi・start-ren
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-aoi" --help\n' >"$H/.claude/hooks/my hook.sh"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-ren" --help\n' >"$H/.claude/hooks/other hook.sh"
+printf "require('child_process').execFileSync('/usr/bin/env', ['python3', '%s/.claude/brain-kit/dashboard/shot.py']);\n" "$H" >"$H/.claude/hooks/helper.js"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
+s["hooks"].setdefault("Notification", []).append(
+    {"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/mine.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine2.sh"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "node ~/.claude/hooks/mine.js"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/current.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh \"$HOME/.claude/hooks/my hook.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/other\\ hook.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "書き換えたスクリプト: uninstall が 0" test $? -eq 0
+check "書き換えた session-end-brain.sh は残る" grep -q '持ち主の追記' "$H/.claude/hooks/session-end-brain.sh"
+check "書き換えた session-end-brain.sh が呼ぶ brain-digest.js も残る" test -f "$H/.claude/hooks/brain-digest.js"
+check "持ち主のスクリプトが呼ぶ heavy-lock も残る" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+check "持ち主のスクリプトは残る" test -x "$H/.claude/hooks/mine.sh"
+check "持ち主のスクリプト → 補助スクリプトが呼ぶ collect.py も残る" test -f "$H/.claude/brain-kit/dashboard/collect.py"
+check "持ち主の node スクリプト → 相対の補助 → kit の shot.py も残る" test -f "$H/.claude/brain-kit/dashboard/shot.py"
+check ".claude の中の symlink（current.sh → precheck.sh）越しに呼ぶ kit のファイルも残る" test -f "$H/.claude/brain-kit/automations/precheck.sh"
+check "symlink はそのまま" test -L "$H/.claude/hooks/current.sh"
+check "引用符の中の空白を含むパスの持ち主のスクリプトが呼ぶ start-aoi も残る" test -f "$H/.claude/brain-kit/bin/start-aoi"
+check "\\ で逃がした空白を含むパスの持ち主のスクリプトが呼ぶ start-ren も残る" test -f "$H/.claude/brain-kit/bin/start-ren"
+check "どれも呼ばない start-mio は消す" test ! -e "$H/.claude/brain-kit/bin/start-mio"
+check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 確認を待つ間に、残す持ち主のスクリプトが kit のファイルを呼ぶように書き換えた → 何も変えずに止まる
+H2="$TMP/uninstall-hookref-race"; mkdir -p "$H2"
+new "$H2" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H2.log" 2>&1
+printf '#!/bin/sh\ntrue\n' >"$H2/.claude/hooks/mine.sh"
+python3 - "$H2/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+backups_before="$(find "$H2/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+{ sleep 3; printf '"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >>"$H2/.claude/hooks/mine.sh"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H2" bash "$KIT/install.sh" --uninstall >"$H2.race" 2>&1
+check "確認中に残すスクリプトが変わると止まる" test $? -ne 0
+check "止まったとき heavy-lock は消えていない" test -x "$H2/.claude/brain-kit/bin/heavy-lock"
+check "止まったとき kit の skill も消えていない" test -f "$H2/.claude/skills/aoi/SKILL.md"
+check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H2/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H2" --uninstall --yes >"$H2.un" 2>&1
+check "もう一度の uninstall は 0 で、heavy-lock を残す" sh -c "test -x '$H2/.claude/brain-kit/bin/heavy-lock'"
+# 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
+H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "変えていなければ SessionEnd の項目を外す" sh -c "! grep -q 'session-end-brain.sh' '$H/.claude/settings.json'"
+check "変えていなければ session-end-brain.sh も消す" test ! -e "$H/.claude/hooks/session-end-brain.sh"
+check "変えていなければ brain-digest.js も消す" test ! -e "$H/.claude/hooks/brain-digest.js"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
