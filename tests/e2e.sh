@@ -1658,6 +1658,16 @@ def save(self, path):
     if os.path.basename(path) == "settings.json":
         with open(settings, "a") as f:     # 退避のあと、書く直前に持ち主が保存した
             f.write("\n")
+real_copy2 = g["shutil"].copy2
+def copy2(src, dst, *a, **k):
+    # settings.json を戻す途中で容量不足：半分だけ書いて落ちる
+    if os.path.basename(src) == "settings.json":
+        with open(src, "rb") as f:
+            data = f.read()
+        with open(dst, "wb") as f:
+            f.write(data[: len(data) // 2])
+        raise OSError("injected: copy failed")
+    return real_copy2(src, dst, *a, **k)
 real_journal = g["Backup"]._journal
 def journal(self):
     # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
@@ -1671,11 +1681,12 @@ def journal(self):
     return real_journal(self)
 patches = {"replace": [mock.patch.object(os, "replace", replace)],
            "race": [mock.patch.object(g["Backup"], "save", save)],
-           "journal": [mock.patch.object(g["Backup"], "_journal", journal)]}[mode]
+           "journal": [mock.patch.object(g["Backup"], "_journal", journal)],
+           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)]}[mode]
 for p in patches:
     p.start()
 try:
-    g["main"](["uninstall", "--yes"])
+    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--yes"])
 except SystemExit as e:
     sys.exit(e.code or 0)
 except OSError as e:
@@ -1700,7 +1711,7 @@ printf '\n' >>"$H.settings-orig"
 check "書く直前の持ち主の変更を上書きしない" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
 check "書く直前の変更なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
 new "$H" --rollback --dry-run >"$H.rb2" 2>&1
-check "止めた退避は rollback の対象にしない" sh -c "! grep -q 'uninstall' '$H.rb2'"
+check "止めた退避は rollback の対象にしない" sh -c "! grep -q '（uninstall、' '$H.rb2'"
 # 退避のあと「書いた」印の記録に失敗して止まり、そのあと持ち主が settings.json を変えた → rollback は上書きしない
 H="$TMP/uninstall-journal"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
@@ -1711,6 +1722,20 @@ printf '{"owner": "edited after failure"}\n' >"$H/.claude/settings.json"
 new "$H" --rollback >"$H.rb" 2>&1
 check "記録の失敗のあとの rollback が 0" test $? -eq 0
 check "記録の失敗のあとの持ち主の settings を rollback で上書きしない" grep -q 'edited after failure' "$H/.claude/settings.json"
+# rollback が settings.json を戻す途中で落ちても、途中の中身を残さず、もう一度の rollback で元のバイトに戻る
+H="$TMP/uninstall-rbfail"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-orig"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-after"
+uninstall_fault "$H" rollback >"$H.rbfail" 2>&1
+check "戻す途中の失敗で rollback は 0 以外" test $? -ne 0
+check "戻す途中で落ちても settings.json は途中の中身にならない" cmp -s "$H.settings-after" "$H/.claude/settings.json"
+check "戻す途中で落ちても一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
+new "$H" --rollback >"$H.rb" 2>&1
+check "もう一度の rollback が 0" test $? -eq 0
+check "もう一度の rollback で settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "もう一度の rollback で kit の skill も戻る" test -f "$H/.claude/skills/aoi/SKILL.md"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

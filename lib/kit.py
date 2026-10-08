@@ -1961,6 +1961,22 @@ def cmd_uninstall(args):
 
 
 # ------------------------------------------------------------------ rollback
+def restore_atomic(src, path):
+    """退避から戻す。隣の一時ファイルに写して fsync してから置き換える（途中で落ちても戻す前の中身が残り、もう一度戻せる）。
+    symlink は今までどおり指す先に戻す。"""
+    dst = os.path.realpath(path) if os.path.islink(path) else path
+    fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(dst) + ".", dir=os.path.dirname(dst))
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp)
+        with open(tmp, "rb+") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def backup_order(meta, directory):
     stamp = meta.get("stamp", "")
     suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
@@ -2029,7 +2045,7 @@ def cmd_rollback(args):
         src = os.path.join(bdir, "files", path.lstrip(os.sep))
         if not os.path.isdir(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
-        shutil.copy2(src, path)
+        restore_atomic(src, path)
     for path in removed:
         os.remove(path)
         d = os.path.dirname(path)
