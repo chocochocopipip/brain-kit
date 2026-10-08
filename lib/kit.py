@@ -921,17 +921,22 @@ def backup_seq(meta):
     return seq if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0 else None
 
 
-def next_backup_seq():
-    """今ある退避（戻し済みも含む）の通し番号の最大 + 1。"""
-    top = 0
+def scan_backups():
+    """(今ある退避（戻し済みも含む）の通し番号の最大 + 1, 通し番号の無い退避の名前の一覧)。
+    一覧は新しい退避の meta に残し、番号の無い退避がこの退避より前からあったことの証にする
+    （古い版の kit をあとで使うと、番号の無い退避が番号のある退避より新しくなりうる）。"""
+    top, legacy = 0, []
     if os.path.isdir(CLAUDE):
-        for d in os.listdir(CLAUDE):
+        for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
                 m = load_json(os.path.join(CLAUDE, d, "meta.json"))
-                seq = backup_seq(m) if isinstance(m, dict) else None
-                if seq:
-                    top = max(top, seq)
-    return top + 1
+                if not isinstance(m, dict):
+                    continue
+                if "seq" not in m:
+                    legacy.append(d)
+                elif backup_seq(m):
+                    top = max(top, backup_seq(m))
+    return top + 1, legacy
 
 
 class Backup(object):
@@ -943,7 +948,8 @@ class Backup(object):
             self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s-%d" % (STAMP, n))
         # 作った順は壁時計でなく通し番号で持つ。時計は NTP や仮想機械の時刻合わせで数 ms 戻ることがあり、
         # 同じ秒の退避の created や、前の秒に戻った STAMP では新旧が入れ替わる
-        self.meta = dict(meta, kind=kind, stamp=STAMP, seq=next_backup_seq(),
+        seq, legacy = scan_backups()
+        self.meta = dict(meta, kind=kind, stamp=STAMP, seq=seq, legacy_before=legacy,
                          created=datetime.datetime.now().isoformat(timespec="microseconds"),
                          overwritten=[], added={}, worktrees=[], rolled_back=False)
         self.opened = False
@@ -2247,7 +2253,7 @@ def restore_atomic(src, path):
 
 
 def backup_order(meta, directory):
-    """新しいほど大きい。通し番号のある退避は、番号の無い古い記録の退避よりあとに作られている。"""
+    """新しいほど大きい。通し番号のある退避は番号の無い退避より新しい扱い（cmd_rollback が legacy_before で確かめる）。"""
     stamp = meta.get("stamp", "")
     suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
     suffix = int(suffix) if suffix.isdigit() else 1
@@ -2267,14 +2273,20 @@ def cmd_rollback(args):
             if d.startswith("backup-brain-kit-"):
                 m = load_json(os.path.join(CLAUDE, d, "meta.json"))
                 if m and not m.get("rolled_back"):
-                    if "seq" in m and not backup_seq(m):
-                        die("退避の記録が壊れている（seq が正の整数でない）: %s/meta.json。どれから戻すか決められないので何も変えない"
+                    if "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), list)):
+                        die("退避の記録が壊れている（seq か legacy_before が不正）: %s/meta.json。どれから戻すか決められないので何も変えない"
                             % tilde(os.path.join(CLAUDE, d)), 1)
                     cands.append((backup_order(m, d), d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
     cands.sort()
     stamp, d, meta = cands[-1]
+    if backup_seq(meta):
+        # 番号の無い退避が、この退避を作ったときに無かった＝あとで古い版の kit が作った。どちらが新しいか決められない
+        later = [c[1] for c in cands if "seq" not in c[2] and c[1] not in meta["legacy_before"]]
+        if later:
+            die("番号の無い退避 %s が %s よりあとに作られている（古い版の kit で更新した？）。どれから戻すか決められないので何も変えない。"
+                "古い版の kit で --rollback するか、要らない退避を確かめて片付けてから" % (", ".join(later), d), 1)
     bdir = os.path.join(CLAUDE, d)
     target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
     say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,

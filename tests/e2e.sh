@@ -1061,6 +1061,7 @@ for old in (False, True):
             meta = g["load_json"](directory + "/meta.json")
             del meta["created"]
             del meta["seq"]
+            del meta["legacy_before"]
             g["write_text"](directory + "/meta.json", g["dump_json"](meta))
         entries.append(directory)
     assert entries[-1].endswith("-12") if not old else entries[-1].endswith("-24")
@@ -1098,6 +1099,7 @@ for i, stamp in enumerate(["20300101-010100", "20300101-010100", "20300101-01010
         meta = g["load_json"](directory + "/meta.json")
         meta.pop("created")
         meta.pop("seq", None)
+        meta.pop("legacy_before", None)
         g["write_text"](directory + "/meta.json", g["dump_json"](meta))
     entries.append(directory)
 for i in range(len(entries) - 1, -1, -1):
@@ -1118,19 +1120,50 @@ for i in range(2):
     backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
     g["put"](p, "kit%d" % i, backup)
     dirs.append(backup.close())
-for bad in ("2", 0, None, True):
+for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("legacy_before", None), ("legacy_before", "")):
     meta = g["load_json"](dirs[1] + "/meta.json")
-    meta["seq"] = bad
+    meta["seq"] = 2
+    meta["legacy_before"] = []
+    meta[key] = bad
     g["write_text"](dirs[1] + "/meta.json", g["dump_json"](meta))
     try:
         g["cmd_rollback"](argparse.Namespace(dry_run=False))
-        raise AssertionError("rollback が止まらなかった: %r" % (bad,))
+        raise AssertionError("rollback が止まらなかった: %r" % ((key, bad),))
     except SystemExit as e:
         assert e.code == 1, e.code
     assert g["read_text"](p) == "kit1"
     assert not any(g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs)
 PY
 check "退避: 通し番号が壊れていれば何も戻さずに止まる" test $? -eq 0
+# 新しい版で更新 → 古い版で更新（番号の無い退避）→ 新しい版で更新。最後のは戻せ、そのあとは決められないので止まる
+HOME="$TMP/order-mixed" python3 - "$KIT" <<'PY' >"$TMP/order-mixed.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-mixed.md")
+g["write_text"](p, "owner")
+dirs = []
+for i, who in enumerate(("new", "old", "new")):
+    backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+    g["put"](p, "%s%d" % (who, i), backup)
+    d = backup.close()
+    if who == "old":   # 古い版の kit は seq も legacy_before も書かない
+        meta = g["load_json"](d + "/meta.json")
+        del meta["seq"], meta["legacy_before"]
+        g["write_text"](d + "/meta.json", g["dump_json"](meta))
+    dirs.append(d)
+assert os.path.basename(dirs[1]) in g["load_json"](dirs[2] + "/meta.json")["legacy_before"]
+g["cmd_rollback"](argparse.Namespace(dry_run=False))
+assert g["read_text"](p) == "old1"
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった")
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert g["read_text"](p) == "old1"
+assert [g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs] == [False, False, True]
+PY
+check "退避: 古い版の kit があとで作った番号の無い退避があれば、決められない所で止まる" test $? -eq 0
 # 書き換える処理は同じ HOME で 1 つずつ。動いている間の --rollback は何も変えずに止まり、終われば戻せる
 H="$TMP/order-lock"
 HOME="$H" python3 - "$KIT" <<'PY' >"$TMP/order-lock.log" 2>&1
