@@ -17,6 +17,7 @@ from __future__ import print_function
 import argparse
 import datetime
 import difflib
+import errno
 import hashlib
 import io
 import importlib.util
@@ -25,6 +26,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -915,6 +917,54 @@ def print_collisions(collisions, bundle):
 
 
 # ------------------------------------------------------------------ 退避と戻し
+def backup_seq(meta):
+    seq = meta.get("seq")
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0 else None
+
+
+def meta_sha(directory):
+    path = os.path.join(directory, "meta.json")
+    return sha(open_bytes(path)) if os.path.isfile(path) else None
+
+
+def read_backup_meta(d):
+    """~/.claude/<d>/meta.json を読む。(meta, None)、無い（本物のディレクトリで meta.json だけ無い）なら (None, None)、
+    確かめられない・壊れているなら (None, 理由)。FIFO などで止まらないよう、普通のファイルでなければ開かない。"""
+    top = os.path.join(CLAUDE, d)
+    path = os.path.join(top, "meta.json")
+    try:
+        if not stat.S_ISDIR(os.lstat(top).st_mode):
+            return None, "退避がディレクトリでない（symlink・ファイル）"
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None, "meta.json が普通のファイルでない"
+    except OSError as e:
+        if e.errno == errno.ENOENT and os.path.isdir(top) and not os.path.islink(top):
+            return None, None
+        return None, "確かめられない: %s" % e
+    m = load_json(path)
+    if not isinstance(m, dict) or not m:
+        return None, "読めない・JSON の object でない"
+    return m, None
+
+
+def scan_backups():
+    """(今ある退避（戻し済みも含む）の通し番号の最大 + 1, {通し番号の無い退避の名前: その meta.json の sha})。
+    一覧は新しい退避の meta に残し、番号の無い退避がこの退避より前に書き終わっていたことの証にする
+    （古い版の kit をあとで・同時に使うと、番号の無い退避が番号のある退避より新しくなりうる）。"""
+    top, legacy = 0, {}
+    if os.path.isdir(CLAUDE):
+        for d in sorted(os.listdir(CLAUDE)):
+            if d.startswith("backup-brain-kit-"):
+                m, why = read_backup_meta(d)
+                if why or m is None:
+                    continue   # 壊れた退避は --rollback が止まる。ここでは開かずに飛ばす
+                if "seq" not in m:
+                    legacy[d] = meta_sha(os.path.join(CLAUDE, d))
+                elif backup_seq(m):
+                    top = max(top, backup_seq(m))
+    return top + 1, legacy
+
+
 class Backup(object):
     def __init__(self, kind, meta):
         self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s" % STAMP)
@@ -922,7 +972,11 @@ class Backup(object):
         while os.path.exists(self.dir):
             n += 1
             self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s-%d" % (STAMP, n))
-        self.meta = dict(meta, kind=kind, stamp=STAMP, created=datetime.datetime.now().isoformat(timespec="microseconds"),
+        # 作った順は壁時計でなく通し番号で持つ。時計は NTP や仮想機械の時刻合わせで数 ms 戻ることがあり、
+        # 同じ秒の退避の created や、前の秒に戻った STAMP では新旧が入れ替わる
+        seq, legacy = scan_backups()
+        self.meta = dict(meta, kind=kind, stamp=STAMP, seq=seq, legacy_before=legacy,
+                         created=datetime.datetime.now().isoformat(timespec="microseconds"),
                          overwritten=[], added={}, worktrees=[], rolled_back=False)
         self.opened = False
 
@@ -2225,12 +2279,19 @@ def restore_atomic(src, path):
 
 
 def backup_order(meta, directory):
+    """新しいほど大きい。通し番号のある退避は番号の無い退避より新しい扱い（cmd_rollback が legacy_before で確かめる）。"""
     stamp = meta.get("stamp", "")
-    suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
     created = meta.get("created")
+    if not isinstance(stamp, str) or not (created is None or isinstance(created, str)):
+        raise TypeError("stamp / created")
+    suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
+    suffix = int(suffix) if suffix.isdigit() else 1
     if not created:
         created = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S").isoformat(timespec="microseconds")
-    return created, int(suffix) if suffix.isdigit() else 1
+    seq = backup_seq(meta)
+    if seq:
+        return 1, seq, created, suffix
+    return 0, 0, created, suffix
 
 
 def cmd_rollback(args):
@@ -2238,13 +2299,43 @@ def cmd_rollback(args):
     if os.path.isdir(CLAUDE):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
-                m = load_json(os.path.join(CLAUDE, d, "meta.json"))
-                if m and not m.get("rolled_back"):
-                    cands.append((backup_order(m, d), d, m))
+                path = os.path.join(CLAUDE, d, "meta.json")
+                m, why = read_backup_meta(d)
+                if m is None and why is None:
+                    continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
+                if why:
+                    pass
+                elif not isinstance(m.get("rolled_back", False), bool):
+                    why = "rolled_back が true / false でない"
+                elif m.get("rolled_back"):
+                    continue
+                elif "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
+                    why = "seq か legacy_before が不正"
+                else:
+                    try:
+                        order = backup_order(m, d)
+                    except (TypeError, ValueError):
+                        why = "stamp か created が不正"
+                if why:
+                    die("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
+                        "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (why, tilde(path)), 1)
+                cands.append((order, d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
+    seqs = [backup_seq(c[2]) for c in cands if backup_seq(c[2])]
+    if len(seqs) != len(set(seqs)):
+        die("退避の記録が壊れている（戻していない退避に同じ seq がある）。どれから戻すか決められないので何も変えない", 1)
     cands.sort()
     stamp, d, meta = cands[-1]
+    if backup_seq(meta):
+        # 番号の無い退避が、この退避を作ったときに無かったか、そのあとに書き足されている
+        # ＝古い版の kit があとで・同時に動いた。どちらが新しいか決められない
+        later = [c[1] for c in cands if "seq" not in c[2] and
+                 meta["legacy_before"].get(c[1]) != meta_sha(os.path.join(CLAUDE, c[1]))]
+        if later:
+            die("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
+                "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
+                "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (", ".join(later), d), 1)
     bdir = os.path.join(CLAUDE, d)
     target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
     say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
@@ -2575,6 +2666,29 @@ def cmd_doctor(args):
 
 
 # ------------------------------------------------------------------ 入口
+def lock_home():
+    """書き換える処理（install・update・resolve・uninstall・rollback）を、同じ HOME で 1 つずつにする。
+    重なると退避の通し番号と退避する中身が食い違い、--rollback が持ち主のファイルを途中の状態で残しうる。
+    ファイルは作らない（HOME のディレクトリそのものに flock する）。fd は開いたままにし、終了でロックが外れる。
+    確かめられないときは書き換えずに止まる。"""
+    try:
+        import fcntl
+    except ImportError:
+        die("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める", 1)
+    try:
+        fd = os.open(HOME, os.O_RDONLY)
+    except OSError as e:
+        die("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める" % (HOME, e), 1)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(fd)
+        if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            die("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度", 1)
+        die("同時実行を防ぐロックが取れない（%s）。何も変えずに止める" % e, 1)
+    return fd
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
     ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
@@ -2597,6 +2711,8 @@ def main(argv):
     ap.add_argument("--edited", choices=["new", "keep"], default=None)
     ap.add_argument("--yes", "-y", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd in ("install", "update", "resolve", "uninstall", "rollback"):
+        lock_home()   # fd はプロセスが終わるまで開いたまま（終了でロックが外れる）
     if args.cmd == "install":
         cmd_install(args)
     elif args.cmd == "update":
