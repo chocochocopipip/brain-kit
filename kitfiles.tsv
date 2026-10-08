@@ -3,6 +3,7 @@
 #
 # 列: src（このリポジトリ内。gen: は生成）<TAB> dst <TAB> flags
 #   dst の書き方: ~/ = $HOME、{brain} = brain の場所、{<役>.id} {<役>.name}（役 = partner dev review release）
+#   opt:<key> = brain の設定で <key>: true のときだけ使う
 #   flags: render = 置き換えの印を埋める / skill:<役> = name: 行をその役の id にする / exec = 実行権限
 claude/CLAUDE.md	~/.claude/CLAUDE.md
 claude/skills/partner/SKILL.md	~/.claude/skills/{partner.id}/SKILL.md	render,skill:partner
@@ -40,3 +41,4 @@ brain-template/review/読み直し/README.md	{brain}/review/読み直し/README.
 brain-template/review/読み直し/_テンプレート.md	{brain}/review/読み直し/_テンプレート.md
 brain-template/release/README.md	{brain}/release/README.md	render
 brain-template/release/記録/README.md	{brain}/release/記録/README.md	render
+claude/brain-kit/permissions/release.json	~/.claude/brain-kit/permissions/{release.id}.json	opt:release_permissions

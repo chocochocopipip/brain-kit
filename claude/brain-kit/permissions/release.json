@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "リリース担当の start-<リリースid> だけが claude --settings で読む。ほかの人格は読まない。",
+    "これは雛形。持ち主の道具（配信先の環境変数 CLI、DB CLI、MCP の道具名）を足し、使わないものは消す。",
+    "--update はほかの kit ファイルと同じ 3-way で持ち主の編集を保つ。",
+    "外すには ./install.sh --update --no-release-permissions。"
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(gh pr merge:*)",
+      "Bash(psql:*)",
+      "Bash(gh variable set:*)",
+      "Bash(gh variable delete:*)"
+    ]
+  }
+}
