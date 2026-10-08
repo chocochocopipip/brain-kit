@@ -1504,7 +1504,10 @@ check "確認前は変更なし" test "$before" = "$(snap "$H")"
 new "$H" --uninstall --yes >"$H.un" 2>&1
 check "uninstall が 0" test $? -eq 0
 for s in aoi ren mio sora setup grilling; do check "kit skill $s を削除" test ! -e "$H/.claude/skills/$s/SKILL.md"; done
-for p in hooks/session-end-brain.sh brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
+check "残した SessionEnd の項目が呼ぶ session-end-brain.sh は残す" test -f "$H/.claude/hooks/session-end-brain.sh"
+check "uninstall の出力に「残すフックが使うため」" grep -q '残すフックが使うため' "$H.un"
+check "残すスクリプトが呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
+for p in brain-kit/bin/heavy-lock brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
   check "$p を削除" test ! -e "$H/.claude/$p"
 done
 check "編集した CLAUDE.md を保持" grep -q '持ち主の追記' "$H/.claude/CLAUDE.md"
@@ -1750,6 +1753,40 @@ check "読み取り専用の settings.json が元のバイトに戻る" cmp -s "
 mode_is() { python3 -c 'import os, sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o777 != int(sys.argv[2], 8))' "$1" "$2"; }
 check "settings.json の権限 444 が戻る" mode_is "$H/.claude/settings.json" 444
 check "kit の実行ファイルの権限 555 が戻る" mode_is "$H/.claude/brain-kit/bin/start-aoi" 555
+
+section "uninstall：残すフックが使う kit のファイル"
+# 持ち主が SessionEnd の timeout だけを変えた → 項目は残すので、項目が呼ぶスクリプトも残す
+H="$TMP/uninstall-hookref"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
+# 持ち主が足したフックが kit のスクリプトを ~ の形で呼ぶ
+s["hooks"].setdefault("Notification", []).append(
+    {"hooks": [{"type": "command", "command": "~/.claude/brain-kit/dashboard/collect.py --quiet"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --dry-run >"$H.dry" 2>&1
+check "dry-run: SessionEnd のスクリプトを「残すフックが使うため」に出す" sh -c "awk '/^残すもの（残すフックが使うため）/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF 'hooks/session-end-brain.sh'"
+check "dry-run: 持ち主のフックが呼ぶ collect.py も「残すフックが使うため」に出す" sh -c "awk '/^残すもの（残すフックが使うため）/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF 'dashboard/collect.py'"
+check "dry-run: SessionEnd のスクリプトを「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -v '/base/' | grep -qF 'hooks/session-end-brain.sh'"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "uninstall が 0" test $? -eq 0
+check "timeout だけ変えた SessionEnd の項目は残る" grep -q 'session-end-brain.sh' "$H/.claude/settings.json"
+check "その項目が呼ぶ session-end-brain.sh も残る" test -x "$H/.claude/hooks/session-end-brain.sh"
+check "持ち主のフックが呼ぶ collect.py も残る" test -f "$H/.claude/brain-kit/dashboard/collect.py"
+check "残す session-end-brain.sh が呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
+check "どのフックも呼ばない kit のファイルは消す" test ! -e "$H/.claude/brain-kit/bin/heavy-lock"
+check "どのフックも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
+H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "変えていなければ SessionEnd の項目を外す" sh -c "! grep -q 'session-end-brain.sh' '$H/.claude/settings.json'"
+check "変えていなければ session-end-brain.sh も消す" test ! -e "$H/.claude/hooks/session-end-brain.sh"
+check "変えていなければ brain-digest.js も消す" test ! -e "$H/.claude/hooks/brain-digest.js"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

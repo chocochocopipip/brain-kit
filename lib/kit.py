@@ -1857,6 +1857,46 @@ def cmd_uninstall(args):
                 if not cur[part]:
                     del cur[part]
     settings_writable = safe(settings_path)
+    # 外したあとも settings.json に残るフック・statusLine（持ち主が変えた kit の項目・衝突待ち・持ち主が足したもの）が
+    # 呼ぶ kit のファイルは消さない。消すと、残したフックが無いファイルを呼び続ける。
+    # command の文字列に、そのファイルのパス（絶対パス・~/・$HOME/・${HOME}/ の形）が含まれていれば「使う」とみなす。
+    remaining = cur if settings_writable else (json.loads(settings_raw.decode("utf-8")) if settings_raw else {})
+    commands = []
+    for event, groups in (remaining.get("hooks") or {}).items():
+        for group in groups if isinstance(groups, list) else []:
+            for hook in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                    commands.append(("hooks." + event, hook["command"]))
+    status = remaining.get("statusLine")
+    if isinstance(status, dict) and isinstance(status.get("command"), str):
+        commands.append(("statusLine", status["command"]))
+    used = {}
+
+    def forms(path):
+        out = {path}
+        for home in {HOME, os.path.abspath(HOME)}:
+            if path.startswith(os.path.abspath(home) + os.sep):
+                rel = os.path.relpath(path, os.path.abspath(home))
+                out.update([os.path.join(home, rel), "~/" + rel, "$HOME/" + rel, "${HOME}/" + rel])
+        return out
+
+    for path in sorted(remove - {claude_manifest}):
+        hit = next((part for part, command in commands if any(f in command for f in forms(path))), None)
+        if hit:
+            used[path] = hit
+            remove.discard(path)
+    # 残すスクリプトが呼ぶ kit のファイルも残す（session-end-brain.sh → "$HOOK_DIR/brain-digest.js" など）。
+    # パスの形か、同じディレクトリのファイル名が中身に出てくれば「使う」とみなす（残す側に倒す）。くり返して閉じる
+    queue = sorted(used)
+    while queue:
+        user = queue.pop(0)
+        text = read_text(user) or ""
+        for path in sorted(remove - {claude_manifest}):
+            sibling = os.path.dirname(path) == os.path.dirname(user) and os.path.basename(path) in text
+            if sibling or any(f in text for f in forms(path)):
+                used[path] = "%s から" % os.path.basename(user)
+                remove.discard(path)
+                queue.append(path)
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
@@ -1872,6 +1912,7 @@ def cmd_uninstall(args):
 
     show("消すもの", [tilde(p) for p in sorted(remove)])
     show("残すもの（持ち主が変えた）", [tilde(p) for p in sorted(keep)])
+    show("残すもの（残すフックが使うため）", ["%s（%s）" % (tilde(p), used[p]) for p in sorted(used)])
     print("  持ち主が変えた kit のファイル（残す）。.new も今の kit と一致しなければ残す。")
     show("settings.json から外す項目" + ("（手動）" if not settings_writable else ""), settings_remove)
     if not settings_writable:
@@ -1953,7 +1994,7 @@ def cmd_uninstall(args):
             directory = os.path.dirname(directory)
     bdir = backup.close()
     print("消したファイル: %d 件、残したファイル: %d 件。settings: 外した %d 件、残した %d 件。" % (
-        len(remove), len(keep | other | unsafe), len(settings_remove) if settings_writable else 0,
+        len(remove), len(keep | other | unsafe | set(used)), len(settings_remove) if settings_writable else 0,
         len(settings_keep) + (len(settings_remove) if not settings_writable else 0)))
     if bdir:
         print("退避: %s（--rollback で戻せる。要らなくなったら手で消す）" % tilde(bdir))
