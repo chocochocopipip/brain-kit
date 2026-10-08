@@ -308,9 +308,37 @@ def owner_files(cfg):
 
 
 def source_text(src, cfg, flags):
+    if src == "gen:start-all":
+        return gen_start_all(cfg)
     if src.startswith("gen:start:"):
         return gen_start(src.split(":")[2], cfg)
     return render(io.open(os.path.join(KIT, src), encoding="utf-8").read(), cfg, flags)
+
+
+def gen_start_all(cfg):
+    def path_expr(path):
+        # HOME 配下は実行時の HOME を使い、残りは shell の単引用で守る。
+        home = os.path.abspath(HOME)
+        if os.path.commonpath([os.path.abspath(path), home]) == home:
+            return '"$HOME"/' + shlex.quote(os.path.relpath(path, home))
+        return shlex.quote(path)
+
+    lines = []
+    for role in ROLES:
+        if role not in cfg["personas"]:
+            continue
+        p = persona(cfg, role)
+        lines.extend([
+            "ids+=(%s)" % shlex.quote(p["id"]),
+            "names+=(%s)" % shlex.quote(p["name"]),
+            "labels+=(%s)" % shlex.quote(ROLE_JA[role]),
+            "dir=%s" % path_expr(worktree_of(cfg, role)),
+            '[ -d "$dir" ] || dir=%s' % path_expr(cfg["brain"]),
+            'dirs+=("$dir")',
+            'scripts+=("$HOME"/%s)' % shlex.quote(".claude/brain-kit/bin/start-" + p["id"]),
+        ])
+    template = read_text(os.path.join(KIT, "lib", "start-all.sh"))
+    return template.replace("# @personas@", "\n".join(lines))
 
 
 def gen_start(role, cfg):
@@ -1456,6 +1484,7 @@ def finish_message(cfg, bdir, v_from):
         if r in p:
             print("  %-8s: %s（/%s、領域 %s/、起動 ~/.claude/brain-kit/bin/start-%s）"
                   % (ROLE_JA[r], p[r]["name"], p[r]["id"], area_of(cfg, r), p[r]["id"]))
+    print("  ~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）")
     if bdir:
         print("  退避      : %s（--rollback で戻せる）" % tilde(bdir))
     print()
@@ -1605,6 +1634,8 @@ def cmd_update(args):
             print()
             print("新しく使えるもの:")
             print_new_roles(cfg, new_roles)
+    if any(it.src == "gen:start-all" for it in written):
+        print("~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）")
     print_conflicts(kept, bundle)
     print_settings_conflicts(sett, bundle)
     print_collisions(collisions, bundle)
@@ -2332,6 +2363,8 @@ def cmd_doctor(args):
             todo.append("./install.sh --update --dry-run で中身を見て、./install.sh --update")
 
     if cfg:
+        row("  start-all", os.path.isfile(os.path.join(KIT_STATE, "bin", "start-all")),
+            "~/.claude/brain-kit/bin/start-all")
         rows.append(("[人格]", "", ""))
         for r in ROLES:
             if r not in cfg["personas"]:

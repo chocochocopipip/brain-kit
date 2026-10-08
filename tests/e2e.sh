@@ -1514,7 +1514,7 @@ for s in aoi ren mio sora setup grilling; do check "kit skill $s を削除" test
 check "残した SessionEnd の項目が呼ぶ session-end-brain.sh は残す" test -f "$H/.claude/hooks/session-end-brain.sh"
 check "uninstall の出力に「残すフックが使うため」" grep -q '残すフックが使うため' "$H.un"
 check "残すスクリプトが呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
-for p in brain-kit/bin/heavy-lock brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
+for p in brain-kit/bin/start-all brain-kit/bin/heavy-lock brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
   check "$p を削除" test ! -e "$H/.claude/$p"
 done
 check "編集した CLAUDE.md を保持" grep -q '持ち主の追記' "$H/.claude/CLAUDE.md"
@@ -2673,6 +2673,264 @@ check "停滞: 未認証の注記" grep -q '飛ばした.*未認証' "$H.noauth"
 check "停滞: doctor はファイルを変えない" test "$before" = "$(snap "$H")"
 check "停滞: 工程表の一覧" grep -q 'id="stalled"' "$KIT/claude/brain-kit/dashboard/index.html"
 check "停滞: 工程表は新しい集計を読む" grep -q 'b\.stalled' "$KIT/claude/brain-kit/dashboard/index.html"
+
+# ------------------------------------------------------------------ 全人格を 1 回だけ起動
+section "start-all（偽の端末・プロセス一覧）"
+H="$TMP/start-all"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.install" 2>&1
+check "一括起動: install が 0" test $? -eq 0
+check "一括起動: 実行可能" test -x "$H/.claude/brain-kit/bin/start-all"
+python3 - "$H" "$SAFE_PATH" "$BASH" "$KIT" <<'PY'
+import json, os, pathlib, runpy, signal, subprocess, sys, time
+h, safe, bash, kit = sys.argv[1:]
+h = pathlib.Path(h)
+script = h / ".claude/brain-kit/bin/start-all"
+text = script.read_text()
+assert str(h) not in text
+ids = ("aoi", "ren", "mio", "sora")
+assert all("start-" + i in text for i in ids)
+bin_dir = h / "fake-bin"
+bin_dir.mkdir()
+state = h / "state"
+state.mkdir()
+# PATH の偽物だけが起動する。端末の子も同じ bash と PATH を使う。
+fake = r'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys, time
+s = pathlib.Path(os.environ["START_STATE"])
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+if name == "ps":
+    assert args == ["-Ao", "pid=,args="]
+    print((s / "procs").read_text(), end="")
+elif name == "uname":
+    print(os.environ.get("START_OS", "Linux"))
+elif name == "claude":
+    ident = args[-1].lstrip("/")
+    if (s / ("never-" + ident)).exists():
+        sys.exit(0)
+    if (s / ("slow-" + ident)).exists():
+        time.sleep(2)
+    with (s / "procs").open("a") as f:
+        f.write("%d claude %s\n" % (os.getpid(), " ".join(args)))
+else:
+    with (s / "log").open("a") as f:
+        f.write(json.dumps([name] + args) + "\n")
+    if name == "tmux":
+        if args[0] in ("list-sessions", "has-session"):
+            sys.exit(0 if (s / "session").exists() else 1)
+        if args[0] == "capture-pane":
+            p = s / ("pane-" + args[-1].split(":")[-1])
+            print(p.read_text() if p.exists() else "")
+            sys.exit(0)
+        assert args[0] in ("new-session", "new-window")
+        (s / "session").touch()
+        with (s / "windows").open("a") as f:
+            f.write(args[args.index("-n") + 1] + "\n")
+        cmd = args[-1]
+    elif name == "osascript":
+        # AppleScript の文字列を解き、shell の引用も実際に通す。
+        import re
+        match = re.search(r'(?:do script|write text) "((?:\\.|[^"\\])*)"', args[-1])
+        assert match, args
+        cmd = re.sub(r'\\(.)', r'\1', match[1])
+    else:
+        assert "-lc" in args
+        cmd = args[-1]
+    p = subprocess.Popen([os.environ["START_BASH"], "-c", cmd],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    with (s / "children").open("a") as f:
+        f.write(str(p.pid) + "\n")
+'''
+env = dict(os.environ, HOME=str(h), PATH=str(bin_dir) + os.pathsep + safe,
+           START_STATE=str(state), START_BASH=bash)
+for key in ("TMUX", "DISPLAY", "WAYLAND_DISPLAY", "WSL_DISTRO_NAME", "TERM_PROGRAM",
+            "BRAIN_KIT_START_WITH", "BRAIN_KIT_TMUX_SESSION", "CLAUDE_CONFIG_DIR"):
+    env.pop(key, None)
+
+def tool(name):
+    p = bin_dir / name
+    p.write_text(fake)
+    p.chmod(0o755)
+
+for name in ("ps", "uname", "claude"):
+    tool(name)
+
+def clean_children():
+    p = state / "children"
+    if p.exists():
+        for pid in p.read_text().splitlines():
+            try:
+                os.killpg(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        p.unlink()
+
+def reset():
+    clean_children()
+    for p in state.iterdir():
+        p.unlink()
+    (state / "procs").write_text("")
+    (state / "log").write_text("")
+
+def run(*args, rc=0, extra=None):
+    p = subprocess.run([bash, str(script)] + list(args), env=dict(env, **(extra or {})),
+                       capture_output=True, text=True, timeout=12)
+    assert p.returncode == rc, (args, p.returncode, p.stdout, p.stderr)
+    return p.stdout
+
+def log():
+    return [json.loads(l) for l in (state / "log").read_text().splitlines()]
+
+def starts():
+    return [l for l in log() if l[0] == "tmux" and l[1] in ("new-session", "new-window")]
+
+def four(out, state_text):
+    assert sum(state_text in l and "\t/" in l for l in out.splitlines()) == 4, out
+
+try:
+    tool("tmux")
+    reset()
+    out = run("--tmux", "--wait", "5")
+    four(out, "起動した")
+    assert len(starts()) == 4 and (state / "windows").read_text().splitlines() == list(ids)
+    assert starts()[0][1] == "new-session" and all(l[1] == "new-window" for l in starts()[1:])
+    assert "tmux attach -t" in out and "Ctrl-b" in out
+    # --no-worktrees は同じフォルダなので信頼の案内も 1 回だけ。
+    assert out.count("初回のフォルダ確認") == 1
+    four(run("--tmux", "--wait", "0"), "すでに動いていた")
+    assert len(starts()) == 4
+    before = log()
+    four(run("--status"), "すでに動いていた")
+    assert log() == before
+    print("  起動・二度目・status: ok")
+
+    reset()
+    (state / "slow-ren").touch()
+    start = time.monotonic()
+    four(run("--tmux", "--wait", "6"), "起動した")
+    assert 2 <= time.monotonic() - start < 9 and len(starts()) == 4
+    assert sum(l[l.index("-n") + 1] == "ren" for l in starts()) == 1
+    reset()
+    (state / "never-mio").touch()
+    out = run("--tmux", "--wait", "2", rc=1)
+    assert "まだ見えない" in out and "start-all --status" in out
+    assert len(starts()) == 4 and sum(l[l.index("-n") + 1] == "mio" for l in starts()) == 1
+    before = log()
+    run("--status", rc=1)
+    assert log() == before
+    print("  遅延・不在でも各 1 回: ok")
+
+    reset()
+    for ident in ids[1:]:
+        (h / ("brain-" + ident)).mkdir()
+    (h / ".claude.json").write_text(json.dumps({"projects": {
+        str(h / "brain"): {"hasTrustDialogAccepted": True},
+        str(h / "brain-ren"): {"hasTrustDialogAccepted": True}}}))
+    (state / "pane-mio").write_text("Do you trust the files in this folder?")
+    out = run("--tmux", "--wait", "5")
+    assert "tmux ウィンドウ mio: 初回" in out and "tmux ウィンドウ sora: 初回" in out
+    assert "tmux ウィンドウ aoi: 初回" not in out and "tmux ウィンドウ ren: 初回" not in out
+    assert "接続してウィンドウ mio に移り、Yes で Enter" in out
+    four(out, "起動した")
+    reset()
+    config = h / "config-dir"
+    config.mkdir()
+    (config / ".claude.json").write_text(json.dumps({"projects": {
+        str(h / ("brain" if i == "aoi" else "brain-" + i)): {"hasTrustDialogAccepted": True} for i in ids}}))
+    assert "初回のフォルダ確認" not in run("--tmux", "--wait", "5", extra={"CLAUDE_CONFIG_DIR": str(config)})
+    print("  信頼済み・未信頼・確認待ち・設定先: ok")
+
+    reset()
+    out = run("--wait", "5", extra={"TMUX": "fake"})
+    assert "起動方法: tmux（tmux の中）" in out and "switch-client" in out and len(starts()) == 4
+    reset()
+    (state / "session").touch()
+    assert "セッションがある" in run("--wait", "5")
+    reset()
+    assert "セッションを新しく作る" in run("--wait", "5")
+    (bin_dir / "tmux").unlink()
+    reset()
+    tool("gnome-terminal")
+    four(run("--wait", "5", extra={"DISPLAY": "fake"}), "起動した")
+    assert sum(l[0] == "gnome-terminal" for l in log()) == 4
+    (bin_dir / "gnome-terminal").unlink()
+    for terminal in ("konsole", "xfce4-terminal", "wt.exe"):
+        reset()
+        tool(terminal)
+        extra = {"WAYLAND_DISPLAY": "fake"} if terminal != "wt.exe" else {"WSL_DISTRO_NAME": "test-distro"}
+        four(run("--wait", "5", extra=extra), "起動した")
+        assert len(log()) == 4 and all(l[0] == terminal for l in log())
+        (bin_dir / terminal).unlink()
+    reset()
+    tool("osascript")
+    out = run("--wait", "5", extra={"START_OS": "Darwin"})
+    four(out, "起動した")
+    assert "Terminal.app" in out and len(log()) == 4
+    reset()
+    four(run("--tabs", "--wait", "5", extra={"START_OS": "Darwin", "TERM_PROGRAM": "iTerm.app"}), "起動した")
+    assert len(log()) == 4 and all('tell application "iTerm2"' in l[-1] for l in log())
+    (bin_dir / "osascript").unlink()
+    print("  自動検出・全端末のコマンド: ok")
+
+    reset()
+    out = run()
+    assert "起動方法: print" in out and not log()
+    assert all(str(h / (".claude/brain-kit/bin/start-" + i)) in out for i in ids)
+    assert "start-all --status" in out
+    run("--tmux", rc=2)
+    run("--tabs", rc=2)
+    run("--wait", "bad", rc=2)
+    run("--wait", rc=2)
+    run("--help")
+    tool("tmux")
+    assert "起動方法: print" in run(extra={"BRAIN_KIT_START_WITH": "print"})
+    assert "起動方法: print" in run("--print", extra={"TMUX": "fake"})
+    assert not log()
+    # 最後の単語以外の /id や claude を含まない行は数えない。
+    (state / "procs").write_text("1 claude /aoi extra\n2 other /ren\n3 claude /mio-other\n4 claude /sora\n")
+    out = run("--status", rc=1)
+    assert out.count("\tまだ見えない") == 3 and out.count("\tすでに動いていた") == 1
+    assert not log()
+    print("  print・指定の失敗・引数・厳密なプロセス判定: ok")
+
+    # 日本語・引用符・shell の記号をデータとして保つ。未導入の役は出さない。
+    k = runpy.run_path(str(pathlib.Path(kit) / "lib/kit.py"))
+    generate = k["gen_start_all"]
+    generate.__globals__["HOME"] = str(h)
+    unusual = h / "brain ' \" \\ $(false)"
+    unusual.mkdir()
+    display = "葵 ' \" $(false)"
+    cfg = {"brain": str(unusual), "personas": {"partner": {"id": "aoi", "name": display}}}
+    generated = generate(cfg)
+    assert str(h) not in generated and "start-ren" not in generated
+    script.write_text(generated)
+    reset()
+    out = run("--tmux", "--wait", "5", extra={"BRAIN_KIT_TMUX_SESSION": "test-room"})
+    assert display in out and "\t/aoi\t起動した" in out and len(starts()) == 1
+    assert starts()[0][starts()[0].index("-c") + 1] == str(unusual)
+    assert starts()[0][starts()[0].index("-s") + 1] == "test-room"
+    reset()
+    (bin_dir / "tmux").unlink()
+    tool("osascript")
+    assert "\t/aoi\t起動した" in run("--tabs", "--wait", "5", extra={"START_OS": "Darwin"})
+    assert len(log()) == 1
+    print("  日本語・引用符・未導入の役・セッション名: ok")
+finally:
+    script.write_text(text)
+    clean_children()
+PY
+check "一括起動: 各 1 回・遅延・不在・信頼・status・検出・手動案内" test $? -eq 0
+
+H="$TMP/start-all-old"
+old_install 62952c7 "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes
+check "一括起動: 前の kit には無い" test ! -e "$H/.claude/brain-kit/bin/start-all"
+new "$H" --update --no-worktrees >"$H.up" 2>&1
+check "一括起動: 前の kit から更新が 0" test $? -eq 0
+check "一括起動: 更新で実行可能なファイルを追加" test -x "$H/.claude/brain-kit/bin/start-all"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "一括起動: uninstall が 0" test $? -eq 0
+check "一括起動: uninstall で削除" test ! -e "$H/.claude/brain-kit/bin/start-all"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

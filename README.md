@@ -10,6 +10,8 @@
 > npx github:chocochocopipip/brain-kit --update --dry-run      # already installed (v1–v9 too): see what changes
 > npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
+> Start all four once with `~/.claude/brain-kit/bin/start-all`; it detects tmux or terminal windows and verifies the process list.
+>
 > Update notice: a SessionStart hook checks the published npm release in the background at most once a day; from the following session, Claude mentions a cached newer release in one line in its first reply. Fetch failures are silent; never auto-updates; opt out with `BRAIN_KIT_NO_UPDATE_CHECK=1` or `~/.claude/brain-kit/no-update-check`.
 >
 > `--uninstall --dry-run` previews removal; `--uninstall` removes only kit files and owned settings under `~/.claude`. Your brain is never touched; `--rollback` restores them.
@@ -100,6 +102,7 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
 | worktree（ブランチ） | `~/brain`（main） | `~/brain-<開発id>` | `~/brain-<レビューid>` | `~/brain-<リリースid>` |
 | issue ラベル（合図） | — | `<開発id>`（相棒 → 開発） | `<レビューid>`（開発 → レビュー） | `<リリースid>`（相棒 → リリース） |
 | 起動スクリプト | `~/.claude/brain-kit/bin/start-<id>`（その worktree で main を取り込んでから `claude "/<id>"`） | ← | ← | ← |
+| まとめて起動 | `~/.claude/brain-kit/bin/start-all`（4 人を 1 回ずつ起動し、一覧で確かめる） | ← | ← | ← |
 
 `install.sh` がやること（すべて `$HOME` 起点。ユーザー名の決め打ちは無い）:
 
@@ -117,6 +120,29 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
    前提確認 → git/curl/jq/python3/gh/node → Claude Code CLI → Tailscale（`sudo tailscale up` は手で）→
    Orca の `.deb` と不足ライブラリと Xvfb → systemd user service で `orca-ide serve` を常駐（WSL は `/etc/wsl.conf` の `[boot] systemd=true` を案内）→
    接続先（Tailscale IP / MagicDNS / ポート）を印字。スマホや別 PC のペアリングは `./setup-base.sh --pair mobile|runtime`。詳細と手動手順は `ORCA.md`
+
+### まとめて起動する
+
+```bash
+~/.claude/brain-kit/bin/start-all
+~/.claude/brain-kit/bin/start-all --status  # 一覧を見るだけ。起動しない
+~/.claude/brain-kit/bin/start-all --print   # 手で起動するコマンドを表示
+```
+
+tmux の中、既存の tmux セッション、端末のタブ／ウィンドウ、新しい tmux セッションの順で探す。
+macOS は Terminal.app（人格ごとに新しいウィンドウ）か iTerm2、Linux は WSL の Windows Terminal、
+画面がある環境の gnome-terminal・konsole・xfce4-terminal に対応。無ければ手で実行するコマンドを出す。
+`--tmux` / `--tabs` / `--print`、または `BRAIN_KIT_START_WITH=tmux|tabs|print` で指定できる。
+
+すでに動く人格は起動しない。残りをそれぞれ **1 回だけ**起動し、プロセス一覧で最大 20 秒確かめる（`--wait 秒` で変更）。
+「まだ見えない」ときは再実行せず、そのタブ／ウィンドウを見て `start-all --status` で再確認する。
+初回に「Do you trust the files in this folder?（このフォルダを信頼しますか）」が出たら、
+案内されたタブ／ウィンドウで最初の「Yes, proceed / Yes, I trust this folder」を選び Enter。同じフォルダでは 1 回だけ。
+確認待ちでもプロセスがあれば起動済みとして表示する。
+
+tmux は `tmux attach -t brain-kit` で見る（tmux の中なら `tmux switch-client -t brain-kit`）。
+Ctrl-b のあと番号、または Ctrl-b w で人格のウィンドウを選ぶ。
+セッション名は `BRAIN_KIT_TMUX_SESSION` で変えられる。
 
 ### 3. /setup で残りを埋める
 
