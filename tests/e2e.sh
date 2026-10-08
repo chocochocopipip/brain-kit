@@ -1135,6 +1135,47 @@ for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("seq",
     assert not any(g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs)
 PY
 check "退避: 通し番号が壊れていれば何も戻さずに止まる" test $? -eq 0
+# 戻していない退避の meta.json が読めない・壊れている（新しい版・古い版とも）なら、ほかの退避から戻さずに止まる。
+# meta.json の無い退避（書き換える前に止まった）は数えない
+HOME="$TMP/order-badmeta" python3 - "$KIT" <<'PY' >"$TMP/order-badmeta.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-badmeta.md")
+g["write_text"](p, "owner")
+dirs = []
+for i in range(3):
+    backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+    if i == 0:   # 最初の 1 件は古い版の kit の退避
+        del backup.meta["seq"], backup.meta["legacy_before"]
+    g["put"](p, "kit%d" % i, backup)
+    dirs.append(backup.close())
+good = {d: open(d + "/meta.json", "rb").read() for d in dirs}
+for target in (dirs[2], dirs[0]):
+    for raw in (b"{", b"", b"[]", b"{}", b"null", b'\xff\xfe', None,
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), stamp=1)).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), created=5)).encode()):
+        if raw is None:
+            os.chmod(target + "/meta.json", 0)
+            if os.access(target + "/meta.json", os.R_OK):   # root では読めてしまうので飛ばす
+                os.chmod(target + "/meta.json", 0o644)
+                continue
+        else:
+            open(target + "/meta.json", "wb").write(raw)
+        try:
+            g["cmd_rollback"](argparse.Namespace(dry_run=False))
+            raise AssertionError("rollback が止まらなかった: %s %r" % (target, raw))
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        os.chmod(target + "/meta.json", 0o644)
+        open(target + "/meta.json", "wb").write(good[target])
+        assert g["read_text"](p) == "kit2"
+        assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
+os.makedirs(os.path.join(g["CLAUDE"], "backup-brain-kit-20000101-000000", "files"))   # meta の無い退避
+g["cmd_rollback"](argparse.Namespace(dry_run=False))
+assert g["read_text"](p) == "kit1"
+PY
+check "退避: 戻していない退避の meta.json が壊れていれば、ほかの退避から戻さずに止まる" test $? -eq 0
 # 新しい版で更新 → 古い版で更新（番号の無い退避）→ 新しい版で更新。最後のは戻せ、そのあとは決められないので止まる
 HOME="$TMP/order-mixed" python3 - "$KIT" <<'PY' >"$TMP/order-mixed.log" 2>&1
 import argparse, os, runpy, sys

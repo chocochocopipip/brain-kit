@@ -2260,9 +2260,11 @@ def restore_atomic(src, path):
 def backup_order(meta, directory):
     """新しいほど大きい。通し番号のある退避は番号の無い退避より新しい扱い（cmd_rollback が legacy_before で確かめる）。"""
     stamp = meta.get("stamp", "")
+    created = meta.get("created")
+    if not isinstance(stamp, str) or not (created is None or isinstance(created, str)):
+        raise TypeError("stamp / created")
     suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
     suffix = int(suffix) if suffix.isdigit() else 1
-    created = meta.get("created")
     if not created:
         created = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S").isoformat(timespec="microseconds")
     seq = backup_seq(meta)
@@ -2276,12 +2278,26 @@ def cmd_rollback(args):
     if os.path.isdir(CLAUDE):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
-                m = load_json(os.path.join(CLAUDE, d, "meta.json"))
-                if m and not m.get("rolled_back"):
-                    if "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
-                        die("退避の記録が壊れている（seq か legacy_before が不正）: %s/meta.json。どれから戻すか決められないので何も変えない"
-                            % tilde(os.path.join(CLAUDE, d)), 1)
-                    cands.append((backup_order(m, d), d, m))
+                path = os.path.join(CLAUDE, d, "meta.json")
+                if not os.path.lexists(path):
+                    continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
+                m = load_json(path)
+                why = None
+                if not isinstance(m, dict) or not m:
+                    why = "読めない・JSON の object でない"
+                elif m.get("rolled_back"):
+                    continue
+                elif "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
+                    why = "seq か legacy_before が不正"
+                else:
+                    try:
+                        order = backup_order(m, d)
+                    except (TypeError, ValueError):
+                        why = "stamp か created が不正"
+                if why:
+                    die("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
+                        "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (why, tilde(path)), 1)
+                cands.append((order, d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
     seqs = [backup_seq(c[2]) for c in cands if backup_seq(c[2])]
