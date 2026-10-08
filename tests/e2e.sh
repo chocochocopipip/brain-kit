@@ -1060,6 +1060,8 @@ for old in (False, True):
         if old:
             meta = g["load_json"](directory + "/meta.json")
             del meta["created"]
+            del meta["seq"]
+            del meta["legacy_before"]
             g["write_text"](directory + "/meta.json", g["dump_json"](meta))
         entries.append(directory)
     assert entries[-1].endswith("-12") if not old else entries[-1].endswith("-24")
@@ -1069,6 +1071,309 @@ for old in (False, True):
         assert g["read_text"](p) == (str(i - 1) if i else None)
 PY
 check "退避: 同じ秒の 12 件を新旧の記録とも新しい順に戻す" test $? -eq 0
+# 壁時計は戻ることがある（NTP や仮想機械の時刻合わせで数 ms）。作った順は時計でなく退避の通し番号で決める
+HOME="$TMP/order-clock" python3 - "$KIT" <<'PY' >"$TMP/order-clock.log" 2>&1
+import argparse, datetime, os, runpy, sys, types
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+ticks = [datetime.datetime(2030, 1, 1, 1, 1, 2, 5000)]
+class Clock(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        ticks.append(ticks[-1] - datetime.timedelta(milliseconds=10))   # 呼ぶたびに 10 ms 戻る
+        return ticks[-1]
+fake = types.ModuleType("datetime")
+fake.__dict__.update(datetime.__dict__)
+fake.datetime = Clock
+g["datetime"] = fake
+p = os.path.join(g["CLAUDE"], "order-clock.md")
+# 先頭の 2 件は記録の古い退避（通し番号も作った時刻も無い）。次の 3 件は同じ秒、最後は時計が前の秒に戻った退避
+entries = []
+for i, stamp in enumerate(["20300101-010100", "20300101-010100", "20300101-010102", "20300101-010102",
+                           "20300101-010102", "20300101-010101"]):
+    g["STAMP"] = stamp
+    backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
+    g["put"](p, str(i), backup)
+    directory = backup.close()
+    if i < 2:
+        meta = g["load_json"](directory + "/meta.json")
+        meta.pop("created")
+        meta.pop("seq", None)
+        meta.pop("legacy_before", None)
+        g["write_text"](directory + "/meta.json", g["dump_json"](meta))
+    entries.append(directory)
+for i in range(len(entries) - 1, -1, -1):
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    assert g["load_json"](entries[i] + "/meta.json")["rolled_back"], (i, entries[i])
+    assert g["read_text"](p) == (str(i - 1) if i else None), (i, g["read_text"](p))
+PY
+check "退避: 時計が戻っても作った順の逆に戻す（同じ秒・前の秒・古い記録）" test $? -eq 0
+# 通し番号が壊れている（型・値・重なり）退避があれば、どれから戻すか決めずに止まる（番号の無い古い記録とは扱わない）
+HOME="$TMP/order-badseq" python3 - "$KIT" <<'PY' >"$TMP/order-badseq.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-badseq.md")
+g["write_text"](p, "owner")
+dirs = []
+for i in range(2):
+    backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
+    g["put"](p, "kit%d" % i, backup)
+    dirs.append(backup.close())
+for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("seq", 1), ("legacy_before", None), ("legacy_before", [])):
+    meta = g["load_json"](dirs[1] + "/meta.json")
+    meta["seq"] = 2
+    meta["legacy_before"] = {}
+    meta[key] = bad
+    g["write_text"](dirs[1] + "/meta.json", g["dump_json"](meta))
+    try:
+        g["cmd_rollback"](argparse.Namespace(dry_run=False))
+        raise AssertionError("rollback が止まらなかった: %r" % ((key, bad),))
+    except SystemExit as e:
+        assert e.code == 1, e.code
+    assert g["read_text"](p) == "kit1"
+    assert not any(g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs)
+PY
+check "退避: 通し番号が壊れていれば何も戻さずに止まる" test $? -eq 0
+# 戻していない退避の meta.json が読めない・壊れている（新しい版・古い版とも）なら、ほかの退避から戻さずに止まる。
+# meta.json の無い退避（書き換える前に止まった）は数えない
+HOME="$TMP/order-badmeta" python3 - "$KIT" <<'PY' >"$TMP/order-badmeta.log" 2>&1
+import argparse, os, runpy, signal, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-badmeta.md")
+g["write_text"](p, "owner")
+dirs = []
+for i in range(3):
+    backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+    if i == 0:   # 最初の 1 件は古い版の kit の退避
+        del backup.meta["seq"], backup.meta["legacy_before"]
+    g["put"](p, "kit%d" % i, backup)
+    dirs.append(backup.close())
+good = {d: open(d + "/meta.json", "rb").read() for d in dirs}
+for target in (dirs[2], dirs[0]):
+    for raw in (b"{", b"", b"[]", b"{}", b"null", b'\xff\xfe', None,
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), stamp=1)).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), created=5)).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), rolled_back="false")).encode(),
+                g["dump_json"](dict(g["load_json"](target + "/meta.json"), rolled_back=1)).encode(), "dir"):
+        if raw in (None, "dir"):   # meta.json か、退避のディレクトリそのものが読めない
+            locked = target + "/meta.json" if raw is None else target
+            os.chmod(locked, 0)
+            if os.access(target + "/meta.json", os.R_OK):   # root では読めてしまうので飛ばす
+                os.chmod(locked, 0o755)
+                continue
+        else:
+            open(target + "/meta.json", "wb").write(raw)
+        try:
+            g["cmd_rollback"](argparse.Namespace(dry_run=False))
+            raise AssertionError("rollback が止まらなかった: %s %r" % (target, raw))
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        os.chmod(target, 0o755)
+        os.chmod(target + "/meta.json", 0o644)
+        open(target + "/meta.json", "wb").write(good[target])
+        assert g["read_text"](p) == "kit2"
+        assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
+# 退避の名前のファイル・行き先の無い symlink・ディレクトリへの symlink・FIFO や symlink の meta.json は、確かめられないので止まる
+odd = os.path.join(g["CLAUDE"], "backup-brain-kit-29990101-000000")
+def fifo_meta():
+    os.makedirs(odd)
+    os.mkfifo(odd + "/meta.json")   # 読むと止まる。開く前に止まる
+def meta_link():
+    os.makedirs(odd)
+    os.symlink(dirs[2] + "/meta.json", odd + "/meta.json")
+signal.alarm(20)
+for make in (lambda: open(odd, "w").close(), lambda: os.symlink(odd + "-missing", odd), lambda: os.symlink(dirs[2], odd),
+             fifo_meta, meta_link):
+    make()
+    g["Backup"]("update", {"brain": None, "from": 10, "to": 10})   # 新しい退避を作るときの見回りも開かずに飛ばす
+    try:
+        g["cmd_rollback"](argparse.Namespace(dry_run=False))
+        raise AssertionError("rollback が止まらなかった: %s" % os.path.lexists(odd))
+    except SystemExit as e:
+        assert e.code == 1, e.code
+    if os.path.isdir(odd) and not os.path.islink(odd):
+        os.remove(odd + "/meta.json")
+        os.rmdir(odd)
+    else:
+        os.remove(odd)
+    assert g["read_text"](p) == "kit2"
+    assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
+signal.alarm(0)
+os.makedirs(os.path.join(g["CLAUDE"], "backup-brain-kit-20000101-000000", "files"))   # meta の無い退避
+g["cmd_rollback"](argparse.Namespace(dry_run=False))
+assert g["read_text"](p) == "kit1"
+PY
+check "退避: 戻していない退避の meta.json が壊れていれば、ほかの退避から戻さずに止まる" test $? -eq 0
+# 退避の名前の項目が外のディレクトリへの symlink（中の meta.json は正しい形で、通し番号がいちばん新しい）なら、
+# 何も戻さずに止まる。持ち主のファイルも、外のディレクトリも変えない
+HOME="$TMP/order-dirlink" python3 - "$KIT" "$TMP/order-dirlink-outside" <<'PY' >"$TMP/order-dirlink.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+outside = sys.argv[2]
+p = os.path.join(g["CLAUDE"], "order-dirlink.md")
+g["write_text"](p, "owner")
+backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](p, "kit", backup)
+real = backup.close()
+# 外のディレクトリに、持ち主のファイルを別の中身で戻す退避を置く
+stamp = "29990101-000000"
+os.makedirs(os.path.join(outside, "files", os.path.dirname(p).lstrip(os.sep)))
+g["write_text"](os.path.join(outside, "files", p.lstrip(os.sep)), "outside")
+g["write_text"](os.path.join(outside, "meta.json"), g["dump_json"](dict(
+    g["load_json"](real + "/meta.json"), stamp=stamp, seq=99, legacy_before={},
+    created="2999-01-01T00:00:00.000000")))
+os.symlink(outside, os.path.join(g["CLAUDE"], "backup-brain-kit-" + stamp))
+def tree(top):
+    out = {}
+    for root, dirs, files in os.walk(top):
+        for f in files:
+            q = os.path.join(root, f)
+            out[os.path.relpath(q, top)] = open(q, "rb").read()
+    return out
+before_outside, before_real = tree(outside), tree(real)
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった: %r" % g["read_text"](p))
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert g["read_text"](p) == "kit", g["read_text"](p)
+assert tree(outside) == before_outside
+assert tree(real) == before_real
+PY
+check "退避: 退避の名前の項目が外のディレクトリへの symlink なら、何も戻さずに止まる（持ち主のファイルも外も変えない）" test $? -eq 0
+# 新しい版で更新 → 古い版で更新（番号の無い退避）→ 新しい版で更新。最後のは戻せ、そのあとは決められないので止まる
+HOME="$TMP/order-mixed" python3 - "$KIT" <<'PY' >"$TMP/order-mixed.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-mixed.md")
+g["write_text"](p, "owner")
+dirs = []
+for i, who in enumerate(("new", "old", "new")):
+    backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+    g["put"](p, "%s%d" % (who, i), backup)
+    d = backup.close()
+    if who == "old":   # 古い版の kit は seq も legacy_before も書かない
+        meta = g["load_json"](d + "/meta.json")
+        del meta["seq"], meta["legacy_before"]
+        g["write_text"](d + "/meta.json", g["dump_json"](meta))
+    dirs.append(d)
+assert os.path.basename(dirs[1]) in g["load_json"](dirs[2] + "/meta.json")["legacy_before"]
+g["cmd_rollback"](argparse.Namespace(dry_run=False))
+assert g["read_text"](p) == "old1"
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった")
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert g["read_text"](p) == "old1"
+assert [g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs] == [False, False, True]
+PY
+check "退避: 古い版の kit があとで作った番号の無い退避があれば、決められない所で止まる" test $? -eq 0
+# 古い版の kit（ロックを取らない）が書いている途中に新しい版で更新し、そのあと古い版が書き足した。どれも戻さずに止まる
+HOME="$TMP/order-interleave" python3 - "$KIT" <<'PY' >"$TMP/order-interleave.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+x, y = os.path.join(g["CLAUDE"], "x.md"), os.path.join(g["CLAUDE"], "y.md")
+g["write_text"](x, "ownerX")
+g["write_text"](y, "ownerY")
+old = g["Backup"]("update", {"brain": None, "from": 9, "to": 9})
+del old.meta["seq"], old.meta["legacy_before"]   # 古い版の kit の退避
+g["put"](x, "oldX", old)
+new = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](x, "newX", new)
+g["put"](y, "newY", new)
+new.close()
+g["put"](y, "oldY", old)
+old.close()
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった")
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert (g["read_text"](x), g["read_text"](y)) == ("newX", "oldY")
+assert not g["load_json"](new.dir + "/meta.json")["rolled_back"]
+PY
+check "退避: 古い版の kit が新しい版の更新をまたいで書き足した退避があれば、何も戻さずに止まる" test $? -eq 0
+# 書き換える処理は同じ HOME で 1 つずつ。動いている間の --rollback は何も変えずに止まり、終われば戻せる
+H="$TMP/order-lock"
+HOME="$H" python3 - "$KIT" <<'PY' >"$TMP/order-lock.log" 2>&1
+import os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-lock.md")
+g["write_text"](p, "owner")
+backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](p, "kit", backup)
+backup.close()
+PY
+python3 - "$H" "$TMP/order-lock.ready" "$TMP/order-lock.stop" <<'PY' >>"$TMP/order-lock.log" 2>&1 &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+end = time.time() + 60
+while not os.path.exists(sys.argv[3]) and time.time() < end:
+    time.sleep(0.05)
+PY
+holder=$!
+i=0
+while [ ! -e "$TMP/order-lock.ready" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+before="$(snap "$H")"
+HOME="$H" python3 "$KIT/lib/kit.py" rollback >"$H.locked" 2>&1
+rc=$?
+check "同時実行: 別の brain-kit が動いている間の --rollback は 1 で止まる" test "$rc" -eq 1
+check "同時実行: 止まった理由を出す" grep -q '別の brain-kit' "$H.locked"
+check "同時実行: 止まった --rollback は何も変えない" test "$before" = "$(snap "$H")"
+touch "$TMP/order-lock.stop"
+wait "$holder"
+HOME="$H" python3 "$KIT/lib/kit.py" rollback >"$H.unlocked" 2>&1
+check "同時実行: 終わったあとの --rollback は戻せる" test "$(cat "$H/.claude/order-lock.md")" = owner
+# ロックが確かめられない（flock の失敗・fcntl が無い）ときは、書き換える 5 つとも何もせずに止まる
+mkdir -p "$TMP/order-lockfail"
+HOME="$TMP/order-lockfail" python3 - "$KIT" <<'PY' >"$TMP/order-lockfail.log" 2>&1
+import builtins, errno, fcntl, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["main"].__globals__
+ran = []
+for c in ("install", "update", "resolve", "uninstall", "rollback"):
+    g["cmd_" + c] = lambda args, c=c: ran.append(c)
+def broken(code):
+    def flock(fd, op):
+        raise OSError(code, os.strerror(code))
+    return flock
+real_flock, real_import = fcntl.flock, builtins.__import__
+def no_fcntl(name, *a, **kw):
+    if name == "fcntl":
+        raise ImportError(name)
+    return real_import(name, *a, **kw)
+try:
+    for how in ("ENOLCK", "EOPNOTSUPP", "EIO", "no-fcntl"):
+        if how == "no-fcntl":
+            fcntl.flock, builtins.__import__ = real_flock, no_fcntl
+        else:
+            fcntl.flock = broken(getattr(errno, how))
+        for c in ("install", "update", "resolve", "uninstall", "rollback"):
+            try:
+                g["main"]([c])
+                raise AssertionError("止まらなかった: %s %s" % (how, c))
+            except SystemExit as e:
+                assert e.code == 1, (how, c, e.code)
+finally:
+    fcntl.flock, builtins.__import__ = real_flock, real_import
+assert ran == [], ran
+for c in ("install", "update", "resolve", "uninstall", "rollback", "doctor"):
+    g["cmd_" + c] = lambda args, c=c: ran.append(c)
+# ロックが取れれば動く。--doctor はロックを取らないので、ロックを持ったままでも動く
+g["main"](["rollback"])
+g["main"](["doctor"])
+assert ran == ["rollback", "doctor"], ran
+PY
+check "同時実行: ロックが確かめられなければ、書き換える処理は何もせずに止まる" test $? -eq 0
 HOME="$TMP/collision-with" python3 - "$NEXT" <<'PY' >"$TMP/no-read.log" 2>&1
 import builtins, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
