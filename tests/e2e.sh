@@ -4107,8 +4107,10 @@ check "許可: 雛形と manifest" python3 -c 'import json,sys; from pathlib imp
 check "許可: 共通設定は同一" cmp -s "$H0/.claude/settings.json" "$H/.claude/settings.json"
 for id in aoi ren mio; do
   check "許可: $id は読み込まない" lacks 'permissions|--settings' "$H/.claude/brain-kit/bin/start-$id"
-  # HOME の展開結果だけ揃え、スクリプトをバイトで比較する
-  sed "s|$H0|$H|g" "$H0/.claude/brain-kit/bin/start-$id" >"$H.expected"
+  # HOME の展開結果だけ揃え、スクリプトをバイトで比較する。kit はパスを正規化して書くので、
+  # 置き換える側も正規化する（macOS の TMPDIR は / で終わり、$H0 に // が混ざる）
+  python3 -c 'import os, sys; sys.stdout.write(open(sys.argv[1]).read().replace(os.path.abspath(sys.argv[2]), os.path.abspath(sys.argv[3])))' \
+    "$H0/.claude/brain-kit/bin/start-$id" "$H0" "$H" >"$H.expected"
   check "許可: $id は同一" cmp -s "$H.expected" "$H/.claude/brain-kit/bin/start-$id"
 done
 check "許可: sora だけ settings" grep -q -- --settings "$H/.claude/brain-kit/bin/start-sora"
