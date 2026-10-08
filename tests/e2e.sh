@@ -164,6 +164,20 @@ check "English card repository insertion" grep -q 'Repository: `example/app`' "$
 check "English installed templates" no_japanese "$HE/.claude/skills/partner/SKILL.md" \
   "$HE/.claude/skills/setup/SKILL.md" "$HE/brain/CLAUDE.md" "$HE/.claude/CLAUDE.md" \
   "$HE/brain/README.md" "$HE/brain/Partner/00_核.md"
+check "English start-all" grep -q 'Start method:' "$HE/.claude/brain-kit/bin/start-all"
+check "English start-all has no Japanese" no_japanese "$HE/.claude/brain-kit/bin/start-all"
+check "English start-all keeps the script logic" python3 - "$KIT" <<'PY'
+import re, subprocess, sys
+kit = sys.argv[1]
+# 日本語版と英語版は、文字列とコメントを除けば同じ台本（訳で動きを変えない）
+def code(path):
+    out = []
+    for line in open(path, encoding="utf-8"):
+        line = re.sub(r"'[^']*'|\"[^\"]*\"", "S", line.split(" #")[0] if not line.lstrip().startswith("#") else "")
+        out.append(line.rstrip())
+    return out
+assert code(kit + "/lib/start-all.sh") == code(kit + "/i18n/en/lib/start-all.sh")
+PY
 new "$HE" --doctor >"$HE.doctor" 2>&1
 check "English doctor" test $? -eq 0
 check "English doctor language row" grep -q 'Language.*English.*config.json.*manifest.json' "$HE.doctor"

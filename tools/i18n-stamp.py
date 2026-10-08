@@ -13,6 +13,9 @@ EN = ROOT / 'i18n' / 'en'
 JAPANESE = re.compile(r'[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]')
 
 
+OTHER_SOURCES = {'lib/start-all.sh'}
+
+
 def translatable():
     paths = {p.relative_to(ROOT).as_posix() for p in (ROOT / 'brain-template').rglob('*.md')}
     for line in (ROOT / 'kitfiles.tsv').read_text(encoding='utf-8').splitlines():
@@ -20,6 +23,8 @@ def translatable():
             src = line.split('\t')[0]
             if src.endswith('.md'):
                 paths.add(src)
+    # 持ち主に見える出力を持つ生成元（.md 以外）
+    paths.update(OTHER_SOURCES)
     return paths
 
 
@@ -29,6 +34,7 @@ def digest(src):
 
 def sources(write=False):
     translated = {p.relative_to(EN).as_posix() for p in EN.rglob('*.md')}
+    translated.update(src for src in OTHER_SOURCES if (EN / src).is_file())
     stamp = EN / 'sources.tsv'
     if write:
         # Hash the source bytes, never read or rewrite the translated Markdown.
