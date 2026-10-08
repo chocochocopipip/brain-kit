@@ -4123,6 +4123,17 @@ chmod +x "$TMP/permissions-bin/claude"
 HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" extra >"$H.args"
 printf '%s\n' --settings "$perm" extra /sora >"$H.want"
 check "許可: sora の引数と追加引数" cmp -s "$H.want" "$H.args"
+# 一覧を渡すときも、要約のあとのフック用の役（BRAIN_KIT_PERSONA）は同じに渡る
+mkdir -p "$TMP/permissions-env-bin"
+cat >"$TMP/permissions-env-bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'PERSONA=%s\n' "${BRAIN_KIT_PERSONA:-}"
+printf '%s\n' "$@"
+SH
+chmod +x "$TMP/permissions-env-bin/claude"
+HOME="$H" PATH="$TMP/permissions-env-bin:$PATH" "$H/.claude/brain-kit/bin/start-sora" >"$H.envargs"
+printf '%s\n' PERSONA=release --settings "$perm" /sora >"$H.want"
+check "許可: 一覧と BRAIN_KIT_PERSONA が両方渡る" cmp -s "$H.want" "$H.envargs"
 HOME="$H" PATH="$TMP/permissions-bin:$PATH" "$H/.claude/brain-kit/bin/start-mio" >"$H.args"
 printf '%s\n' /mio >"$H.want"
 check "許可: mio の引数" cmp -s "$H.want" "$H.args"
