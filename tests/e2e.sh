@@ -263,6 +263,41 @@ ja = re.search(r'最新\s+OK\s+(\d+) 件', open(sys.argv[1], encoding='utf-8').r
 en = re.search(r'Up to date\s+OK\s+(\d+) files', open(sys.argv[2], encoding='utf-8').read())
 assert ja and en and ja.group(1) == en.group(1), (ja, en)
 PY
+# 呼び名の記録が無いときの既定（持ち主）も brain の言語で作る（表示だけの --lang で中身が変わらない）
+HM="$TMP/lang-malformed"
+mkdir -p "$HM"
+new "$HM" --yes --no-worktrees >"$HM.log" 2>&1
+python3 - "$HM/brain/.brain-kit/config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d.pop('owner', None)
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+new "$HM" --doctor >"$HM.doctor-ja" 2>&1
+new "$HM" --doctor --lang en >"$HM.doctor-en" 2>&1
+check "Owner fallback is rendered in the brain language" python3 - "$HM.doctor-ja" "$HM.doctor-en" <<'PY'
+import re, sys
+ja = re.search(r'最新\s+OK\s+(\d+) 件', open(sys.argv[1], encoding='utf-8').read())
+en = re.search(r'Up to date\s+OK\s+(\d+) files', open(sys.argv[2], encoding='utf-8').read())
+assert ja and en and ja.group(1) == en.group(1), (ja, en)
+PY
+# 壊れた言語の記録は読み飛ばし、次の記録（機械側）か日本語にする。rollback などを止めない
+cp "$HM/brain/.brain-kit/config.json" "$HM.config"
+for bad in '["en"]' '"en-US"' '7'; do
+  python3 - "$HM/brain/.brain-kit/config.json" "$HM/.claude/brain-kit/manifest.json" "$bad" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d['lang'] = json.loads(sys.argv[3])
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+m = json.load(open(sys.argv[2], encoding='utf-8')); m['lang'] = 'en'
+open(sys.argv[2], 'w', encoding='utf-8').write(json.dumps(m, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+  new "$HM" --doctor >"$HM.doctor-bad" 2>&1
+  check "Malformed config language $bad: doctor exits 0" test $? -eq 0
+  check "Malformed config language $bad: falls through to the machine record" grep -q 'Language.*English (en)' "$HM.doctor-bad"
+done
+printf '[1]\n' >"$HM/brain/.brain-kit/config.json"
+new "$HM" --rollback --dry-run >"$HM.rollback" 2>&1
+check "Malformed config: rollback --dry-run still runs" test $? -eq 0
+cp "$HM.config" "$HM/brain/.brain-kit/config.json"
 # brain の記録に言語が無くても、機械側が English なら English を引き継ぐ
 python3 - "$HE/brain/.brain-kit/config.json" <<'PY'
 import json, sys

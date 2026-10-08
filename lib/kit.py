@@ -65,6 +65,21 @@ def M(msgid, lang=None):
     return _CATALOG.get(msgid, msgid)
 
 
+def record_lang(*records):
+    """記録から持ち主の言語を読む。前の記録が使えなければ次へ、どれも無ければ日本語（言語を選べる前の入れ方）。
+    dict でない記録や ja/en 以外の値は読み飛ばす（壊れた記録で rollback などを止めない）。"""
+    for record in records:
+        value = record.get("lang") if isinstance(record, dict) else None
+        if isinstance(value, str) and value in LANG_NAMES:
+            return value
+    return "ja"
+
+
+def content_lang(cfg):
+    """brain に書く中身の言語（表示の --lang とは別）。"""
+    return record_lang(cfg)
+
+
 def language_name(code):
     # The stored template mark is the native name; owner-facing output is translated.
     return M(LANG_NAMES.get(code, LANG_NAMES["ja"]))
@@ -247,8 +262,9 @@ def area_of(cfg, role):
 
 
 def marks(cfg):
-    t = {"<持ち主名>": cfg.get("owner") or M("持ち主"), "<brain>": tilde(cfg["brain"])}
-    t["<持ち主の言語>"] = LANG_NAMES.get(cfg.get("lang", "ja"), LANG_NAMES["ja"])
+    lang = content_lang(cfg)
+    t = {"<持ち主名>": cfg.get("owner") or M("持ち主", lang), "<brain>": tilde(cfg["brain"])}
+    t["<持ち主の言語>"] = LANG_NAMES[lang]
     for r in ROLES:
         p = cfg["personas"].get(r)
         if not p:
@@ -336,7 +352,7 @@ def owner_files(cfg):
 
 
 def source_path(src, cfg):
-    lang = cfg.get("lang", "ja")
+    lang = content_lang(cfg)
     if lang in LANG_NAMES and lang != "ja":
         translated = os.path.join(KIT, "i18n", lang, src)
         if os.path.isfile(translated):
@@ -368,7 +384,7 @@ def gen_start_all(cfg):
         lines.extend([
             "ids+=(%s)" % shlex.quote(p["id"]),
             "names+=(%s)" % shlex.quote(p["name"]),
-            "labels+=(%s)" % shlex.quote(M(ROLE_JA[role], cfg.get("lang", "ja"))),
+            "labels+=(%s)" % shlex.quote(M(ROLE_JA[role], content_lang(cfg))),
             "dir=%s" % path_expr(worktree_of(cfg, role)),
             '[ -d "$dir" ] || dir=%s' % path_expr(cfg["brain"]),
             'dirs+=("$dir")',
@@ -380,7 +396,7 @@ def gen_start_all(cfg):
 
 def gen_start(role, cfg):
     p = persona(cfg, role)
-    lang = cfg.get("lang", "ja")   # 中身は brain の言語（--lang で表示だけ変えても同じバイト）
+    lang = content_lang(cfg)   # 中身は brain の言語（--lang で表示だけ変えても同じバイト）
     wt = worktree_of(cfg, role)
     lines = [
         "#!/usr/bin/env bash",
@@ -1354,7 +1370,7 @@ def update_manifests(items, cfg, manifests):
             files[key] = ent
     for where in ("brain", "claude"):
         manifests[where]["version"] = VERSION
-    manifests["claude"]["lang"] = cfg.get("lang", "ja")
+    manifests["claude"]["lang"] = content_lang(cfg)
     package = load_json(os.path.join(KIT, "package.json"))
     if isinstance(package, dict) and isinstance(package.get("version"), str):
         manifests["claude"]["package_version"] = package["version"]
@@ -1599,7 +1615,7 @@ def resolve_config(args, cman, quiet=False):
     if cfg:
         cfg["brain"] = brain
         # 言語の記録が無い brain は機械側の記録、それも無ければ日本語（中身を作る言語）
-        cfg.setdefault("lang", cman.get("lang") or "ja")
+        cfg["lang"] = record_lang(cfg, cman)
         v = cfg.get("version")
         return cfg, v, M("v%s（brain の .brain-kit/config.json）") % v, False
     info = detect_legacy(brain)
@@ -1628,7 +1644,7 @@ def cmd_update(args):
     if cfg is None:
         die(M("%s に brain-kit が見つからない。新しく入れるなら --update を付けずに実行する") % tilde(os.path.expanduser(args.brain)), 1)
     # 記録が無ければ機械側の記録、それも無ければ日本語（言語を選べるようになる前の入れ方）
-    old_lang = cfg.get("lang") or cman.get("lang") or "ja"
+    old_lang = record_lang(cfg, cman)
     cfg["lang"] = args.lang or old_lang
     if old_lang != cfg["lang"]:
         print(M("言語: %s → %s") % (language_name(old_lang), language_name(cfg["lang"])))
@@ -2516,12 +2532,11 @@ def cmd_doctor(args):
     brain = os.path.abspath(os.path.expanduser(args.brain))
 
     # 表示の言語（--lang）ではなく、記録された持ち主の言語を出す
-    owner_lang = (cfg or {}).get("lang") or cman.get("lang") or "ja"
+    owner_lang = record_lang(cfg, cman)
     recorded = []
-    if "lang" in (load_json(config_path(brain), {}) or {}):
-        recorded.append(tilde(config_path(brain)))
-    if "lang" in cman:
-        recorded.append(tilde(CLAUDE_MANIFEST))
+    for path, record in ((config_path(brain), load_json(config_path(brain))), (CLAUDE_MANIFEST, cman)):
+        if isinstance(record, dict) and record.get("lang") in tuple(LANG_NAMES):
+            recorded.append(tilde(path))
     row(M("  言語"), True, M("%s（%s）; 記録: %s") % (
         language_name(owner_lang), owner_lang, ", ".join(recorded) or M("未記録（既定 ja）")))
     rows.append((M("[版]"), "", ""))
@@ -2795,9 +2810,8 @@ def main(argv):
     ap.add_argument("--edited", choices=["new", "keep"], default=None)
     ap.add_argument("--yes", "-y", action="store_true")
     args = ap.parse_args(argv)
-    cfg = load_json(config_path(os.path.abspath(os.path.expanduser(args.brain))), {}) or {}
-    machine = load_json(CLAUDE_MANIFEST, {}) or {}
-    set_lang(args.lang or cfg.get("lang") or machine.get("lang") or "ja")
+    set_lang(args.lang or record_lang(load_json(config_path(os.path.abspath(os.path.expanduser(args.brain)))),
+                                      load_json(CLAUDE_MANIFEST)))
     if args.cmd in ("install", "update", "resolve", "uninstall", "rollback"):
         lock_home()   # fd はプロセスが終わるまで開いたまま（終了でロックが外れる）
     if args.cmd == "install":
