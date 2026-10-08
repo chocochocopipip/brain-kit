@@ -2,6 +2,12 @@
 
 更新（`./install.sh --update`）の最後に、上がった版より新しい節だけが出る。版は `VERSION`、brain には `.brain-kit/config.json` に記録される。
 
+## 次の版（作業中）
+
+- `--uninstall` を追加。機械側の記録に従い、`~/.claude` の未変更の kit ファイルと所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定は残す
+- `--dry-run` で削除と保持の計画を表示。非対話の実行は `--yes` が必要。brain 全体・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない
+- アンインストールも `--rollback` でバイトと実行権限を復元でき、brain のコミットは増えない。残った brain の設定で `--update` から再導入できる
+
 ## v11
 
 - 衝突資料に持ち主の agent・道具の名前と重なり・改名案を追加。所有ディレクトリには新しい kit の skill を書かず、dry-run と更新の最後にも知らせる

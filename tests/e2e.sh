@@ -1467,6 +1467,142 @@ assert json.load(open(h + "/.claude/settings.json"))["hooks"]["TeammateIdle"] ==
 PY
 check "--from で残した外れた項目: 次の更新で消さない" test $? -eq 0
 
+# ------------------------------------------------------------------ uninstall（brain は全部そのまま）
+section "uninstall と rollback・再導入"
+H="$TMP/uninstall"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes >"$H.log" 2>&1
+check "uninstall 用の新規導入" test $? -eq 0
+printf '\n持ち主の追記\n' >>"$H/.claude/CLAUDE.md"
+mkdir -p "$H/.claude/skills/mine"
+printf 'owner skill\n' >"$H/.claude/skills/mine/SKILL.md"
+printf 'owner memory\n' >"$H/brain/Aoi/owner.md"
+git -C "$H/brain" add Aoi/owner.md
+git -C "$H/brain" commit -qm 'owner memory'
+python3 - "$H" <<'PY'
+import json, os, sys
+p = os.path.join(sys.argv[1], '.claude/settings.json')
+s = json.load(open(p))
+s['hooks']['SessionEnd'][0]['timeout'] = 987
+s['hooks']['Stop'].append({'hooks': [{'type': 'command', 'command': 'echo owner'}]})
+open(p, 'w').write(json.dumps(s, ensure_ascii=False, indent=2) + '\n')
+PY
+before="$(snap "$H")"; own="$(owner_snap "$H" Aoi)"
+brain_before="$(snap "$H" | grep ' brain/')"
+head_before="$(git -C "$H/brain" rev-parse HEAD)"
+cat "$H/.claude/settings.json" >"$H.settings-before"
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H" --uninstall --dry-run >"$H.dry" 2>&1
+check "uninstall dry-run が 0" test $? -eq 0
+check "dry-run は何も書かない" test "$before" = "$(snap "$H")"
+check "dry-run は退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+check "dry-run は編集済み CLAUDE.md を「残すもの」に出す" sh -c "awk '/^残すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF '.claude/CLAUDE.md'"
+check "dry-run は編集済み CLAUDE.md を「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF '.claude/CLAUDE.md'"
+new "$H" --uninstall </dev/null >"$H.no" 2>&1
+check "非対話は --yes が必要（exit 2）" test $? -eq 2
+check "確認前は変更なし" test "$before" = "$(snap "$H")"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "uninstall が 0" test $? -eq 0
+for s in aoi ren mio sora setup grilling; do check "kit skill $s を削除" test ! -e "$H/.claude/skills/$s/SKILL.md"; done
+for p in hooks/session-end-brain.sh brain-kit/manifest.json brain-kit/base brain-kit/bin/start-aoi brain-kit/bin/start-ren brain-kit/bin/start-mio brain-kit/bin/start-sora; do
+  check "$p を削除" test ! -e "$H/.claude/$p"
+done
+check "編集した CLAUDE.md を保持" grep -q '持ち主の追記' "$H/.claude/CLAUDE.md"
+check "持ち主 skill を保持" test -f "$H/.claude/skills/mine/SKILL.md"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s['hooks']['SessionEnd'][0]['timeout'] == 987
+assert s['hooks']['Stop'] == [{'hooks': [{'type': 'command', 'command': 'echo owner'}]}]
+assert 'statusLine' not in s
+assert not any('pr-review-toolkit' in k for k in s.get('enabledPlugins', {}))
+assert 'permissions' in s
+PY
+check "settings は持ち主の hook・変更・permissions を保ち kit の項目だけ削除" test $? -eq 0
+check "持ち主の brain は同一" test "$own" = "$(owner_snap "$H" Aoi)"
+check "brain 全体（kit の記録も）は同一" test "$brain_before" = "$(snap "$H" | grep ' brain/')"
+check "brain HEAD は同一" test "$head_before" = "$(git -C "$H/brain" rev-parse HEAD)"
+for w in ren mio sora; do check "worktree $w を保持" test -d "$H/brain-$w"; done
+new "$H" --rollback >"$H.rb" 2>&1
+check "uninstall の rollback が 0" test $? -eq 0
+check "rollback で全バイトと実行権限が戻る" test "$before" = "$(snap "$H")"
+check "settings のバイトが戻る" cmp -s "$H.settings-before" "$H/.claude/settings.json"
+new "$H" --uninstall --yes >"$H.un2" 2>&1
+check "再 uninstall が 0" test $? -eq 0
+new "$H" --update --no-worktrees >"$H.reinstall" 2>&1
+check "update で再導入できる" test $? -eq 0
+for s in aoi ren mio sora setup grilling; do check "再導入 skill $s" test -f "$H/.claude/skills/$s/SKILL.md"; done
+
+section "uninstall の範囲と symlink"
+printf 'outside\n' >"$H/outside.txt"
+python3 - "$H" <<'PY'
+import hashlib, json, os, sys
+h = sys.argv[1]
+p = os.path.join(h, '.claude/brain-kit/manifest.json')
+m = json.load(open(p))
+sha = hashlib.sha256(open(os.path.join(h, 'outside.txt'), 'rb').read()).hexdigest()
+for key in ('../outside.txt', 'outside.txt'):
+    m['files'][key] = {'sha': sha}
+open(p, 'w').write(json.dumps(m))
+PY
+mv "$H/.claude/settings.json" "$H/settings-target.json"
+cat "$H/settings-target.json" >"$H.settings-target-before"
+ln -s "$H/settings-target.json" "$H/.claude/settings.json"
+new "$H" --uninstall --yes >"$H.edge" 2>&1
+check "symlink があっても uninstall が 0" test $? -eq 0
+check "範囲外のファイルを保持" test -f "$H/outside.txt"
+check "settings は symlink のまま" test -L "$H/.claude/settings.json"
+check "symlink の参照先は同一" cmp -s "$H.settings-target-before" "$H/settings-target.json"
+H="$TMP/uninstall-empty"; mkdir -p "$H"
+new "$H" --uninstall --yes >"$H.log" 2>&1
+check "manifest が無ければ失敗" test $? -ne 0
+
+section "uninstall の .new・衝突資料・不正な settings"
+H="$TMP/uninstall-state"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes >"$H.log" 2>&1
+cp "$H/.claude/skills/aoi/SKILL.md" "$H/.claude/skills/aoi/SKILL.md.new"
+printf 'owner merge\n' >"$H/.claude/skills/ren/SKILL.md.new"
+mkdir -p "$H/.claude/brain-kit/conflicts/test"
+printf 'merged\n' >"$H/.claude/brain-kit/conflicts/test/merged.md"
+printf 'state\n' >"$H/.claude/brain-kit/owner.lock"
+cp "$H/.claude/settings.json" "$H.settings-good"
+printf '{broken' >"$H/.claude/settings.json"
+before="$(snap "$H")"
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H" --uninstall --yes >"$H.bad" 2>&1
+check "不正 JSON は失敗" test $? -ne 0
+check "不正 JSON ならファイルを削除しない" test "$before" = "$(snap "$H")"
+check "不正 JSON なら退避も作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+cp "$H.settings-good" "$H/.claude/settings.json"
+python3 - "$H" <<'PY'
+import hashlib, json, os, sys
+h = sys.argv[1]
+p = os.path.join(h, '.claude/brain-kit/manifest.json')
+m = json.load(open(p))
+# 範囲内に見えても参照先が brain や退避なら外さない。
+os.symlink(os.path.join(h, 'brain/Aoi'), os.path.join(h, '.claude/owner-link'))
+backups = [d for d in os.listdir(os.path.join(h, '.claude')) if d.startswith('backup-brain-kit-')]
+b = os.path.join(h, '.claude', backups[0])
+open(os.path.join(b, 'keep.txt'), 'w').write('backup')
+os.symlink(b, os.path.join(h, '.claude/backup-link'))
+for key in ('.claude/owner-link/00_核.md', '.claude/backup-link/keep.txt'):
+    m['files'][key] = {'sha': hashlib.sha256(open(os.path.join(h, key), 'rb').read()).hexdigest()}
+entry = ['statusLine', '']
+m.setdefault('settings_conflicts', []).append(entry)
+open(p, 'w').write(json.dumps(m))
+PY
+before="$(snap "$H")"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "状態付き uninstall が 0" test $? -eq 0
+check "kit と同一の .new は削除" test ! -e "$H/.claude/skills/aoi/SKILL.md.new"
+check "編集した .new を保持" grep -q 'owner merge' "$H/.claude/skills/ren/SKILL.md.new"
+check "衝突資料を保持" test -f "$H/.claude/brain-kit/conflicts/test/merged.md"
+check "未登録の状態を保持" test -f "$H/.claude/brain-kit/owner.lock"
+check "brain を指すディレクトリ symlink の中は削除しない" test -f "$H/.claude/owner-link/00_核.md"
+check "退避を指すディレクトリ symlink の中は削除しない" test -f "$H/.claude/backup-link/keep.txt"
+check "未変更でも settings の衝突項目は残す" grep -q 'statusLine' "$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "状態・.new も rollback で戻る" test "$before" = "$(snap "$H")"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then

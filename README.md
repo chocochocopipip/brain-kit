@@ -10,6 +10,8 @@
 > npx github:chocochocopipip/brain-kit --update --dry-run      # already installed (v1–v9 too): see what changes
 > npx github:chocochocopipip/brain-kit --update                # upgrade kit files only; your notes are never touched
 > ```
+> `--uninstall --dry-run` previews removal; `--uninstall` removes only kit files and owned settings under `~/.claude`. Your brain is never touched; `--rollback` restores them.
+>
 > You name all four personas at install time (any names, Japanese is fine). Then `cd ~/brain && claude` and run `/setup`. `--rollback` undoes the last update.
 >
 > **Requirements**: git, python3, node >= 18, Claude Code CLI. Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
@@ -132,6 +134,8 @@ npx brainkit-agents --update --dry-run                      # npm から。GitHu
 npx github:chocochocopipip/brain-kit --update --dry-run    # 何が変わるかを見る（何も変えない）
 npx github:chocochocopipip/brain-kit --update              # 上げる
 npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か更新を戻す
+./install.sh --uninstall --dry-run                       # ~/.claude 側を外す計画を見る
+./install.sh --uninstall                                 # 確認して外す（非対話なら --yes）
 ./install.sh --resolve <file> --from <merged file> --dry-run
 ./install.sh --resolve <file> --from <merged file>
 ./install.sh --resolve <file>                            # 今の編集済みファイル
@@ -141,6 +145,7 @@ npx github:chocochocopipip/brain-kit --rollback            # 直前の解消か�
 
 clone してあるなら `git pull && ./install.sh --update`。
 
+- **外すときは `--uninstall`**：機械側の manifest に記録された `~/.claude` の未変更の kit ファイル・base・記録と、未変更の所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定や permissions は残す。brain 全体（`.brain-kit` と kit ファイルも）・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない。記録が無い古い導入は先に `--update` が必要。`--rollback` で元に戻せる（brain のコミットは増えない）。残る設定を使い `./install.sh --update` で再導入できる
 - **上がるのは kit のものだけ**：skill・規約（brain の `README.md` `CLAUDE.md`、各領域の `README.md`、`記録/README.md` など）・台本・フック。一覧は `kitfiles.tsv`
 - **持ち主のものには触らない**：核・辞書・関係・任せる範囲・振り返り・日誌・決定・知識・プロジェクト・状況カード・報告・記録・規準・手順。新しい版で増えた骨格は、無いものだけ足す
 - **今の版を見分ける**：`~/brain/.brain-kit/config.json` があればそれ。v1〜v9 のように記録が無ければ、kit のファイルの形から判定し、最初の更新で記録を書く
@@ -286,7 +291,7 @@ brain-kit/
 ├── install.sh                ← 導入スクリプト（対話式。--mode local|base）
 ├── bin/brain-kit.js          ← npx 用シム（install.sh に引数を渡すだけ）。npm のパッケージ名は brainkit-agents。package.json / LICENSE(MIT)
 ├── setup-base.sh             ← base 機の一括セットアップ（Tailscale / Orca / systemd。--dry-run あり）
-├── lib/kit.py                ← 本体（install / --update / --rollback / --doctor）
+├── lib/kit.py                ← 本体（install / --update / --uninstall / --rollback / --doctor）
 ├── kitfiles.tsv              ← 「kit のもの」の一覧（--update で上がる。ここに無い brain のものは持ち主のもの）
 ├── VERSION / CHANGELOG.md    ← 版と変更点（--update の最後に出る）
 ├── migrations/fingerprints.json ← 版の記録が無い v1〜v9 を見分ける指紋（行ごとのハッシュだけ。tools/make-fingerprints.py が作る）
