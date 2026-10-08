@@ -20,6 +20,7 @@
 #                                     settings.json も指定できる。--dry-run で書く前に確認する
 #   ./install.sh --uninstall [--dry-run] [--yes]  ~/.claude の kit だけを外す。brain は触らない
 #   ./install.sh --rollback           直前の resolve・更新・install を退避から戻す。--dry-run で中身だけ
+#   ./install.sh --version            brain-kit の版だけを表示する
 #   ./install.sh --doctor             何も変えず、版・人格・古いもの・手で直したもの・CLI・Orca・gh を表で出す
 #
 #   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
@@ -35,6 +36,13 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ほかの引数より優先し、python3 / git が無くても版を読める。
+for arg; do
+  if [ "$arg" = --version ]; then
+    printf 'brain-kit v%s\n' "$(tr -d '[:space:]' <"$KIT/VERSION")"
+    exit 0
+  fi
+done
 ACTION=install; MODE=""; CODEX=""; YES=0; TARGET=""
 PYARGS=()
 
@@ -54,7 +62,7 @@ while [ $# -gt 0 ]; do
       PYARGS+=("$1" "$2"); shift 2 ;;
     --brain-merge|--no-worktrees|--dry-run|--diff|--keep)
       PYARGS+=("$1"); shift ;;
-    -h|--help)  sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,35p' "$0"; exit 0 ;;
     -*) echo "使えない引数: $1" >&2; exit 2 ;;
     *)
       if [ "$ACTION" != resolve ] || [ -n "$TARGET" ]; then

@@ -16,6 +16,7 @@ export GIT_AUTHOR_NAME=kit-test GIT_AUTHOR_EMAIL=kit-test@example.invalid
 export GIT_COMMITTER_NAME=kit-test GIT_COMMITTER_EMAIL=kit-test@example.invalid
 # gh と claude を見えなくする（ラベル作成・要約を走らせない）
 NPM="$(command -v npm 2>/dev/null || true)"   # tarball の節だけで使う（PATH を絞る前に探す）
+NODE="$(command -v node 2>/dev/null || true)"
 SAFE_PATH="$TMP/bin"
 mkdir -p "$SAFE_PATH"
 ln -s "$BASH" "$SAFE_PATH/bash"    # このテストを走らせている bash（macOS なら /bin/bash の 3.2）を使う
@@ -2013,6 +2014,124 @@ check "1 MiB の 1 行のデータファイルを shlex に渡さない（遅く
 uninstall_fault "$H" bigread >"$H.big" 2>&1
 check "残すフックが名指しした大きなファイルを丸ごと読まずに uninstall が 0" test $? -eq 0
 check "大きなファイルは残る" test -f "$H/.claude/big.dat"
+
+# ------------------------------------------------------------------ Claude Code の版
+section "Claude Code の版（注意だけで続行）"
+old_word='動作を確かめた版（2.1.294）より古い'
+missing_word='Claude Code CLI（claude）が無い'
+for version_case in old equal newer odd failed; do
+  fake="$TMP/claude-$version_case"; mkdir -p "$fake"
+  case "$version_case" in
+    old) output='2.1.200 (Claude Code)'; expected=1 ;;
+    equal) output='2.1.294 (Claude Code)'; expected=0 ;;
+    newer) output='2.2.0 (Claude Code)'; expected=0 ;;
+    odd|failed) output='something odd'; expected=0 ;;
+  esac
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$output" >"$fake/claude"
+  [ "$version_case" != failed ] || printf 'exit 1\n' >>"$fake/claude"
+  chmod +x "$fake/claude"
+  H="$TMP/version-$version_case"; mkdir -p "$H"
+  PATH="$fake:$PATH" new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.install" 2>&1
+  check "$version_case: install が 0" test $? -eq 0
+  PATH="$fake:$PATH" new "$H" --update >"$H.update" 2>&1
+  check "$version_case: update が 0" test $? -eq 0
+  PATH="$fake:$PATH" new "$H" --update --dry-run >"$H.dry" 2>&1
+  check "$version_case: dry-run が 0" test $? -eq 0
+  PATH="$fake:$PATH" new "$H" --doctor >"$H.doctor" 2>&1
+  check "$version_case: doctor が 0" test $? -eq 0
+  for action in install update dry doctor; do
+    check "$version_case/$action: 古い版の注意は $expected 行" test "$(grep -cF "$old_word" "$H.$action")" -eq "$expected"
+    check "$version_case/$action: 版の注意に必要と言わない" test "$(grep -F '2.1.294）より古い' "$H.$action" | grep -c '必要')" -eq 0
+    if [ "$version_case" = odd ] || [ "$version_case" = failed ]; then
+      check "$version_case/$action: 読めない注意は 1 行" test "$(grep -c '版を読めない' "$H.$action")" -eq 1
+    fi
+  done
+  case "$version_case" in
+    old)
+      check "doctor: 古い行" grep -q 'Claude Code の版.*古い.*2.1.200' "$H.doctor"
+      check "doctor: todo に更新" grep -q '^[[:space:]]*[0-9][0-9]*\. claude update（動作を確かめた版 2.1.294 より古い）' "$H.doctor" ;;
+    equal|newer)
+      check "doctor: OK 行" grep -q 'Claude Code の版.*OK.*動作を確かめた版 2.1.294 以上' "$H.doctor"
+      check "同じか新しい版の導入・更新は警告なし" test "$(grep -c 'warn: Claude Code' "$H.install" "$H.update" "$H.dry" | grep -vc ':0$')" -eq 0 ;;
+    odd|failed) check "doctor: 要確認行" grep -q 'Claude Code の版.*要確認.*版を読めない' "$H.doctor" ;;
+  esac
+done
+H="$TMP/version-missing"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.install" 2>&1
+check "claude 無し: install が 0" test $? -eq 0
+check "claude 無し: install は kit の注意を重ねない" test "$(grep -cF "$missing_word" "$H.install")" -eq 0
+new "$H" --update >"$H.update" 2>&1
+check "claude 無し: update が 0" test $? -eq 0
+check "claude 無し: update の注意は 1 行" test "$(grep -cF "$missing_word" "$H.update")" -eq 1
+new "$H" --doctor >"$H.doctor" 2>&1
+check "claude 無し: doctor が 0" test $? -eq 0
+check "claude 無し: doctor は注意を重ねない" test "$(grep -cF "$missing_word" "$H.doctor")" -eq 0
+
+# 時間切れは待たずに再現し、先頭の空白・数値比較・短縮も確かめる。
+python3 - "$KIT/lib/kit.py" <<'PY2'
+import runpy, subprocess, sys
+from unittest import mock
+warning = runpy.run_path(sys.argv[1])["claude_version_warning"]
+assert warning(result=(0, "  2.1.294 (Claude Code)", "")) is None
+assert warning(result=(0, "2.10.0 (Claude Code)", "")) is None
+assert "より古い" in warning(result=(0, "2.1.9 (Claude Code)", ""))
+assert "版を読めない" in warning(result=(1, "2.1.294 (Claude Code)", ""))
+assert "x" * 60 + "）。" in warning(result=(0, "x" * 100 + "\nsecond", ""))
+with mock.patch("shutil.which", return_value="/fake/claude"), mock.patch(
+        "subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 15)) as call:
+    text = warning()
+    assert "版を読めない" in text and len(text.splitlines()) == 1
+    assert call.call_args.kwargs["timeout"] == 15
+PY2
+check "版の取得: 空白・数値比較・失敗・60 文字・時間切れ" test $? -eq 0
+
+section "--version（依存コマンドやほかの引数に左右されない）"
+version_path="$TMP/version-bin"; mkdir -p "$version_path"
+for c in dirname tr; do ln -s "$(command -v "$c")" "$version_path/$c"; done
+for version_args in '--version' '--version --unknown --mode' '--unknown --version --help'; do
+  # shellcheck disable=SC2086  # 固定のテスト引数を分けて渡す
+  PATH="$version_path" "$BASH" "$KIT/install.sh" $version_args >"$TMP/version.out" 2>&1
+  check "--version $version_args: 0" test $? -eq 0
+  printf 'brain-kit v%s\n' "$KV" >"$TMP/version.expected"
+  check "--version $version_args: 版の 1 行だけ" cmp -s "$TMP/version.expected" "$TMP/version.out"
+done
+if [ -n "$NODE" ]; then
+  "$NODE" "$KIT/bin/brain-kit.js" --version >"$TMP/version.out" 2>&1
+  check "node 経由の --version が 0" test $? -eq 0
+  check "node 経由も版の 1 行だけ" cmp -s "$TMP/version.expected" "$TMP/version.out"
+fi
+
+section "check.sh の版の一致"
+version_check="$TMP/version-check"; mkdir -p "$version_check"
+for version_case in current kit package format absent heading noheading invalid minor pending dotted missingkit missingpackage missingchangelog badheading zero; do
+  cp "$KIT/check.sh" "$KIT/VERSION" "$KIT/package.json" "$KIT/CHANGELOG.md" "$version_check/"
+  expected=1
+  case "$version_case" in
+    current) expected=0 ;;
+    kit) printf '12\n' >"$version_check/VERSION" ;;
+    package) printf '{"version":"12.0.0"}\n' >"$version_check/package.json" ;;
+    format) printf '{"version":"11"}\n' >"$version_check/package.json" ;;
+    absent) printf '{}\n' >"$version_check/package.json" ;;
+    heading) printf '## v12\n' >"$version_check/CHANGELOG.md" ;;
+    noheading) printf '## 次の版（作業中）\n' >"$version_check/CHANGELOG.md" ;;
+    invalid) printf 'odd\n' >"$version_check/VERSION" ;;
+    minor) printf '{"version":"%s.3.2"}\n' "$KV" >"$version_check/package.json"; expected=0 ;;
+    pending) printf '## 次の版（作業中）\n\n## v%s\n' "$KV" >"$version_check/CHANGELOG.md"; expected=0 ;;
+    dotted) printf '## v%s.1\n' "$KV" >"$version_check/CHANGELOG.md"; expected=0 ;;
+    missingkit) rm "$version_check/VERSION" ;;
+    missingpackage) rm "$version_check/package.json" ;;
+    missingchangelog) rm "$version_check/CHANGELOG.md" ;;
+    badheading) printf '## v11.odd\n' >"$version_check/CHANGELOG.md" ;;
+    zero) printf '0\n' >"$version_check/VERSION" ;;
+  esac
+  BRAIN_KIT_CHECK_WORDS_FILE=/nonexistent bash "$version_check/check.sh" >"$TMP/version-check.out" 2>&1
+  check "$version_case: check.sh が $expected" test $? -eq "$expected"
+  if [ "$expected" = 1 ]; then
+    check "$version_case: [version] の指摘" grep -q '^\[version\]' "$TMP/version-check.out"
+  else
+    check "$version_case: 0 件の表示を保つ" grep -q '^ok: 0 件' "$TMP/version-check.out"
+  fi
+done
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
