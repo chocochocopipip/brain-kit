@@ -1901,6 +1901,8 @@ def cmd_uninstall(args):
             return real
         return None
 
+    looked = {}   # 辿るときに読んだファイルとディレクトリ。確認のあとで変わっていれば止める
+
     def named_files(text, here=None):
         """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
         ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
@@ -1922,6 +1924,7 @@ def cmd_uninstall(args):
             if arg and os.path.abspath(arg).startswith(claude + os.sep) and canonical(arg):
                 out.add(canonical(arg))
         if here and os.path.isdir(here):
+            looked[("dir", here)] = sorted(os.listdir(here))
             out.update(canonical(os.path.join(here, name)) for name in sorted(os.listdir(here))
                        if name in text and canonical(os.path.join(here, name)))
         for path in candidates:
@@ -1938,9 +1941,15 @@ def cmd_uninstall(args):
             mark(path, part)
             queue.append(path)
     seen = set()
+
+    def fingerprint(path):
+        try:
+            return (os.path.realpath(path), sha(open_bytes(path)))
+        except (IOError, OSError):
+            return None
     while queue:
         user = queue.pop(0)
-        if user in seen:
+        if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
             continue
         seen.add(user)
         try:
@@ -1948,6 +1957,7 @@ def cmd_uninstall(args):
         except OSError:
             big = True
         text = "" if big else (read_text(user) or "")
+        looked[("file", user)] = fingerprint(user)
         for path in named_files(text, os.path.dirname(user)):
             if path != user:
                 mark(path, "%s から" % os.path.basename(user))
@@ -1990,6 +2000,12 @@ def cmd_uninstall(args):
     now_raw = open_bytes(settings_path) if os.path.lexists(settings_path) and not os.path.isdir(settings_path) else None
     if now_raw != settings_raw or safe(settings_path) != settings_writable:
         die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+    # 残すフックが使うものを調べたときに読んだスクリプト・ディレクトリが変わっていたら、計画が古い。何も変えずに止める
+    for (kind, path), before in sorted(looked.items()):
+        now = (sorted(os.listdir(path)) if os.path.isdir(path) else None) if kind == "dir" else fingerprint(path)
+        if now != before:
+            die("確認の間に %s が変わった（残すフックが使うものを調べ直す）。何も変えていない。もう一度 --uninstall を実行する"
+                % tilde(path), 1)
 
     def unchanged(path):
         # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる

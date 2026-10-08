@@ -1831,6 +1831,27 @@ check "引用符の中の空白を含むパスの持ち主のスクリプトが�
 check "\\ で逃がした空白を含むパスの持ち主のスクリプトが呼ぶ start-ren も残る" test -f "$H/.claude/brain-kit/bin/start-ren"
 check "どれも呼ばない start-mio は消す" test ! -e "$H/.claude/brain-kit/bin/start-mio"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 確認を待つ間に、残す持ち主のスクリプトが kit のファイルを呼ぶように書き換えた → 何も変えずに止まる
+H2="$TMP/uninstall-hookref-race"; mkdir -p "$H2"
+new "$H2" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H2.log" 2>&1
+printf '#!/bin/sh\ntrue\n' >"$H2/.claude/hooks/mine.sh"
+python3 - "$H2/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+backups_before="$(find "$H2/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+{ sleep 3; printf '"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >>"$H2/.claude/hooks/mine.sh"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H2" bash "$KIT/install.sh" --uninstall >"$H2.race" 2>&1
+check "確認中に残すスクリプトが変わると止まる" test $? -ne 0
+check "止まったとき heavy-lock は消えていない" test -x "$H2/.claude/brain-kit/bin/heavy-lock"
+check "止まったとき kit の skill も消えていない" test -f "$H2/.claude/skills/aoi/SKILL.md"
+check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H2/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+new "$H2" --uninstall --yes >"$H2.un" 2>&1
+check "もう一度の uninstall は 0 で、heavy-lock を残す" sh -c "test -x '$H2/.claude/brain-kit/bin/heavy-lock'"
 # 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
 H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
