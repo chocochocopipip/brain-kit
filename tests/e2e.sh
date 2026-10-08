@@ -1165,6 +1165,47 @@ touch "$TMP/order-lock.stop"
 wait "$holder"
 HOME="$H" python3 "$KIT/lib/kit.py" rollback >"$H.unlocked" 2>&1
 check "同時実行: 終わったあとの --rollback は戻せる" test "$(cat "$H/.claude/order-lock.md")" = owner
+# ロックが確かめられない（flock の失敗・fcntl が無い）ときは、書き換える 5 つとも何もせずに止まる
+mkdir -p "$TMP/order-lockfail"
+HOME="$TMP/order-lockfail" python3 - "$KIT" <<'PY' >"$TMP/order-lockfail.log" 2>&1
+import builtins, errno, fcntl, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["main"].__globals__
+ran = []
+for c in ("install", "update", "resolve", "uninstall", "rollback"):
+    g["cmd_" + c] = lambda args, c=c: ran.append(c)
+def broken(code):
+    def flock(fd, op):
+        raise OSError(code, os.strerror(code))
+    return flock
+real_flock, real_import = fcntl.flock, builtins.__import__
+def no_fcntl(name, *a, **kw):
+    if name == "fcntl":
+        raise ImportError(name)
+    return real_import(name, *a, **kw)
+try:
+    for how in ("ENOLCK", "EOPNOTSUPP", "EIO", "no-fcntl"):
+        if how == "no-fcntl":
+            fcntl.flock, builtins.__import__ = real_flock, no_fcntl
+        else:
+            fcntl.flock = broken(getattr(errno, how))
+        for c in ("install", "update", "resolve", "uninstall", "rollback"):
+            try:
+                g["main"]([c])
+                raise AssertionError("止まらなかった: %s %s" % (how, c))
+            except SystemExit as e:
+                assert e.code == 1, (how, c, e.code)
+finally:
+    fcntl.flock, builtins.__import__ = real_flock, real_import
+assert ran == [], ran
+for c in ("install", "update", "resolve", "uninstall", "rollback", "doctor"):
+    g["cmd_" + c] = lambda args, c=c: ran.append(c)
+# ロックが取れれば動く。--doctor はロックを取らないので、ロックを持ったままでも動く
+g["main"](["rollback"])
+g["main"](["doctor"])
+assert ran == ["rollback", "doctor"], ran
+PY
+check "同時実行: ロックが確かめられなければ、書き換える処理は何もせずに止まる" test $? -eq 0
 HOME="$TMP/collision-with" python3 - "$NEXT" <<'PY' >"$TMP/no-read.log" 2>&1
 import builtins, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")

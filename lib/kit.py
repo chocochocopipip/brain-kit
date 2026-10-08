@@ -2608,20 +2608,23 @@ def cmd_doctor(args):
 def lock_home():
     """書き換える処理（install・update・resolve・uninstall・rollback）を、同じ HOME で 1 つずつにする。
     重なると退避の通し番号と退避する中身が食い違い、--rollback が持ち主のファイルを途中の状態で残しうる。
-    ファイルは作らない（HOME のディレクトリそのものに flock する）。ロックは終了で外れる。"""
+    ファイルは作らない（HOME のディレクトリそのものに flock する）。fd は開いたままにし、終了でロックが外れる。
+    確かめられないときは書き換えずに止まる。"""
     try:
         import fcntl
     except ImportError:
-        return None
-    fd = os.open(HOME, os.O_RDONLY)
+        die("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める", 1)
+    try:
+        fd = os.open(HOME, os.O_RDONLY)
+    except OSError as e:
+        die("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める" % (HOME, e), 1)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
         os.close(fd)
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
             die("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度", 1)
-        print("warn: brain-kit の同時実行の確認ができなかった（%s）。ほかに動かしていないことを確かめて続ける" % e, file=sys.stderr)
-        return None
+        die("同時実行を防ぐロックが取れない（%s）。何も変えずに止める" % e, 1)
     return fd
 
 
