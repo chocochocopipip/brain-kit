@@ -1887,6 +1887,18 @@ def cmd_uninstall(args):
             used[path] = why
             remove.discard(path)
 
+    def named_files(text):
+        """text に書かれた ~/.claude の中のファイル（絶対・~/・$HOME/・${HOME}/ の形）。持ち主のスクリプトも辿るため"""
+        out = []
+        for arg in re.split(r"[\s'\"`;|&()<>=]+", text):
+            for prefix in ("${HOME}/", "$HOME/", "~/"):
+                if arg.startswith(prefix):
+                    arg = os.path.join(HOME, arg[len(prefix):])
+            arg = os.path.abspath(arg) if arg.startswith(os.sep) else ""
+            if arg and arg.startswith(claude + os.sep) and os.path.isfile(arg) and safe(arg):
+                out.append(arg)
+        return out
+
     # 起点：残る command が指す kit のファイルと、command に書かれた ~/.claude の中のファイル（持ち主のスクリプトも）
     seeds = []
     for part, command in commands:
@@ -1894,13 +1906,7 @@ def cmd_uninstall(args):
             if any(f in command for f in forms(path)):
                 mark(path, part)
                 seeds.append(path)
-        for arg in re.split(r"[\s'\";|&()<>]+", command):
-            for prefix in ("${HOME}/", "$HOME/", "~/"):
-                if arg.startswith(prefix):
-                    arg = os.path.join(HOME, arg[len(prefix):])
-            arg = os.path.abspath(arg) if arg.startswith(os.sep) else ""
-            if arg and arg.startswith(claude + os.sep) and os.path.isfile(arg) and safe(arg):
-                seeds.append(arg)
+        seeds.extend(named_files(command))
     # 残すスクリプトが呼ぶ kit のファイルも残す（session-end-brain.sh → "$HOOK_DIR/brain-digest.js" など）。
     # 持ち主が変えて残すスクリプトも辿る。パスの形か、同じディレクトリのファイル名が中身に出てくれば「使う」とみなす
     # （残す側に倒す）。一度見たものは見ない
@@ -1919,6 +1925,7 @@ def cmd_uninstall(args):
             if sibling or any(f in text for f in forms(path)):
                 mark(path, "%s から" % os.path.basename(user))
                 queue.append(path)
+        queue.extend(named_files(text))          # 持ち主の補助スクリプトを何段でも辿る（見たものは飛ばす）
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])

@@ -1788,6 +1788,11 @@ printf '\n# 持ち主の追記\n' >>"$H/.claude/hooks/session-end-brain.sh"
 # shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
 printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >"$H/.claude/hooks/mine.sh"
 chmod +x "$H/.claude/hooks/mine.sh"
+# 2 段：持ち主のフック → 持ち主の mine2.sh → 持ち主の helper.sh → kit の collect.py
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\nexec "$HOME/.claude/own/helper.sh"\n' >"$H/.claude/hooks/mine2.sh"
+printf '#!/bin/sh\npython3 ~/.claude/brain-kit/dashboard/collect.py\n' >"$H/.claude/own/helper.sh"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
 p = sys.argv[1]
@@ -1795,6 +1800,7 @@ s = json.load(open(p))
 s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
 s["hooks"].setdefault("Notification", []).append(
     {"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/mine.sh\""}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/mine2.sh"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1803,6 +1809,7 @@ check "書き換えた session-end-brain.sh は残る" grep -q '持ち主の追�
 check "書き換えた session-end-brain.sh が呼ぶ brain-digest.js も残る" test -f "$H/.claude/hooks/brain-digest.js"
 check "持ち主のスクリプトが呼ぶ heavy-lock も残る" test -x "$H/.claude/brain-kit/bin/heavy-lock"
 check "持ち主のスクリプトは残る" test -x "$H/.claude/hooks/mine.sh"
+check "持ち主のスクリプト → 補助スクリプトが呼ぶ collect.py も残る" test -f "$H/.claude/brain-kit/dashboard/collect.py"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
 H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
