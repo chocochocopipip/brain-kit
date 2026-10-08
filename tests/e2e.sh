@@ -1927,6 +1927,8 @@ mkdir -p "$H/.claude/own"
 printf '#!/bin/sh\n[ -n "$1" ] && exec sh "$HOME/.claude/hooks/alias.sh"\nnode ./brain-digest.js\n' >"$H/.claude/own/disp.sh"
 ln -s ../own/disp.sh "$H/.claude/hooks/alias.sh"
 ln -s brain-kit/dashboard "$H/.claude/link"
+# 指す先の途中に .. がある symlink：link2 → brain-kit/automations/../bin（automations が消えると辿れない）
+ln -s brain-kit/automations/../bin "$H/.claude/link2"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
 p = sys.argv[1]
@@ -1935,6 +1937,7 @@ s = json.load(open(p))
 del s["hooks"]["SessionEnd"]
 s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/own/disp.sh go"}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/link/../bin/heavy-lock true"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/link2/heavy-lock true"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1942,6 +1945,7 @@ check "自分を別名で呼ぶ: uninstall が 0" test $? -eq 0
 check "別名のディレクトリから相対で使う brain-digest.js は消さない" test -f "$H/.claude/hooks/brain-digest.js"
 check "symlink と .. で指す heavy-lock は消さない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
 check "symlink と .. のパスが、外したあとも書かれた形のまま辿れる（link の指す先を消さない）" test -x "$H/.claude/link/../bin/heavy-lock"
+check "指す先の途中に .. がある symlink のパスも、外したあと辿れる（automations を消さない）" test -x "$H/.claude/link2/heavy-lock"
 check "自分を別名で呼ぶ: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 相対の自己参照（./self.sh）と 2 つのファイルの相対の循環でも、同じファイルを読み続けずに終わる
 H="$TMP/uninstall-cycle"; mkdir -p "$H"

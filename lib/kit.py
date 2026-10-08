@@ -1949,16 +1949,37 @@ def plan_uninstall(args):
     # 書かれた形（symlink の別名）のディレクトリと実体のディレクトリの両方から探す。
     # 同じ実体を同じディレクトリから見たら飛ばす。先頭 1 MiB だけ読む
     queue = []
+
+    def traversed_dirs(path):
+        """path を 1 段ずつたどるときに通るディレクトリ（実体）。symlink は指す先を展開してから続け、.. の前に通る
+        ディレクトリも数える（link → dashboard/../bin なら dashboard も）。最後のファイルそのものは入れない"""
+        out, cur, hops = set(), os.sep, 0
+        stack = list(reversed(path.split(os.sep)))
+        while stack:
+            part = stack.pop()
+            if part in ("", "."):
+                continue
+            if part == "..":
+                cur = os.path.dirname(cur) or os.sep
+                continue
+            nxt = os.path.join(cur, part)
+            if os.path.islink(nxt) and hops < 40:
+                hops += 1
+                target = os.readlink(nxt)
+                if os.path.isabs(target):
+                    cur = os.sep
+                stack.extend(reversed(target.split(os.sep)))
+                continue
+            if stack and os.path.isdir(nxt):
+                out.add(nxt)
+            cur = nxt
+        return out
+
     needed_dirs = set()   # 残すものに辿り着くのに要るディレクトリ（symlink の指す先も）。空になっても消さない
 
     def found(items, why):
         for written, targets in items:
-            # 書かれたパスを先頭から 1 段ずつ実体にして、途中のディレクトリを覚える（link/../bin なら link の指す先も）
-            prefix = os.sep
-            for part in written.split(os.sep)[1:-1]:
-                prefix = os.path.join(prefix, part)
-                if os.path.isdir(prefix):
-                    needed_dirs.add(os.path.realpath(prefix))
+            needed_dirs.update(traversed_dirs(written))
             for target in targets:
                 mark(target, why)
                 dirs = {os.path.dirname(written), os.path.dirname(os.path.realpath(written)),
