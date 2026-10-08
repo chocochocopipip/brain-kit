@@ -1496,7 +1496,7 @@ check "uninstall dry-run が 0" test $? -eq 0
 check "dry-run は何も書かない" test "$before" = "$(snap "$H")"
 check "dry-run は退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
 check "dry-run は編集済み CLAUDE.md を「残すもの」に出す" sh -c "awk '/^残すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF '.claude/CLAUDE.md'"
-check "dry-run は編集済み CLAUDE.md を「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -qF '.claude/CLAUDE.md'"
+check "dry-run は編集済み CLAUDE.md を「消すもの」に出さない" sh -c "! awk '/^消すもの/{f=1;next} /^[^ ]/{f=0} f' '$H.dry' | grep -v '/base/' | grep -qF '.claude/CLAUDE.md'"
 new "$H" --uninstall </dev/null >"$H.no" 2>&1
 check "非対話は --yes が必要（exit 2）" test $? -eq 2
 check "確認前は変更なし" test "$before" = "$(snap "$H")"
@@ -1602,6 +1602,39 @@ check "退避を指すディレクトリ symlink の中は削除しない" test 
 check "未変更でも settings の衝突項目は残す" grep -q 'statusLine' "$H/.claude/settings.json"
 new "$H" --rollback >"$H.rb" 2>&1
 check "状態・.new も rollback で戻る" test "$before" = "$(snap "$H")"
+
+section "uninstall の確認中の変更・base・戻すときの作り直し"
+H="$TMP/uninstall-race"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf 'owner note\n' >"$H/.claude/brain-kit/base/owner-note.md"
+printf '\n持ち主の追記\n' >>"$H/.claude/brain-kit/base/.claude/skills/ren/SKILL.md"
+# 確認を待つ間に settings.json が変わったら、何も変えずに止まる
+backups_before="$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+{ sleep 3; printf '{"owner": true}\n' >"$H/.claude/settings.json"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race1" 2>&1
+check "確認中に settings が変わると止まる" test $? -ne 0
+check "止まったとき settings は持ち主の書いたまま" grep -q '"owner": true' "$H/.claude/settings.json"
+check "止まったとき kit の skill は消えていない" test -f "$H/.claude/skills/aoi/SKILL.md"
+check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
+# 確認を待つ間に kit の skill を持ち主が書き換えたら、それは消さない
+{ sleep 3; printf 'edited while waiting\n' >>"$H/.claude/skills/mio/SKILL.md"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race2" 2>&1
+check "確認中の書き換え: uninstall が 0" test $? -eq 0
+check "確認中に書き換えた skill は残す" grep -q 'edited while waiting' "$H/.claude/skills/mio/SKILL.md"
+check "ほかの kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+check "記録の無い base のファイルは残す" test -f "$H/.claude/brain-kit/base/owner-note.md"
+check "書き換えた base は残す" grep -q '持ち主の追記' "$H/.claude/brain-kit/base/.claude/skills/ren/SKILL.md"
+check "書き換えていない base は消す" test ! -e "$H/.claude/brain-kit/base/.claude/skills/aoi/SKILL.md"
+# 外したあとに持ち主が作り直したものは、--rollback でも上書きしない
+mkdir -p "$H/.claude/skills/aoi"
+printf 'owner recreated\n' >"$H/.claude/skills/aoi/SKILL.md"
+printf '{"owner": "after"}\n' >"$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "作り直しがあっても rollback が 0" test $? -eq 0
+check "作り直した skill は上書きしない" grep -q 'owner recreated' "$H/.claude/skills/aoi/SKILL.md"
+check "書き換えた settings は上書きしない" grep -q '"owner": "after"' "$H/.claude/settings.json"
+check "ほかの外したものは戻る" test -f "$H/.claude/skills/sora/SKILL.md"
+check "manifest も戻る" test -f "$H/.claude/brain-kit/manifest.json"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

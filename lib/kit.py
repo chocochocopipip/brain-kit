@@ -1799,8 +1799,11 @@ def cmd_uninstall(args):
             path = os.path.join(root, name)
             if path == CLAUDE_MANIFEST or path in remove or path in keep or path in unsafe:
                 continue
-            if inside(path, base) and safe(path) and os.path.isfile(path):
+            # base は記録のある kit のファイルの原文だけを消す（記録の sha と一致するもの）。ほかは残す
+            ent = manifest["files"].get(os.path.relpath(path, base)) if inside(path, base) else None
+            if ent and safe(path) and os.path.isfile(path) and sha(open_bytes(path)) == ent.get("sha"):
                 remove.add(path)
+                expected[path] = ent.get("sha")
             else:
                 other.add(path)
         if inside(root, base) and safe(root):
@@ -1808,13 +1811,15 @@ def cmd_uninstall(args):
     # manifest 自体が symlink なら参照先も記録もそのまま残す。
     if safe(CLAUDE_MANIFEST) and os.path.isfile(CLAUDE_MANIFEST):
         remove.add(CLAUDE_MANIFEST)
+        expected[CLAUDE_MANIFEST] = sha(open_bytes(CLAUDE_MANIFEST))
     else:
         unsafe.add(CLAUDE_MANIFEST)
 
-    cur = {}
+    cur, settings_raw = {}, None
     if os.path.lexists(settings_path):
         try:
-            cur = json.loads(open_bytes(settings_path).decode("utf-8"))
+            settings_raw = open_bytes(settings_path)
+            cur = json.loads(settings_raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as e:
             die("settings.json が JSON として読めない: %s" % e)
         if not isinstance(cur, dict):
@@ -1882,23 +1887,39 @@ def cmd_uninstall(args):
         if ask("実行する？ [y/N]", args=args).lower() not in ("y", "yes"):
             print("中止した。何も変えていない。")
             return
+    # 確認を待つ間に settings.json が変わったら、古い計画で上書きしない（何も変えずに止める）
+    now_raw = open_bytes(settings_path) if os.path.lexists(settings_path) and not os.path.isdir(settings_path) else None
+    if now_raw != settings_raw or safe(settings_path) != settings_writable:
+        die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+
+    def unchanged(path):
+        # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる
+        return (safe(path) and os.path.isfile(path) and not os.path.islink(path) and
+                sha(open_bytes(path)) == expected.get(path))
+
     backup = Backup("uninstall", {"brain": brain, "from": VERSION, "to": None})
-    for path in sorted(remove - {CLAUDE_MANIFEST}):
-        # 確認を待つ間に持ち主が書き換えたものは消さない
-        if path in expected and (not os.path.isfile(path) or os.path.islink(path) or
-                                 sha(open_bytes(path)) != expected[path]):
+    backup.meta.update(removed=[], written={})
+
+    def drop(path):
+        if not unchanged(path):
             remove.discard(path)
             keep.add(path)
             print("  残す（確認の間に変わった）: %s" % tilde(path))
-            continue
+            return
         backup.save(path)
+        backup.meta["removed"].append(path)
+        backup._journal()
         os.remove(path)
         directories.add(os.path.dirname(path))
+
+    for path in sorted(remove - {CLAUDE_MANIFEST}):
+        drop(path)
     if settings_remove and settings_writable:
-        put(settings_path, json.dumps(cur, ensure_ascii=False, indent=2) + "\n", backup)
+        text = json.dumps(cur, ensure_ascii=False, indent=2) + "\n"
+        backup.meta["written"][settings_path] = sha(text)
+        put(settings_path, text, backup)
     if CLAUDE_MANIFEST in remove:
-        backup.save(CLAUDE_MANIFEST)
-        os.remove(CLAUDE_MANIFEST)
+        drop(CLAUDE_MANIFEST)
         directories.add(KIT_STATE)
     stops = {CLAUDE} | {os.path.join(CLAUDE, p) for p in ("skills", "hooks", "agents")}
     for directory in sorted(directories, key=len, reverse=True):
@@ -1944,7 +1965,21 @@ def cmd_rollback(args):
     say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
                                         "（--dry-run: 何も変えない）" if args.dry_run else ""))
     restored, removed, left = [], [], []
+    gone = set(meta.get("removed", []))
+    written = meta.get("written", {})
     for path in meta.get("overwritten", []):
+        # uninstall で外したものは、今も無いときだけ戻す。書いた settings.json は書いたときのままのときだけ戻す。
+        # 外したあとに持ち主が作り直したもの・書き換えたもの・symlink に差し替えたものは上書きしない
+        if path in gone:
+            parent = os.path.realpath(os.path.dirname(path))
+            if os.path.lexists(path) or not (parent == os.path.realpath(CLAUDE) or
+                                             parent.startswith(os.path.realpath(CLAUDE) + os.sep)):
+                left.append(path)
+                continue
+        elif path in written:
+            if os.path.islink(path) or not os.path.isfile(path) or sha(open_bytes(path)) != written[path]:
+                left.append(path)
+                continue
         restored.append(path)
     for path, h in meta.get("added", {}).items():
         cur = None
@@ -1959,7 +1994,7 @@ def cmd_rollback(args):
     for p in removed:
         print("  消す（更新で足したもの）: %s" % tilde(p))
     for p in left:
-        print("  残す（足したあとに書き換えられている）: %s" % tilde(p))
+        print("  残す（%sあとに書き換えられている・作られている）: %s" % ("外した" if gone or written else "足した", tilde(p)))
     for w in meta.get("worktrees", []):
         print("  worktree を外す: %s（中身に変更があれば残す）" % tilde(w["path"]))
     if args.dry_run:
