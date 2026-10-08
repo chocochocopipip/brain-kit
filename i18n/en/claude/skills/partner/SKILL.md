@@ -183,6 +183,9 @@ A pipeline board already published with v10 is republished once, at the same URL
 python3 ~/.claude/brain-kit/dashboard/collect.py --out /tmp/board.json   # collect from GitHub (gh)
 ```
 
+If the collect.py output has a stalled-work line (work with no activity for N hours or more), tell the owner about it in **one line only**, in <持ち主の言語> (do not repeat the same content on the same day).
+N hours is taken in this order: `--stall-hours` → environment variable `BRAIN_KIT_STALL_HOURS` → `stall_hours` in `.brain-kit/config.json` → default 24. Invalid values and values of 0 or less are skipped.
+
 - Get the current `version` with `ArtifactData` `get` (collection `board`, doc_id `current`),
   then replace it with `set` (same place, `file_path` set to the json above, `if_version` set to that version). The first time, no `if_version`
 - **The owner's turn** (`board/owner`): `{"items": [{"text": "…", "ref": "owner/repo#N"}], "updated_at": "…"}`.
