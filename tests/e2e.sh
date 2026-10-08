@@ -1120,10 +1120,10 @@ for i in range(2):
     backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
     g["put"](p, "kit%d" % i, backup)
     dirs.append(backup.close())
-for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("legacy_before", None), ("legacy_before", "")):
+for key, bad in (("seq", "2"), ("seq", 0), ("seq", None), ("seq", True), ("legacy_before", None), ("legacy_before", [])):
     meta = g["load_json"](dirs[1] + "/meta.json")
     meta["seq"] = 2
-    meta["legacy_before"] = []
+    meta["legacy_before"] = {}
     meta[key] = bad
     g["write_text"](dirs[1] + "/meta.json", g["dump_json"](meta))
     try:
@@ -1164,6 +1164,32 @@ assert g["read_text"](p) == "old1"
 assert [g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs] == [False, False, True]
 PY
 check "退避: 古い版の kit があとで作った番号の無い退避があれば、決められない所で止まる" test $? -eq 0
+# 古い版の kit（ロックを取らない）が書いている途中に新しい版で更新し、そのあと古い版が書き足した。どれも戻さずに止まる
+HOME="$TMP/order-interleave" python3 - "$KIT" <<'PY' >"$TMP/order-interleave.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+x, y = os.path.join(g["CLAUDE"], "x.md"), os.path.join(g["CLAUDE"], "y.md")
+g["write_text"](x, "ownerX")
+g["write_text"](y, "ownerY")
+old = g["Backup"]("update", {"brain": None, "from": 9, "to": 9})
+del old.meta["seq"], old.meta["legacy_before"]   # 古い版の kit の退避
+g["put"](x, "oldX", old)
+new = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](x, "newX", new)
+g["put"](y, "newY", new)
+new.close()
+g["put"](y, "oldY", old)
+old.close()
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった")
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert (g["read_text"](x), g["read_text"](y)) == ("newX", "oldY")
+assert not g["load_json"](new.dir + "/meta.json")["rolled_back"]
+PY
+check "退避: 古い版の kit が新しい版の更新をまたいで書き足した退避があれば、何も戻さずに止まる" test $? -eq 0
 # 書き換える処理は同じ HOME で 1 つずつ。動いている間の --rollback は何も変えずに止まり、終われば戻せる
 H="$TMP/order-lock"
 HOME="$H" python3 - "$KIT" <<'PY' >"$TMP/order-lock.log" 2>&1

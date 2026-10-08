@@ -921,11 +921,16 @@ def backup_seq(meta):
     return seq if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0 else None
 
 
+def meta_sha(directory):
+    path = os.path.join(directory, "meta.json")
+    return sha(open_bytes(path)) if os.path.isfile(path) else None
+
+
 def scan_backups():
-    """(今ある退避（戻し済みも含む）の通し番号の最大 + 1, 通し番号の無い退避の名前の一覧)。
-    一覧は新しい退避の meta に残し、番号の無い退避がこの退避より前からあったことの証にする
-    （古い版の kit をあとで使うと、番号の無い退避が番号のある退避より新しくなりうる）。"""
-    top, legacy = 0, []
+    """(今ある退避（戻し済みも含む）の通し番号の最大 + 1, {通し番号の無い退避の名前: その meta.json の sha})。
+    一覧は新しい退避の meta に残し、番号の無い退避がこの退避より前に書き終わっていたことの証にする
+    （古い版の kit をあとで・同時に使うと、番号の無い退避が番号のある退避より新しくなりうる）。"""
+    top, legacy = 0, {}
     if os.path.isdir(CLAUDE):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
@@ -933,7 +938,7 @@ def scan_backups():
                 if not isinstance(m, dict):
                     continue
                 if "seq" not in m:
-                    legacy.append(d)
+                    legacy[d] = meta_sha(os.path.join(CLAUDE, d))
                 elif backup_seq(m):
                     top = max(top, backup_seq(m))
     return top + 1, legacy
@@ -2273,7 +2278,7 @@ def cmd_rollback(args):
             if d.startswith("backup-brain-kit-"):
                 m = load_json(os.path.join(CLAUDE, d, "meta.json"))
                 if m and not m.get("rolled_back"):
-                    if "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), list)):
+                    if "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
                         die("退避の記録が壊れている（seq か legacy_before が不正）: %s/meta.json。どれから戻すか決められないので何も変えない"
                             % tilde(os.path.join(CLAUDE, d)), 1)
                     cands.append((backup_order(m, d), d, m))
@@ -2282,8 +2287,10 @@ def cmd_rollback(args):
     cands.sort()
     stamp, d, meta = cands[-1]
     if backup_seq(meta):
-        # 番号の無い退避が、この退避を作ったときに無かった＝あとで古い版の kit が作った。どちらが新しいか決められない
-        later = [c[1] for c in cands if "seq" not in c[2] and c[1] not in meta["legacy_before"]]
+        # 番号の無い退避が、この退避を作ったときに無かったか、そのあとに書き足されている
+        # ＝古い版の kit があとで・同時に動いた。どちらが新しいか決められない
+        later = [c[1] for c in cands if "seq" not in c[2] and
+                 meta["legacy_before"].get(c[1]) != meta_sha(os.path.join(CLAUDE, c[1]))]
         if later:
             die("番号の無い退避 %s が %s よりあとに作られている（古い版の kit で更新した？）。どれから戻すか決められないので何も変えない。"
                 "古い版の kit で --rollback するか、要らない退避を確かめて片付けてから" % (", ".join(later), d), 1)
