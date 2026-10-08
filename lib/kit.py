@@ -1935,8 +1935,8 @@ def plan_uninstall(args):
             if os.path.isdir(here):
                 found.extend(os.path.join(here, name) for name in sorted(os.listdir(here)) if name in text)
         for path in found:
-            path = os.path.abspath(path)
-            if path.startswith(claude + os.sep) and canonical(path):
+            # .. を先に畳まない（link/../bin は link の指す先の親の bin）。中かどうかは実体で見る（canonical）
+            if os.path.isabs(path) and canonical(path):
                 out.setdefault(path, canonical(path))
         for path in candidates:
             if any(f in text for f in forms(path)):
@@ -1976,8 +1976,8 @@ def plan_uninstall(args):
         except (IOError, OSError) as e:
             die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
                 "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
-        found([(w, [t for t in ts if t != user]) for w, ts in named_files(text, sorted(dirs))],
-              "%s から" % os.path.basename(user))
+        # 自分自身を別名で呼ぶものも積む（別名のディレクトリから見た相対を探すため。同じ組は seen が飛ばす）
+        found(named_files(text, sorted(dirs)), "%s から" % os.path.basename(user))
     return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
                 settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
                 unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,

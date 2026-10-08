@@ -1918,6 +1918,30 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "別名からの相対: uninstall が 0" test $? -eq 0
 check "別名のディレクトリから相対で呼ぶ session-end-brain.sh は消さない" test -f "$H/.claude/hooks/session-end-brain.sh"
 check "別名からの相対: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 自分自身を別名で呼び直す：own/disp.sh が hooks/alias.sh（→ own/disp.sh）を呼び、そこから ./brain-digest.js を使う
+# symlink と .. の組み合わせ：~/.claude/link（→ brain-kit/dashboard）/../bin/heavy-lock は brain-kit/bin/heavy-lock
+H="$TMP/uninstall-selfalias"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mkdir -p "$H/.claude/own"
+# shellcheck disable=SC2016  # スクリプトの中で展開させる
+printf '#!/bin/sh\n[ -n "$1" ] && exec sh "$HOME/.claude/hooks/alias.sh"\nnode ./brain-digest.js\n' >"$H/.claude/own/disp.sh"
+ln -s ../own/disp.sh "$H/.claude/hooks/alias.sh"
+ln -s brain-kit/dashboard "$H/.claude/link"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+# 持ち主のフック（自分では kit の SessionEnd を外してある）
+del s["hooks"]["SessionEnd"]
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/own/disp.sh go"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/link/../bin/heavy-lock true"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "自分を別名で呼ぶ: uninstall が 0" test $? -eq 0
+check "別名のディレクトリから相対で使う brain-digest.js は消さない" test -f "$H/.claude/hooks/brain-digest.js"
+check "symlink と .. で指す heavy-lock は消さない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+check "自分を別名で呼ぶ: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 計画のときには無かった持ち主のスクリプトが、確認を待つ間に作られ、kit のファイルを呼ぶ → 止まる
 H="$TMP/uninstall-appear"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
