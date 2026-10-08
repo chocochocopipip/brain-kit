@@ -1736,6 +1736,20 @@ new "$H" --rollback >"$H.rb" 2>&1
 check "もう一度の rollback が 0" test $? -eq 0
 check "もう一度の rollback で settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
 check "もう一度の rollback で kit の skill も戻る" test -f "$H/.claude/skills/aoi/SKILL.md"
+# 読み取り専用の settings.json（0444）と kit の実行ファイル（0555）も、外して戻すとバイトと権限が戻る
+H="$TMP/uninstall-readonly"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+chmod 444 "$H/.claude/settings.json"; chmod 555 "$H/.claude/brain-kit/bin/start-aoi"
+cp "$H/.claude/settings.json" "$H.settings-orig"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "読み取り専用でも uninstall が 0" test $? -eq 0
+check "読み取り専用の kit の実行ファイルも消す" test ! -e "$H/.claude/brain-kit/bin/start-aoi"
+new "$H" --rollback >"$H.rb" 2>&1
+check "読み取り専用でも rollback が 0" test $? -eq 0
+check "読み取り専用の settings.json が元のバイトに戻る" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+mode_is() { python3 -c 'import os, sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o777 != int(sys.argv[2], 8))' "$1" "$2"; }
+check "settings.json の権限 444 が戻る" mode_is "$H/.claude/settings.json" 444
+check "kit の実行ファイルの権限 555 が戻る" mode_is "$H/.claude/brain-kit/bin/start-aoi" 555
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"

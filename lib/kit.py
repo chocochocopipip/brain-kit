@@ -1969,7 +1969,7 @@ def restore_atomic(src, path):
     os.close(fd)
     try:
         shutil.copy2(src, tmp)
-        with open(tmp, "rb+") as f:
+        with open(tmp, "rb") as f:            # 読み取り専用（0444 など）の退避でも開ける形で fsync する
             os.fsync(f.fileno())
         os.replace(tmp, dst)
     finally:
