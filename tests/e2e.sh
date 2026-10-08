@@ -127,6 +127,361 @@ check "相棒の領域 光/" test -f "$H/brain/光/00_核.md"
 check "skill に表示名" grep -q '澪' "$H/.claude/skills/review/SKILL.md"
 check "日本語の id は通さない" sh -c "! HOME='$TMP/x' bash '$KIT/install.sh' --partner 光 --partner-id 光 --yes </dev/null"
 
+# ------------------------------------------------------------------ 2b. 持ち主の言語
+section "持ち主の言語（日本語／English）"
+# Paths are identifiers in both languages. Do not strip arbitrary placeholders or prose.
+no_japanese() {
+  python3 - "$@" <<'PY'
+import pathlib, re, sys
+allowed = ('21_読み直しの答え', '規準の版', '読み直し', '03_任せる範囲', '20_振り返り', '00_核', '01_辞書', '02_関係',
+           '10_日誌', '90_原本', '_テンプレート', '状況', '報告', '規準', '手順', '記録', '評価')
+for path in sys.argv[1:]:
+    text = pathlib.Path(path).read_text(encoding='utf-8')
+    for name in allowed:
+        text = text.replace(name, '')
+    assert not re.search(r'[\u3040-\u30ff\u3400-\u9fff]', text), (path, text)
+PY
+}
+HE="$TMP/lang-en"
+mkdir -p "$HE"
+new "$HE" --lang en --yes --user Ken --projects app --repos example/app >"$HE.log" 2>&1
+check "English install" test $? -eq 0
+check "English config" grep -q '"lang": "en"' "$HE/brain/.brain-kit/config.json"
+check "English machine manifest" grep -q '"lang": "en"' "$HE/.claude/brain-kit/manifest.json"
+check "English default persona and id" test -f "$HE/.claude/skills/partner/SKILL.md"
+check "English partner skill" grep -q 'This skill describes only' "$HE/.claude/skills/partner/SKILL.md"
+check "English setup skill" grep -q "owner's own words" "$HE/.claude/skills/setup/SKILL.md"
+check "English brain rules" grep -q 'Every persona always replies to the owner' "$HE/brain/CLAUDE.md"
+check "English global rules" grep -q 'Always reply to the owner in English' "$HE/.claude/CLAUDE.md"
+check "English brain README" grep -q 'A personal Obsidian vault' "$HE/brain/README.md"
+check "English partner core" grep -q 'Owner: Ken' "$HE/brain/Partner/00_核.md"
+check "English language rule" grep -q 'in English' "$HE/brain/CLAUDE.md"
+check "English install output" no_japanese "$HE.log"
+check "English generated project" no_japanese "$HE/brain/projects/app.md"
+# 文字列のまま書く。
+# shellcheck disable=SC2016
+check "English card repository insertion" grep -q 'Repository: `example/app`' "$HE/brain/dev/状況/app.md"
+check "English installed templates" no_japanese "$HE/.claude/skills/partner/SKILL.md" \
+  "$HE/.claude/skills/setup/SKILL.md" "$HE/brain/CLAUDE.md" "$HE/.claude/CLAUDE.md" \
+  "$HE/brain/README.md" "$HE/brain/Partner/00_核.md"
+check "English start-all" grep -q 'Start method:' "$HE/.claude/brain-kit/bin/start-all"
+check "English start-all has no Japanese" no_japanese "$HE/.claude/brain-kit/bin/start-all"
+check "English start-all keeps the script logic" python3 - "$KIT" <<'PY'
+import re, subprocess, sys
+kit = sys.argv[1]
+# 日本語版と英語版は、文字列とコメントを除けば同じ台本（訳で動きを変えない）
+def code(path):
+    out = []
+    for line in open(path, encoding="utf-8"):
+        line = re.sub(r"'[^']*'|\"[^\"]*\"", "S", line.split(" #")[0] if not line.lstrip().startswith("#") else "")
+        out.append(line.rstrip())
+    return out
+assert code(kit + "/lib/start-all.sh") == code(kit + "/i18n/en/lib/start-all.sh")
+PY
+new "$HE" --doctor >"$HE.doctor" 2>&1
+check "English doctor" test $? -eq 0
+check "English doctor language row" grep -q 'Language.*English.*config.json.*manifest.json' "$HE.doctor"
+check "English doctor output" no_japanese "$HE.doctor"
+before="$(snap "$HE")"; c0="$(commits "$HE")"
+new "$HE" --update >"$HE.up" 2>&1
+check "English update" test $? -eq 0
+check "English update keeps language" grep -q '"lang": "en"' "$HE/brain/.brain-kit/config.json"
+check "English update changes no files" test "$before" = "$(snap "$HE")"
+check "English update creates no commit" test "$c0" = "$(commits "$HE")"
+check "English update output" no_japanese "$HE.up"
+check "English update says unchanged" grep -q 'Changed: none' "$HE.up"
+
+HI="$TMP/lang-interactive-en"
+mkdir -p "$HI"
+printf 'en\nlocal\nno\n\n\n\n\n\n\n\n' | BRAIN_KIT_INTERACTIVE=1 new "$HI" >"$HI.log" 2>&1
+check "Interactive English install" test $? -eq 0
+check "Language is the first prompt" python3 -c 'import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text().startswith("Language / 言語 — en = English, ja = 日本語 [")' "$HI.log"
+check "Later mode prompt is English" grep -q 'Where to run?' "$HI.log"
+check "Later persona prompt is English" grep -q 'Name for Partner' "$HI.log"
+check "Interactive English config" grep -q '"lang": "en"' "$HI/brain/.brain-kit/config.json"
+sed 's/Language \/ 言語 — en = English, ja = 日本語 \[[a-z]*\]: //' "$HI.log" >"$HI.after-language"
+check "Interactive English output after first question" no_japanese "$HI.after-language"
+HJ="$TMP/lang-interactive-ja"
+mkdir -p "$HJ"
+printf 'ja\nlocal\nno\n\n\n\n\n\n\n\n\n\n\n\n' | BRAIN_KIT_INTERACTIVE=1 new "$HJ" >"$HJ.log" 2>&1
+check "Interactive Japanese install" test $? -eq 0
+check "Japanese prompts" grep -q 'どこで動かす？' "$HJ.log"
+check "Japanese name prompt" grep -q '相棒の名前' "$HJ.log"
+check "Japanese config" grep -q '"lang": "ja"' "$HJ/brain/.brain-kit/config.json"
+new "$HJ" --doctor >"$HJ.doctor" 2>&1
+check "Japanese doctor language row" grep -q '言語.*日本語.*config.json.*manifest.json' "$HJ.doctor"
+
+# Missing language is a pre-language Japanese installation, even under an English locale.
+HL="$TMP/lang-legacy"
+mkdir -p "$HL"
+new "$HL" --yes --partner Partner --dev Dev --review Review --release Release >"$HL.log" 2>&1
+python3 - "$HL" <<'PY'
+import json, pathlib, sys
+h = pathlib.Path(sys.argv[1])
+for rel in ('brain/.brain-kit/config.json', '.claude/brain-kit/manifest.json'):
+    p = h / rel
+    d = json.loads(p.read_text()); d.pop('lang', None)
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+git -C "$HL/brain" add -A && git -C "$HL/brain" commit -qm pre-language
+before="$(snap "$HL" | grep -v 'manifest.json$' | grep -v 'config.json$')"
+new "$HL" --update >"$HL.up" 2>&1
+check "Pre-language update" test $? -eq 0
+check "Pre-language config defaults to ja" grep -q '"lang": "ja"' "$HL/brain/.brain-kit/config.json"
+check "Pre-language manifest defaults to ja" grep -q '"lang": "ja"' "$HL/.claude/brain-kit/manifest.json"
+check "Pre-language update keeps kit files" test "$before" = "$(snap "$HL" | grep -v 'manifest.json$' | grep -v 'config.json$')"
+check "Pre-language update output is Japanese" grep -q 'brain-kit の更新' "$HL.up"
+
+printf '\nOwner edit\n' >>"$HL/.claude/skills/setup/SKILL.md"
+cp "$HL/brain/Partner/00_核.md" "$HL.core"
+cp "$HL/.claude/skills/setup/SKILL.md" "$HL.setup"
+before="$(snap "$HL")"; c0="$(commits "$HL")"
+new "$HL" --update --lang en --dry-run >"$HL.dry" 2>&1
+check "Language change dry-run" test $? -eq 0
+check "Language dry-run leaves files unchanged" test "$before" = "$(snap "$HL")"
+check "Language dry-run leaves commits unchanged" test "$c0" = "$(commits "$HL")"
+check "Language dry-run reports change" grep -q 'Language: Japanese → English' "$HL.dry"
+check "Language dry-run explains owner notes" grep -q "does not translate the owner's notes" "$HL.dry"
+new "$HL" --update --lang en >"$HL.en" 2>&1
+check "Language change" test $? -eq 0
+check "Language change saved" grep -q '"lang": "en"' "$HL/brain/.brain-kit/config.json"
+check "Language change manifest saved" grep -q '"lang": "en"' "$HL/.claude/brain-kit/manifest.json"
+check "Untouched partner skill becomes English" grep -q 'This skill describes only' "$HL/.claude/skills/partner/SKILL.md"
+check "Untouched brain rules become English" grep -q 'Every persona always replies to the owner' "$HL/brain/CLAUDE.md"
+check "Owner core unchanged" cmp "$HL.core" "$HL/brain/Partner/00_核.md"
+check "Edited kit file unchanged" cmp "$HL.setup" "$HL/.claude/skills/setup/SKILL.md"
+check "Edited kit file has English .new" grep -q "owner's own words" "$HL/.claude/skills/setup/SKILL.md.new"
+check "Conflict candidate contains no Japanese prose" no_japanese "$HL/.claude/skills/setup/SKILL.md.new"
+
+# 表示だけ英語にしても、作る中身（起動スクリプトなど）と記録は brain の言語のまま
+new "$HJ" --doctor >"$HJ.doctor-ja" 2>&1
+new "$HJ" --doctor --lang en >"$HJ.doctor-en" 2>&1
+check "Display override shows the recorded language" grep -q 'Language.*Japanese (ja)' "$HJ.doctor-en"
+check "Display override keeps kit files up to date" python3 - "$HJ.doctor-ja" "$HJ.doctor-en" <<'PY'
+import re, sys
+ja = re.search(r'最新\s+OK\s+(\d+) 件', open(sys.argv[1], encoding='utf-8').read())
+en = re.search(r'Up to date\s+OK\s+(\d+) files', open(sys.argv[2], encoding='utf-8').read())
+assert ja and en and ja.group(1) == en.group(1), (ja, en)
+PY
+# 呼び名の記録が無いときの既定（持ち主）も brain の言語で作る（表示だけの --lang で中身が変わらない）
+HM="$TMP/lang-malformed"
+mkdir -p "$HM"
+new "$HM" --yes --no-worktrees >"$HM.log" 2>&1
+python3 - "$HM/brain/.brain-kit/config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d.pop('owner', None)
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+new "$HM" --doctor >"$HM.doctor-ja" 2>&1
+new "$HM" --doctor --lang en >"$HM.doctor-en" 2>&1
+check "Owner fallback is rendered in the brain language" python3 - "$HM.doctor-ja" "$HM.doctor-en" <<'PY'
+import re, sys
+ja = re.search(r'最新\s+OK\s+(\d+) 件', open(sys.argv[1], encoding='utf-8').read())
+en = re.search(r'Up to date\s+OK\s+(\d+) files', open(sys.argv[2], encoding='utf-8').read())
+assert ja and en and ja.group(1) == en.group(1), (ja, en)
+PY
+# 壊れた言語の記録は読み飛ばし、次の記録（機械側）か日本語にする。rollback などを止めない
+cp "$HM/brain/.brain-kit/config.json" "$HM.config"
+for bad in '["en"]' '"en-US"' '7'; do
+  python3 - "$HM/brain/.brain-kit/config.json" "$HM/.claude/brain-kit/manifest.json" "$bad" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d['lang'] = json.loads(sys.argv[3])
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+m = json.load(open(sys.argv[2], encoding='utf-8')); m['lang'] = 'en'
+open(sys.argv[2], 'w', encoding='utf-8').write(json.dumps(m, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+  new "$HM" --doctor >"$HM.doctor-bad" 2>&1
+  check "Malformed config language $bad: doctor exits 0" test $? -eq 0
+  check "Malformed config language $bad: falls through to the machine record" grep -q 'Language.*English (en)' "$HM.doctor-bad"
+done
+printf '[1]\n' >"$HM/brain/.brain-kit/config.json"
+new "$HM" --rollback --dry-run >"$HM.rollback" 2>&1
+check "Malformed config: rollback --dry-run still runs" test $? -eq 0
+cp "$HM.config" "$HM/brain/.brain-kit/config.json"
+# 言語の記録が FIFO でも、起動で待たない（言語を探す読みは非ブロッキング。brain の記録・機械側の記録のどちらでも）
+check "FIFO language records: startup does not wait" python3 - "$TMP/lang-fifo-start" "$KIT" <<'PY'
+import os, pathlib, subprocess, sys
+h, kit = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+for rel in ("brain/.brain-kit/config.json", ".claude/brain-kit/manifest.json"):
+    p = h / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(str(p))
+    # 退避が無いので「戻せる更新が無い」で止まる。言語の記録で待たずにそこまで届くこと
+    r = subprocess.run(["bash", str(kit / "install.sh"), "--rollback", "--dry-run"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ, HOME=str(h)), timeout=30)
+    assert r.returncode == 1 and "戻せる更新が無い".encode() in r.stdout, (rel, r.stdout[-400:])
+    p.unlink()
+PY
+# 新しい brain でも、--lang が無ければこの機の記録（English）で作る（install.sh の非対話も kit.py の直接も）
+for how in sh py; do
+  HD="$TMP/lang-machine-$how"
+  mkdir -p "$HD/.claude/brain-kit"
+  printf '{"lang": "en"}\n' >"$HD/.claude/brain-kit/manifest.json"
+  if [ "$how" = sh ]; then
+    new "$HD" --yes --no-worktrees </dev/null >"$HD.log" 2>&1
+  else
+    HOME="$HD" python3 "$KIT/lib/kit.py" install --yes --no-worktrees </dev/null >"$HD.log" 2>&1
+  fi
+  check "Machine language $how: install exits 0" test $? -eq 0
+  check "Machine language $how: config records English" grep -q '"lang": "en"' "$HD/brain/.brain-kit/config.json"
+  check "Machine language $how: manifest stays English" grep -q '"lang": "en"' "$HD/.claude/brain-kit/manifest.json"
+  check "Machine language $how: English templates" grep -q 'Every persona always replies to the owner' "$HD/brain/CLAUDE.md"
+done
+# 英語の install でもリリースの許可の一覧が渡る（英語の skill にもリリースの印がある）
+HR="$TMP/lang-release-perm"
+mkdir -p "$HR"
+new "$HR" --lang en --yes --release-permissions --no-worktrees </dev/null >"$HR.log" 2>&1
+check "English release permissions: install exits 0" test $? -eq 0
+check "English release skill keeps the release mark" grep -q '<!-- brain-kit:role=release' "$HR/.claude/skills/release/SKILL.md"
+check "English release launcher passes --settings" grep -q 'set -- --settings' "$HR/.claude/brain-kit/bin/start-release"
+check "English release permissions output" no_japanese "$HR.log"
+# brain の記録に言語が無くても、機械側が English なら English を引き継ぐ
+python3 - "$HE/brain/.brain-kit/config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8')); d.pop('lang', None)
+open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+PY
+git -C "$HE/brain" add -A && git -C "$HE/brain" commit -qm no-lang
+before="$(snap "$HE" | grep -v 'config.json$')"
+new "$HE" --update >"$HE.up2" 2>&1
+check "Machine manifest language is carried when config has none" grep -q '"lang": "en"' "$HE/brain/.brain-kit/config.json"
+check "Manifest fallback keeps English kit files" test "$before" = "$(snap "$HE" | grep -v 'config.json$')"
+check "Manifest fallback update output" no_japanese "$HE.up2"
+
+python3 - "$HE" <<'PY'
+import json, pathlib, sys, time
+p = pathlib.Path(sys.argv[1]) / '.claude/brain-kit/update-check.json'
+p.write_text(json.dumps({'checked_at': time.time(), 'latest': '999.0.0'}))
+PY
+HOME="$HE" BRAIN_KIT_UPDATE_URL=file:///nonexistent python3 "$HE/.claude/hooks/brain-kit-update-check.py" </dev/null >"$HE.notice"
+check "English update notice" grep -q 'brain-kit update notice:' "$HE.notice"
+check "English notice preview command" grep -q 'npx brainkit-agents@latest --update --dry-run' "$HE.notice"
+check "English notice first reply instruction" grep -q 'first reply to the owner' "$HE.notice"
+check "English notice has no Japanese" no_japanese "$HE.notice"
+# 要約のあとの核の読み直しも持ち主の言語で（brain の記録が先、次に機械側、無ければ日本語）
+check "English core reread hook" python3 - "$HE" "$KIT" <<'PY'
+import json, pathlib, shutil, subprocess, sys
+h, kit = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+def run(home):
+    r = subprocess.run([sys.executable, str(kit / "claude/hooks/brain-kit-core-reread.py")],
+                       input=json.dumps({"source": "compact", "cwd": str(home / "brain")}).encode(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, env={"HOME": str(home), "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0 and r.stderr == b"", r
+    return r.stdout.decode("utf-8")
+assert run(h).startswith("After the context summary, reread the core of Partner Partner (brain-kit hook).\n")
+cfg = h / "brain/.brain-kit/config.json"
+keep = cfg.read_text(encoding="utf-8")
+d = json.loads(keep); d["lang"] = "ja"
+cfg.write_text(json.dumps(d), encoding="utf-8")
+try:
+    assert run(h).startswith("文脈の要約のあと、相棒 Partner の核を読み直す")   # brain の記録が機械側（en）より先
+finally:
+    cfg.write_text(keep, encoding="utf-8")
+PY
+# SessionStart も brain の記録が先、次に機械側、読めなければ日本語
+while read -r c_cfg c_man c_want <&3; do
+  hm="$TMP/lang-notice-$c_cfg-$c_man"
+  mkdir -p "$hm/brain/.brain-kit" "$hm/.claude/brain-kit"
+  case "$c_cfg" in none) ;; broken) printf '{' >"$hm/brain/.brain-kit/config.json" ;; *) printf '{"lang": "%s"}\n' "$c_cfg" >"$hm/brain/.brain-kit/config.json" ;; esac
+  python3 - "$hm" "$c_man" <<'PY'
+import json, pathlib, sys, time
+h = pathlib.Path(sys.argv[1]) / '.claude/brain-kit'
+m = {'version': 11, 'package_version': '11.0.0'}
+if sys.argv[2] != 'none':
+    m['lang'] = sys.argv[2]
+(h / 'manifest.json').write_text(json.dumps(m))
+(h / 'update-check.json').write_text(json.dumps({'checked_at': time.time(), 'latest': '999.0.0'}))
+PY
+  HOME="$hm" BRAIN_KIT_UPDATE_URL=file:///nonexistent python3 "$KIT/claude/hooks/brain-kit-update-check.py" </dev/null >"$hm.notice"
+  if [ "$c_want" = en ]; then
+    check "SessionStart 言語（config ${c_cfg}・manifest ${c_man}）は English" grep -q 'brain-kit update notice:' "$hm.notice"
+  else
+    check "SessionStart 言語（config ${c_cfg}・manifest ${c_man}）は日本語" grep -q 'brain-kit の更新のお知らせ' "$hm.notice"
+  fi
+done 3<<'CASES'
+en ja en
+ja en ja
+broken en en
+none none ja
+CASES
+
+if [ -n "$NODE" ]; then
+  mkdir -p "$TMP/lang-hook-bin"
+  ln -s "$NODE" "$TMP/lang-hook-bin/node"
+  # Fake timeout forwards to the fake summarizer, which captures its input and emits nothing.
+  printf '#!/bin/sh\nshift\nexec "$@"\n' >"$TMP/lang-hook-bin/timeout"
+# 文字列のまま書く。
+# shellcheck disable=SC2016
+  printf '#!/bin/sh\ncat >"$HOOK_PROMPT"\n' >"$TMP/lang-hook-bin/claude"
+  chmod +x "$TMP/lang-hook-bin/timeout" "$TMP/lang-hook-bin/claude"
+  printf '%s\n' '{"type":"user","message":{"content":"Inspect the project"}}' >"$TMP/lang-transcript.jsonl"
+  for hook_lang in en ja; do
+    if [ "$hook_lang" = en ]; then hook_home="$HE"; else hook_home="$HJ"; fi
+    python3 - "$TMP/lang-transcript.jsonl" <<'PY' >"$TMP/lang-hook-input"
+import json, sys
+print(json.dumps({'transcript_path':sys.argv[1], 'session_id':'language-test', 'cwd':'project', 'reason':'exit'}))
+PY
+    HOME="$hook_home" HOOK_PROMPT="$TMP/$hook_lang.prompt" PATH="$TMP/lang-hook-bin:$PATH" \
+      bash "$KIT/claude/hooks/session-end-brain.sh" <"$TMP/lang-hook-input"
+    check "SessionEnd $hook_lang exits successfully" test $? -eq 0
+    if [ "$hook_lang" = en ]; then
+      check "English SessionEnd heading" grep -q 'Claude Code session' "$hook_home/brain/daily/$(date +%F).md"
+      check "English SessionEnd fallback" grep -q '### Done' "$hook_home/brain/daily/$(date +%F).md"
+      check "English SessionEnd fields and text" no_japanese "$hook_home/brain/daily/$(date +%F).md"
+      check "English summarizer prompt" grep -q 'English Markdown summary' "$TMP/en.prompt"
+      check "English summarizer headings" grep -q '### Open items' "$TMP/en.prompt"
+    else
+      check "Japanese SessionEnd heading" grep -q 'Claude Code セッション' "$hook_home/brain/daily/$(date +%F).md"
+      check "Japanese SessionEnd fallback" grep -q '### やったこと' "$hook_home/brain/daily/$(date +%F).md"
+    fi
+  done
+  # brain の記録が機械側より先。読めない記録は飛ばし、どちらも無ければ日本語
+  while read -r c_cfg c_man c_want <&3; do
+    set -- "$c_cfg" "$c_man" "$c_want"
+    hm="$TMP/lang-hook-$1-$2"
+    mkdir -p "$hm/brain/daily" "$hm/brain/.brain-kit" "$hm/.claude/brain-kit" "$hm/.claude/hooks"
+    cp "$KIT/claude/hooks/brain-digest.js" "$hm/.claude/hooks/"
+    case "$1" in none) ;; broken) printf '{' >"$hm/brain/.brain-kit/config.json" ;; *) printf '{"lang": "%s"}\n' "$1" >"$hm/brain/.brain-kit/config.json" ;; esac
+    case "$2" in none) ;; *) printf '{"lang": "%s"}\n' "$2" >"$hm/.claude/brain-kit/manifest.json" ;; esac
+    HOME="$hm" HOOK_PROMPT="$hm.prompt" PATH="$TMP/lang-hook-bin:$PATH" \
+      bash "$KIT/claude/hooks/session-end-brain.sh" <"$TMP/lang-hook-input"
+    check "SessionEnd 言語（config ${1}・manifest ${2}）が 0" test $? -eq 0
+    if [ "$3" = en ]; then
+      check "SessionEnd 言語（config ${1}・manifest ${2}）は English" grep -q '### Done' "$hm/brain/daily/$(date +%F).md"
+    else
+      check "SessionEnd 言語（config ${1}・manifest ${2}）は日本語" grep -q '### やったこと' "$hm/brain/daily/$(date +%F).md"
+    fi
+  done 3<<'CASES'
+en ja en
+broken en en
+none none ja
+CASES
+  # 言語の記録が FIFO でも、フックは待たずに次の記録（機械側）へ進む
+  check "Hooks do not wait on a FIFO language record" python3 - "$TMP/lang-fifo" "$KIT" "$TMP/lang-hook-bin" "$TMP/lang-hook-input" <<'PY'
+import json, os, pathlib, subprocess, sys, time
+h, kit, hbin, inp = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+for d in ("brain/daily", "brain/.brain-kit", ".claude/brain-kit", ".claude/hooks"):
+    (h / d).mkdir(parents=True, exist_ok=True)
+os.mkfifo(str(h / "brain/.brain-kit/config.json"))
+(h / ".claude/brain-kit/manifest.json").write_text(json.dumps({"version": 11, "package_version": "11.0.0", "lang": "en"}))
+(h / ".claude/brain-kit/update-check.json").write_text(json.dumps({"checked_at": time.time(), "latest": "999.0.0"}))
+(h / ".claude/hooks/brain-digest.js").write_bytes((kit / "claude/hooks/brain-digest.js").read_bytes())
+env = dict(os.environ, HOME=str(h), PATH=hbin + os.pathsep + os.environ["PATH"], HOOK_PROMPT=str(h / "prompt"),
+           BRAIN_KIT_UPDATE_URL="file:///nonexistent")
+start = subprocess.run([sys.executable, str(kit / "claude/hooks/brain-kit-update-check.py")], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, env=env, timeout=10)
+assert b"brain-kit update notice:" in start.stdout, start.stdout
+with open(inp, "rb") as f:
+    end = subprocess.run(["bash", str(kit / "claude/hooks/session-end-brain.sh")], stdin=f, env=env, timeout=20)
+assert end.returncode == 0
+assert "### Done" in next((h / "brain/daily").iterdir()).read_text(encoding="utf-8")
+PY
+else
+  printf '  skip SessionEnd の言語（node が無い。フック自体も node が要る）\n'
+fi
+check "English source stamps" python3 "$KIT/tools/i18n-stamp.py"
+check "Message catalog coverage" python3 "$KIT/tools/i18n-stamp.py" --catalog
+
 # ------------------------------------------------------------------ 3. v9 → v10（日本語の名前）
 section "v9 → v10（日本語の名前）"
 H9="$TMP/v9-ja"
@@ -2965,6 +3320,12 @@ check "停滞: doctor の PR" grep -q 'レビュー済みで未リリースの P
 check "停滞: doctor の開発" grep -q 'セッション Ren.*止まっている' "$H.doctor"
 check "停滞: doctor のレビュー" grep -q 'セッション Mio.*記録なし' "$H.doctor"
 check "停滞: doctor の次にやること" grep -q '止まっている仕事を確かめる' "$H.doctor"
+PATH="$TMP/fakegh:$PATH" new "$H" --doctor --lang en >"$H.doctor-en" 2>&1
+check "停滞: 英語の doctor が 0" test $? -eq 0
+check "停滞: 英語の doctor の節" grep -q '\[Stalled work\]' "$H.doctor-en"
+check "停滞: 英語の doctor の issue" grep -q 'Issue in progress.*app#12' "$H.doctor-en"
+check "停滞: 英語の次にやること" grep -q 'Check stalled work (Stalled (no activity for 24 hours or more): Issues in progress app#12' "$H.doctor-en"
+check "停滞: 英語の doctor に日本語が残らない" no_japanese "$H.doctor-en"
 PATH="$TMP/fakegh:$PATH" new "$H" --doctor --stall-hours 60 >"$H.doctor60" 2>&1
 check "停滞: doctor に引数を渡せる" test $? -eq 0
 check "停滞: doctor の閾値 60" grep -q '60 時間以上動きなし' "$H.doctor60"
@@ -4093,7 +4454,8 @@ PY
 check "許可: 無効時の全起動は前の生成結果と同一" test $? -eq 0
 for answer in y n; do
   hi="$TMP/permissions-interactive-$answer"; mkdir -p "$hi"
-  printf '%s\n' "$answer" | BRAIN_KIT_INTERACTIVE=1 HOME="$hi" bash "$KIT/install.sh" --mode local --no-codex \
+  # 言語の質問は --lang で飛ばし、許可の質問だけに答える
+  printf '%s\n' "$answer" | BRAIN_KIT_INTERACTIVE=1 HOME="$hi" bash "$KIT/install.sh" --lang ja --mode local --no-codex \
     --partner Aoi --dev Ren --review Mio --release Sora --user Ken --projects '' --repos '' --no-worktrees >"$hi.log" 2>&1
   check "許可: 対話 $answer の導入" test $? -eq 0
   check "許可: 対話 $answer の選択を記録" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["release_permissions"] == (sys.argv[2] == "y")' "$hi/brain/.brain-kit/config.json" "$answer"

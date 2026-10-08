@@ -33,6 +33,26 @@ read_field() {
     });' "$1" 2>/dev/null
 }
 
+# Owner language: the brain's config first, then the machine manifest, then Japanese
+# (the behavior before languages existed). Any read error falls through; never fails.
+OWNER_LANG="$(node -e '
+  // FIFO などが置かれていても待たない：非ブロッキングで開き、普通のファイルだけを 1 MiB まで読む
+  const fs=require("fs");
+  for (const p of process.argv.slice(1)) {
+    let fd = null;
+    try {
+      fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      if (!fs.fstatSync(fd).isFile()) continue;
+      const buf = Buffer.alloc(1024 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      const l = JSON.parse(buf.subarray(0, n).toString("utf8")).lang;
+      if (l === "en" || l === "ja") { process.stdout.write(l); process.exit(0); }
+    } catch {} finally { if (fd !== null) { try { fs.closeSync(fd); } catch {} } }
+  }
+  process.stdout.write("ja");
+' "$BRAIN/.brain-kit/config.json" "$HOME/.claude/brain-kit/manifest.json" 2>/dev/null)" || OWNER_LANG=ja
+[ "$OWNER_LANG" = en ] || OWNER_LANG=ja
+
 TRANSCRIPT="$(read_field transcript_path)"
 SESSION_ID="$(read_field session_id)"
 SESSION_CWD="$(read_field cwd)"
@@ -76,6 +96,30 @@ PROMPT='あなたは開発者の作業ログ係です。以下は Claude Code �
 --- セッション記録 ---
 '
 
+if [ "$OWNER_LANG" = en ]; then
+  PROMPT='You keep a developer work log. Below is one Claude Code session.
+Write an English Markdown summary. Output only the body, without introduction, closing remarks, or code fences.
+
+Include these three headings in this order:
+
+### Done
+List work actually completed, with concrete file paths and commands. Do not guess.
+
+### Decisions
+List decisions and their reasons. If there were none, write "- none".
+
+### Open items
+List remaining tasks, blockers, and next steps. If there are none, write "- none".
+
+Constraints:
+- Do not invent facts or describe unperformed work as complete.
+- Keep the entire summary within 30 lines.
+- Answer directly without using any tools.
+
+--- Session record ---
+'
+fi
+
 SUMMARY=""
 if command -v claude >/dev/null 2>&1; then
   SUMMARY="$(
@@ -93,11 +137,18 @@ if [ -z "$(printf '%s' "$SUMMARY" | tr -d '[:space:]')" ]; then
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
       const asks=s.split("\n\n").filter(p=>p.startsWith("## USER\n"))
         .map(p=>p.slice(8).split("\n")[0].slice(0,160));
+      if (process.argv[1] === "en") {
+        process.stdout.write(
+          "### Done\n- (Automatic summary failed. Requests from this session follow.)\n" +
+          asks.map(a=>"- "+a).join("\n") +
+          "\n\n### Decisions\n- Not recorded (fill in manually)\n\n### Open items\n- This session could not be summarized automatically\n");
+        return;
+      }
       process.stdout.write(
         "### やったこと\n- (自動要約に失敗。以下はこのセッションの依頼内容)\n" +
         asks.map(a=>"- "+a).join("\n") +
         "\n\n### 決定事項\n- 未記録（手動で補完すること）\n\n### 未解決事項\n- このセッションの要約が自動生成できなかった\n");
-    });' 2>/dev/null)"
+    });' "$OWNER_LANG" 2>/dev/null)"
 fi
 
 DATE="$(date +%F)"
@@ -121,10 +172,17 @@ fi
 # バッククォートは Markdown の記号。
 # shellcheck disable=SC2016
 {
-  printf '\n## %s Claude Code セッション\n\n' "$TIME"
-  printf -- '- 作業ディレクトリ: `%s`\n' "${SESSION_CWD:-unknown}"
-  printf -- '- セッションID: `%s`\n' "${SESSION_ID:-unknown}"
-  printf -- '- 終了理由: `%s`\n\n' "${REASON:-unknown}"
+  if [ "$OWNER_LANG" = en ]; then
+    printf '\n## %s Claude Code session\n\n' "$TIME"
+    printf -- '- Working directory: `%s`\n' "${SESSION_CWD:-unknown}"
+    printf -- '- Session ID: `%s`\n' "${SESSION_ID:-unknown}"
+    printf -- '- End reason: `%s`\n\n' "${REASON:-unknown}"
+  else
+    printf '\n## %s Claude Code セッション\n\n' "$TIME"
+    printf -- '- 作業ディレクトリ: `%s`\n' "${SESSION_CWD:-unknown}"
+    printf -- '- セッションID: `%s`\n' "${SESSION_ID:-unknown}"
+    printf -- '- 終了理由: `%s`\n\n' "${REASON:-unknown}"
+  fi
   printf '%s\n' "$SUMMARY"
 } >>"$NOTE"
 

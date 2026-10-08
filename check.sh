@@ -57,7 +57,7 @@ while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -path ./.git -prun
 g() { # g <-E|-F> <pattern> : 一致した行。grep が壊れていたら（終了コード 2 以上）止める
   local out rc
   out="$(grep -ni "$1" -- "$2" /dev/null ${FILES[@]+"${FILES[@]}"})"; rc=$?
-  if [ "$rc" -ge 2 ]; then echo "error: grep が失敗した（$rc）。この grep では確かめられない" >&2; exit 2; fi
+  if [ "$rc" -ge 2 ]; then echo "error: grep が失敗した（${rc}）。この grep では確かめられない" >&2; exit 2; fi
   printf '%s' "$out"
 }
 runE() { report "$1" "$(g -E "$2" | grep -viE -- "$ALLOW")"; }

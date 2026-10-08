@@ -5,7 +5,7 @@
 #   dst の書き方: ~/ = $HOME、{brain} = brain の場所、{<役>.id} {<役>.name}（役 = partner dev review release）
 #   opt:<key> = brain の設定で <key>: true のときだけ使う
 #   flags: render = 置き換えの印を埋める / skill:<役> = name: 行をその役の id にする / exec = 実行権限
-claude/CLAUDE.md	~/.claude/CLAUDE.md
+claude/CLAUDE.md	~/.claude/CLAUDE.md	render
 claude/skills/partner/SKILL.md	~/.claude/skills/{partner.id}/SKILL.md	render,skill:partner
 claude/skills/dev/SKILL.md	~/.claude/skills/{dev.id}/SKILL.md	render,skill:dev
 claude/skills/review/SKILL.md	~/.claude/skills/{review.id}/SKILL.md	render,skill:review

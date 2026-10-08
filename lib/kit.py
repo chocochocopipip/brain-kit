@@ -45,6 +45,72 @@ def read_version():
         return 0
 
 
+LANG_NAMES = {"ja": "日本語", "en": "English"}
+_LANG = "ja"
+_CATALOG = None
+
+
+def set_lang(code):
+    global _LANG
+    _LANG = code if code in LANG_NAMES else "ja"
+
+
+def M(msgid, lang=None):
+    """表示文の翻訳。lang を渡すと、表示の言語ではなくその言語で返す（brain に書く中身は cfg の言語で作る）。"""
+    global _CATALOG
+    if (lang or _LANG) == "ja":
+        return msgid
+    if _CATALOG is None:
+        _CATALOG = load_json(os.path.join(KIT, "i18n", "en", "messages.json"), {}) or {}
+    return _CATALOG.get(msgid, msgid)
+
+
+def record_lang(*records):
+    """記録から持ち主の言語を読む。前の記録が使えなければ次へ、どれも無ければ日本語（言語を選べる前の入れ方）。
+    dict でない記録や ja/en 以外の値は読み飛ばす（壊れた記録で rollback などを止めない）。"""
+    for record in records:
+        value = record.get("lang") if isinstance(record, dict) else None
+        if isinstance(value, str) and value in LANG_NAMES:
+            return value
+    return "ja"
+
+
+def regular_json(path):
+    """言語の記録を探すための読み。FIFO などで待たない（非ブロッキングで開き、普通のファイルだけ 1 MiB まで）。
+    読めなければ None。rollback などの前に読むので、壊れた・特殊な記録で止めない。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return json.loads(os.read(fd, 1024 * 1024).decode("utf-8"))
+    except Exception:  # noqa: BLE001  読めない記録は次の記録へ
+        return None
+    finally:
+        os.close(fd)
+
+
+def startup_lang(config):
+    """表示の言語：brain の記録、無ければこの機の記録（要るときだけ読む）、無ければ日本語。"""
+    record = regular_json(config)
+    value = record.get("lang") if isinstance(record, dict) else None
+    if isinstance(value, str) and value in LANG_NAMES:
+        return value
+    return record_lang(regular_json(CLAUDE_MANIFEST))
+
+
+def content_lang(cfg):
+    """brain に書く中身の言語（表示の --lang とは別）。"""
+    return record_lang(cfg)
+
+
+def language_name(code):
+    # The stored template mark is the native name; owner-facing output is translated.
+    return M(LANG_NAMES.get(code, LANG_NAMES["ja"]))
+
+
 VERSION = read_version()
 # この kit の動作を確かめた Claude Code の版。上げるときは CHANGELOG にも記す（CHECKLIST.md）。
 VERIFIED_CLAUDE_CODE = "2.1.294"
@@ -137,7 +203,7 @@ def ask(q, default="", args=None):
         a = sys.stdin.readline()
     except (EOFError, KeyboardInterrupt):
         print()
-        die("中断した", 130)
+        die(M("中断した"), 130)
     if a == "":
         return default
     a = a.strip()
@@ -161,18 +227,18 @@ def claude_version_warning(missing=False, result=None):
     """版の注意を最大 1 行で返す。確認できなくても処理は続ける。"""
     if result is None:
         if not have("claude"):
-            return "warn: Claude Code CLI（claude）が無い。版を確かめられない（このまま続ける）" if missing else None
+            return M("warn: Claude Code CLI（claude）が無い。版を確かめられない（このまま続ける）") if missing else None
         result = run(["claude", "--version"], timeout=15)
     rc, out, err = result
     match = re.match(r"\s*(\d+\.\d+\.\d+)", out)
     if rc != 0 or not match:
         lines = (out or err).splitlines()
-        detail = lines[0][:60] if lines else "終了コード %s、出力なし" % rc
-        return "warn: Claude Code の版を読めない（claude --version: %s）。このまま続ける" % detail
+        detail = lines[0][:60] if lines else M("終了コード %s、出力なし") % rc
+        return M("warn: Claude Code の版を読めない（claude --version: %s）。このまま続ける") % detail
     version = match.group(1)
     if tuple(map(int, version.split("."))) < tuple(map(int, VERIFIED_CLAUDE_CODE.split("."))):
-        return ("warn: Claude Code %s は動作を確かめた版（%s）より古い。"
-                "claude update で上げられる（このまま続ける）" % (version, VERIFIED_CLAUDE_CODE))
+        return (M("warn: Claude Code %s は動作を確かめた版（%s）より古い。"
+                "claude update で上げられる（このまま続ける）") % (version, VERIFIED_CLAUDE_CODE))
     return None
 
 
@@ -223,7 +289,9 @@ def area_of(cfg, role):
 
 
 def marks(cfg):
-    t = {"<持ち主名>": cfg.get("owner") or "持ち主", "<brain>": tilde(cfg["brain"])}
+    lang = content_lang(cfg)
+    t = {"<持ち主名>": cfg.get("owner") or M("持ち主", lang), "<brain>": tilde(cfg["brain"])}
+    t["<持ち主の言語>"] = LANG_NAMES[lang]
     for r in ROLES:
         p = cfg["personas"].get(r)
         if not p:
@@ -312,12 +380,21 @@ def owner_files(cfg):
     return rows
 
 
+def source_path(src, cfg):
+    lang = content_lang(cfg)
+    if lang in LANG_NAMES and lang != "ja":
+        translated = os.path.join(KIT, "i18n", lang, src)
+        if os.path.isfile(translated):
+            return translated
+    return os.path.join(KIT, src)
+
+
 def source_text(src, cfg, flags):
     if src == "gen:start-all":
         return gen_start_all(cfg)
     if src.startswith("gen:start:"):
         return gen_start(src.split(":")[2], cfg)
-    return render(io.open(os.path.join(KIT, src), encoding="utf-8").read(), cfg, flags)
+    return render(io.open(source_path(src, cfg), encoding="utf-8").read(), cfg, flags)
 
 
 def gen_start_all(cfg):
@@ -336,39 +413,40 @@ def gen_start_all(cfg):
         lines.extend([
             "ids+=(%s)" % shlex.quote(p["id"]),
             "names+=(%s)" % shlex.quote(p["name"]),
-            "labels+=(%s)" % shlex.quote(ROLE_JA[role]),
+            "labels+=(%s)" % shlex.quote(M(ROLE_JA[role], content_lang(cfg))),
             "dir=%s" % path_expr(worktree_of(cfg, role)),
             '[ -d "$dir" ] || dir=%s' % path_expr(cfg["brain"]),
             'dirs+=("$dir")',
             'scripts+=("$HOME"/%s)' % shlex.quote(".claude/brain-kit/bin/start-" + p["id"]),
         ])
-    template = read_text(os.path.join(KIT, "lib", "start-all.sh"))
+    template = read_text(source_path("lib/start-all.sh", cfg))
     return template.replace("# @personas@", "\n".join(lines))
 
 
 def gen_start(role, cfg):
     p = persona(cfg, role)
+    lang = content_lang(cfg)   # 中身は brain の言語（--lang で表示だけ変えても同じバイト）
     wt = worktree_of(cfg, role)
     lines = [
         "#!/usr/bin/env bash",
-        "# %s（%s）を起動する。brain-kit が作った（--update で上がる。手で直すなら別名で写す）" % (p["name"], ROLE_JA[role]),
-        "#   start-%s [claude に渡す引数...]" % p["id"],
+        M("# %s（%s）を起動する。brain-kit が作った（--update で上がる。手で直すなら別名で写す）", lang) % (p["name"], M(ROLE_JA[role], lang)),
+        M("#   start-%s [claude に渡す引数...]", lang) % p["id"],
         "set -u",
         'dir="%s"' % wt,
         '[ -d "$dir" ] || dir="%s"' % cfg["brain"],
         'cd "$dir" || exit 1',
     ]
     if role != "partner":
-        lines.append("# main の決定・規約を取り込んでから始める（衝突したら何もしない）")
+        lines.append(M("# main の決定・規約を取り込んでから始める（衝突したら何もしない）", lang))
         lines.append('git merge -q --no-edit main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1')
     # worktree が無く brain で始まるときも、要約のあとのフックが自分の人格の核を読むように役を渡す
     lines.append("export BRAIN_KIT_PERSONA=%s" % role)
     if role == "release" and cfg.get("release_permissions"):
         lines.extend([
-            "# 持ち主が選んだ許可の一覧（本番の SQL・マージ・環境変数）。この人格だけが読む。",
-            "# brain の設定で選んでいて、kit の記録（manifest）がこの brain のこのリリース担当を指し、",
-            "# skill がリリースの印を持つときだけ渡す",
-            "# （外したあと・--uninstall のあと・戻したあとに一覧が残っていても読まない）",
+            M("# 持ち主が選んだ許可の一覧（本番の SQL・マージ・環境変数）。この人格だけが読む。", lang),
+            M("# brain の設定で選んでいて、kit の記録（manifest）がこの brain のこのリリース担当を指し、", lang),
+            M("# skill がリリースの印を持つときだけ渡す", lang),
+            M("# （外したあと・--uninstall のあと・戻したあとに一覧が残っていても読まない）", lang),
             'perm="$HOME/.claude/brain-kit/permissions/%s.json"' % p["id"],
             'conf=%s' % shlex.quote(config_path(cfg["brain"])),
             "if [ -f \"$perm\" ] && python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); "
@@ -495,9 +573,9 @@ def legacy_version(cfg, fps):
             continue
         votes = vs if votes is None else (votes & vs or votes)
     if not votes:
-        return None, "v9 以前（版の記録なし。kit の skill が手で直してあり、版を絞れない）"
+        return None, M("v9 以前（版の記録なし。kit の skill が手で直してあり、版を絞れない）")
     lo, hi = min(votes), max(votes)
-    return hi, ("v%d" % hi if lo == hi else "v%d〜v%d" % (lo, hi)) + "（版の記録なし。ファイルの形から判定）"
+    return hi, ("v%d" % hi if lo == hi else M("v%d〜v%d") % (lo, hi)) + M("（版の記録なし。ファイルの形から判定）")
 
 
 def legacy_marks(cfg):
@@ -523,26 +601,26 @@ def choose_persona(role, args, used_ids, cmanifest, fixed=None):
         return fixed
     name = getattr(args, role) or ""
     if not name:
-        name = ask("  %sの名前（呼び名。日本語でよい）" % ROLE_JA[role], ROLE_JA[role], args)
+        name = ask(M("  %sの名前（呼び名。日本語でよい）") % M(ROLE_JA[role]), M(ROLE_JA[role]), args)
     if not valid_name(name):
-        die("%sの名前が空か、使えない文字（/ 空白 < >）を含む: %r" % (ROLE_JA[role], name), 2)
+        die(M("%sの名前が空か、使えない文字（/ 空白 < >）を含む: %r") % (M(ROLE_JA[role]), name), 2)
     if role == "partner" and name in RESERVED_DIRS:
-        die("相棒の名前 %s は brain のディレクトリ名と重なる。別の名前にする" % name, 2)
+        die(M("相棒の名前 %s は brain のディレクトリ名と重なる。別の名前にする") % name, 2)
     pid = getattr(args, role + "_id") or to_id(name)
     if not pid:
-        pid = ask("  %s の英字 id（skill 名・ブランチ・ラベル・起動スクリプトに使う。小文字・数字・-）" % name,
+        pid = ask(M("  %s の英字 id（skill 名・ブランチ・ラベル・起動スクリプトに使う。小文字・数字・-）") % name,
                   DEFAULT_ID[role], args)
     pid = pid.lower()
     if not ID_RE.match(pid):
-        die("%s の id %r が使えない（小文字・数字・- で 40 字まで）。--%s-id で渡す" % (name, pid, role), 2)
+        die(M("%s の id %r が使えない（小文字・数字・- で 40 字まで）。--%s-id で渡す") % (name, pid, role), 2)
     while pid in used_ids or pid in ("setup", "grilling") or id_taken_by_other(pid, cmanifest):
-        why = "ほかの役と重なる" if pid in used_ids or pid in ("setup", "grilling") else \
-            "~/.claude/skills/%s が kit の外で既にある" % pid
+        why = M("ほかの役と重なる") if pid in used_ids or pid in ("setup", "grilling") else \
+            M("~/.claude/skills/%s が kit の外で既にある") % pid
         if not interactive(args):
-            die("%s の id %r は %s。--%s-id <別の id> で渡す" % (name, pid, why, role), 2)
-        pid = ask("  id %s は%s。別の id" % (pid, why), pid + "-2", args).lower()
+            die(M("%s の id %r は %s。--%s-id <別の id> で渡す") % (name, pid, why, role), 2)
+        pid = ask(M("  id %s は%s。別の id") % (pid, why), pid + "-2", args).lower()
         if not ID_RE.match(pid):
-            die("id %r が使えない" % pid, 2)
+            die(M("id %r が使えない") % pid, 2)
     used_ids.add(pid)
     p = {"name": name, "id": pid}
     if role != "partner":
@@ -593,9 +671,9 @@ def plan_settings(codex=False, manifest=None, text=None):
         try:
             cur = json.loads(raw)
         except ValueError as e:
-            die("%s が JSON として読めない: %s" % (path, e))
+            die(M("%s が JSON として読めない: %s") % (path, e))
         if not isinstance(cur, dict):
-            die("settings.json は JSON オブジェクトにする", 2)
+            die(M("settings.json は JSON オブジェクトにする"), 2)
     manifest = manifest or {}
     record = {}
     for part, values in manifest.get("settings", {}).items():
@@ -654,7 +732,8 @@ def plan_settings(codex=False, manifest=None, text=None):
             else:
                 dst[key] = value
 
-    def conflict(entry, old, rec, new, reason="両方が変えた"):
+    def conflict(entry, old, rec, new, reason=None):
+        reason = reason or M("両方が変えた")
         plan["conflict"].append({"entry": entry, "name": settings_name(entry), "reason": reason,
                                  "ours": None if old is absent else old, "recorded": rec,
                                  "theirs": None if new is absent else new})
@@ -672,9 +751,9 @@ def plan_settings(codex=False, manifest=None, text=None):
         if len(removed) > 1 or len(added) > 1:
             paired.update(removed + added)
             for e in removed:
-                conflict(e, current(e), record.get(e), absent, "command の変更が複数あり対応が決まらない")
+                conflict(e, current(e), record.get(e), absent, M("command の変更が複数あり対応が決まらない"))
             for e in added:
-                conflict(e, absent, None, theirs[e], "command の変更が複数あり対応が決まらない")
+                conflict(e, absent, None, theirs[e], M("command の変更が複数あり対応が決まらない"))
             continue
         for old_entry, new_entry in zip(removed, added):
             paired.update((old_entry, new_entry))
@@ -688,8 +767,8 @@ def plan_settings(codex=False, manifest=None, text=None):
             else:
                 # 古い記録は残す（消すと次の更新で新しい command を未登録として足してしまう）。
                 conflict(old_entry, old, rec, new,
-                         "持ち主が消した／kit が変えた" if old is absent else "持ち主が変えた／command が変わった")
-                conflict(new_entry, current(new_entry), None, new, "command の変更先（元の項目と一緒に確認する）")
+                         M("持ち主が消した／kit が変えた") if old is absent else M("持ち主が変えた／command が変わった"))
+                conflict(new_entry, current(new_entry), None, new, M("command の変更先（元の項目と一緒に確認する）"))
 
     for entry in dict.fromkeys(list(theirs) + list(record)):
         if entry in paired:
@@ -705,8 +784,8 @@ def plan_settings(codex=False, manifest=None, text=None):
                 plan["keep"].append(name)
             continue
         if entry in pending and old_sha != new_sha:
-            conflict(entry, old, rec, new, "未登録の項目と kit が違う" if rec is None else
-                     "持ち主が消した／kit が変えた" if old is absent else "両方が変えた")
+            conflict(entry, old, rec, new, M("未登録の項目と kit が違う") if rec is None else
+                     M("持ち主が消した／kit が変えた") if old is absent else M("両方が変えた"))
             continue
         if rec is None:
             if old is absent:
@@ -716,7 +795,7 @@ def plan_settings(codex=False, manifest=None, text=None):
             elif old_sha == new_sha:
                 owned[entry] = new_sha
             elif entry[0] != "statusLine":
-                conflict(entry, old, rec, new, "未登録の項目と kit が違う")
+                conflict(entry, old, rec, new, M("未登録の項目と kit が違う"))
         elif new is absent:
             owned.pop(entry)
             if old is not absent:
@@ -727,7 +806,7 @@ def plan_settings(codex=False, manifest=None, text=None):
                     plan["keep"].append(name)
         elif old is absent:
             if new_sha != rec:
-                conflict(entry, old, rec, new, "持ち主が消した／kit が変えた")
+                conflict(entry, old, rec, new, M("持ち主が消した／kit が変えた"))
         elif old_sha == new_sha:
             owned[entry] = new_sha
         elif old_sha == rec:
@@ -738,7 +817,7 @@ def plan_settings(codex=False, manifest=None, text=None):
             conflict(entry, old, rec, new)
     if "permissions" not in cur and "permissions" in snip:
         cur["permissions"] = snip["permissions"]
-        plan["add"].append("permissions(最小例)")
+        plan["add"].append(M("permissions(最小例)"))
     for (part, key), value in owned.items():
         if part == "statusLine":
             plan["record"][part] = value
@@ -850,7 +929,7 @@ def build_plan(cfg, manifests, legacy, fps, mode="update"):
         it = Item("owner", src, dst, flags, None, read_current=False)
         it.state = "keep" if it.exists else "add"
         if it.state == "add":
-            it.new = io.open(os.path.join(KIT, src), "rb").read()
+            it.new = io.open(source_path(src, cfg), "rb").read()
             if "render" in flags:
                 it.new = render(it.new.decode("utf-8"), cfg, flags)
         items.append(it)
@@ -859,7 +938,7 @@ def build_plan(cfg, manifests, legacy, fps, mode="update"):
 
 def diff_text(a, b, path):
     return "".join(difflib.unified_diff((a or "").splitlines(True), (b or "").splitlines(True),
-                                        "今: " + tilde(path), "新: " + tilde(path)))
+                                        M("今: ") + tilde(path), M("新: ") + tilde(path)))
 
 
 def diff_count(a, b):
@@ -917,26 +996,26 @@ def name_collisions(cfg, items, inventory):
             stem = (os.path.splitext(name)[0] if part == "agents" and
                     not os.path.isdir(os.path.join(CLAUDE, part, name)) else name)
             if stem.lower() in names:
-                collisions.append("%s/%s: 持ち主の方を %s-own に改名するか、役割を統合するか、相棒と持ち主で決める"
+                collisions.append(M("%s/%s: 持ち主の方を %s-own に改名するか、役割を統合するか、相棒と持ち主で決める")
                                   % (part, name, stem))
     for it in items:
         if it.state == "collision":
-            collisions.append("%s: 持ち主の方を別名に移すか、kit の方を使わないか（この場所には書かない）" % tilde(it.dst))
+            collisions.append(M("%s: 持ち主の方を別名に移すか、kit の方を使わないか（この場所には書かない）") % tilde(it.dst))
     return collisions
 
 
 def inventory_lines(inventory):
-    return ["%s: %d 件（%s）" % (part, len(names), "、".join(names) or "なし")
+    return [M("%s: %d 件（%s）") % (part, len(names), M("、").join(names) or M("なし"))
             for part, names in inventory.items()]
 
 
 def print_collisions(collisions, bundle):
     if collisions:
-        print("名前の重なり: %d 件" % len(collisions))
+        print(M("名前の重なり: %d 件") % len(collisions))
         for line in collisions:
             print("  " + line)
         if bundle:
-            print("衝突の資料: %s" % tilde(bundle))
+            print(M("衝突の資料: %s") % tilde(bundle))
 
 
 # ------------------------------------------------------------------ 退避と戻し
@@ -957,16 +1036,16 @@ def read_backup_meta(d):
     path = os.path.join(top, "meta.json")
     try:
         if not stat.S_ISDIR(os.lstat(top).st_mode):
-            return None, "退避がディレクトリでない（symlink・ファイル）"
+            return None, M("退避がディレクトリでない（symlink・ファイル）")
         if not stat.S_ISREG(os.lstat(path).st_mode):
-            return None, "meta.json が普通のファイルでない"
+            return None, M("meta.json が普通のファイルでない")
     except OSError as e:
         if e.errno == errno.ENOENT and os.path.isdir(top) and not os.path.islink(top):
             return None, None
-        return None, "確かめられない: %s" % e
+        return None, M("確かめられない: %s") % e
     m = load_json(path)
     if not isinstance(m, dict) or not m:
-        return None, "読めない・JSON の object でない"
+        return None, M("読めない・JSON の object でない")
     return m, None
 
 
@@ -1109,15 +1188,15 @@ def make_worktree(cfg, role, path, branch, backup):
     cmd = ["worktree", "add", "-q"] + (["-b", branch, path] if new_branch else [path, branch])
     rc, out, err = git(brain, *cmd)
     if rc != 0:
-        print("  warn: worktree %s を作れなかった: %s" % (tilde(path), err.strip()))
+        print(M("  warn: worktree %s を作れなかった: %s") % (tilde(path), err.strip()))
         return
     backup.worktree(path, branch, new_branch)
     # 相棒の領域だけを見えなくする（tree からは消さない）
     rc1 = run(["git", "-C", path, "sparse-checkout", "init", "--no-cone"])[0]
     rc2 = run(["git", "-C", path, "sparse-checkout", "set", "--stdin"],
               inp="/*\n!/%s/\n" % persona(cfg, "partner")["name"])[0]
-    note = "" if rc1 == 0 and rc2 == 0 else "（sparse-checkout は失敗。相棒の領域も見えている）"
-    print("  worktree: %s（ブランチ %s）%s" % (tilde(path), branch, note))
+    note = "" if rc1 == 0 and rc2 == 0 else M("（sparse-checkout は失敗。相棒の領域も見えている）")
+    print(M("  worktree: %s（ブランチ %s）%s") % (tilde(path), branch, note))
 
 
 def wanted_labels(cfg):
@@ -1135,28 +1214,28 @@ def gh_ready():
 def ensure_labels(cfg, dry):
     repos = cfg.get("repos") or []
     if not repos:
-        print("  ラベル: リポジトリが無いので飛ばす（--repos か brain の .brain-kit/config.json の repos）")
+        print(M("  ラベル: リポジトリが無いので飛ばす（--repos か brain の .brain-kit/config.json の repos）"))
         return
     if not gh_ready():
-        print("  ラベル: gh が無いか未認証なので飛ばす。後で作る: %s" % " ".join(wanted_labels(cfg)))
+        print(M("  ラベル: gh が無いか未認証なので飛ばす。後で作る: %s") % " ".join(wanted_labels(cfg)))
         return
     for r in repos:
         if "/" not in r:
-            print("  skip: %s は owner/repo 形式ではない" % r)
+            print(M("  skip: %s は owner/repo 形式ではない") % r)
             continue
         rc, out, _ = run(["gh", "label", "list", "-R", r, "--limit", "200", "--json", "name", "--jq", ".[].name"], timeout=30)
         have_ = set(out.splitlines()) if rc == 0 else set()
         missing = [l for l in wanted_labels(cfg) if l not in have_]
         if not missing:
-            print("  ラベル %s: 全部ある" % r)
+            print(M("  ラベル %s: 全部ある") % r)
             continue
         if dry:
-            print("  ラベル %s: 足す %s" % (r, " ".join(missing)))
+            print(M("  ラベル %s: 足す %s") % (r, " ".join(missing)))
             continue
         for l in missing:
             if run(["gh", "label", "create", l, "-R", r, "--force"], timeout=30)[0] != 0:
-                print("  warn: %s に %s を作れなかった" % (r, l))
-        print("  ラベル %s: 足した %s" % (r, " ".join(missing)))
+                print(M("  warn: %s に %s を作れなかった") % (r, l))
+        print(M("  ラベル %s: 足した %s") % (r, " ".join(missing)))
 
 
 # ------------------------------------------------------------------ 書く（install と update で共通）
@@ -1215,7 +1294,7 @@ def write_conflicts(items, cfg, backup, settings=(), inventory=None, collisions=
     if not items and not settings and not collisions:
         return None
     files = {}
-    notes = ["# 更新の衝突\n"]
+    notes = [M("# 更新の衝突\n")]
     for it in items:
         where, key = manifest_key(it.dst, cfg)
         stem = os.path.join("files", where, key)
@@ -1224,7 +1303,7 @@ def write_conflicts(items, cfg, backup, settings=(), inventory=None, collisions=
         files[stem + ".theirs"] = it.new
         notes.append("\n## %s\n\n.new: %s.new\n" % (tilde(it.dst), tilde(it.dst)))
         if it.base is None:
-            notes.append("\nbase 不明。git merge-file: not possible without base\n")
+            notes.append(M("\nbase 不明。git merge-file: not possible without base\n"))
             notes.append("\n### ours → theirs\n\n```diff\n%s```\n" % diff_text(it.cur, it.new, it.dst))
         else:
             files[stem + ".base"] = it.base
@@ -1244,23 +1323,23 @@ def write_conflicts(items, cfg, backup, settings=(), inventory=None, collisions=
                 except (OSError, subprocess.TimeoutExpired):
                     rc, merged = -1, b""
             # git の負の終了値はシェルでは 255 になる。
-            result = "clean" if rc == 0 else "%d conflict markers" % rc if 0 < rc <= 127 else "エラー"
+            result = "clean" if rc == 0 else "%d conflict markers" % rc if 0 < rc <= 127 else M("エラー")
             files[stem + ".merged"] = merged
-            notes.append("\nbase 既知。git merge-file: %s\n" % result)
+            notes.append(M("\nbase 既知。git merge-file: %s\n") % result)
             for name, text in (("ours", it.cur), ("theirs", it.new)):
                 notes.append("\n### base → %s\n\n```diff\n%s```\n" % (name, diff_text(it.base, text, it.dst)))
     if settings:
         notes.append("\n## settings.json\n")
         for entry in settings:
             notes.append("\n### %s\n\n%s\n" % (entry["name"], entry["reason"]))
-            for title, key in (("現在（ours）", "ours"), ("記録した sha", "recorded"), ("kit（theirs）", "theirs")):
+            for title, key in ((M("現在（ours）"), "ours"), (M("記録した sha"), "recorded"), (M("kit（theirs）"), "theirs")):
                 notes.append("\n%s\n\n```json\n%s```\n" % (title, dump_json(entry[key])))
-    notes.append("\n## 持ち主が足した agent と道具（kit の外。中身は読んでいない）\n\n")
+    notes.append(M("\n## 持ち主が足した agent と道具（kit の外。中身は読んでいない）\n\n"))
     notes.extend("- " + line + "\n" for line in inventory_lines(inventory or {
         part: [] for part in ("skills", "agents", "hooks", "plugins", "marketplaces")}))
-    notes.append("\n## 名前の重なり\n\n")
-    notes.extend("- " + line + "\n" for line in (collisions or ["なし"]))
-    notes.append("\n## 解き方\n\n相棒と資料を読み、書く前に全体の計画を持ち主に見せて OK をもらう。"
+    notes.append(M("\n## 名前の重なり\n\n"))
+    notes.extend("- " + line + "\n" for line in (collisions or [M("なし")]))
+    notes.append(M("\n## 解き方\n\n相棒と資料を読み、書く前に全体の計画を持ち主に見せて OK をもらう。"
                  "まず同じコマンドに --dry-run を付けて確かめる。\n\n"
                  "```bash\n./install.sh --resolve <file> --from <merged file>\n"
                  "./install.sh --resolve <file>   # 今の編集済みファイルを結果にする\n"
@@ -1268,7 +1347,7 @@ def write_conflicts(items, cfg, backup, settings=(), inventory=None, collisions=
                  "./install.sh --resolve ~/.claude/settings.json --from <merged file>\n"
                  "./install.sh --resolve ~/.claude/settings.json\n"
                  "./install.sh --resolve --keep ~/.claude/settings.json\n```\n\n"
-                 "./install.sh --rollback は最後の resolve から先に戻し、次に更新を戻す。\n")
+                 "./install.sh --rollback は最後の resolve から先に戻し、次に更新を戻す。\n"))
     files["README.md"] = "".join(notes)
     root = os.path.join(KIT_STATE, "conflicts")
     if os.path.isdir(root):
@@ -1310,14 +1389,14 @@ def choose_edited(it, args, mode):
         return "keep"
     while True:
         p, m = diff_count(it.cur, it.new)
-        a = ask("  %s は手で直してある（新しい版との差 +%d -%d）。 [n] 新しい版にする / [k] 今のままにする / [d] 差分を見る"
+        a = ask(M("  %s は手で直してある（新しい版との差 +%d -%d）。 [n] 新しい版にする / [k] 今のままにする / [d] 差分を見る")
                 % (tilde(it.dst), p, m), "k", args).lower()
         if a.startswith("n"):
             return "new"
         if a.startswith("k"):
             return "keep"
         if a.startswith("d"):
-            sys.stdout.write(diff_text(it.cur, it.new, it.dst) or "  （差なし）\n")
+            sys.stdout.write(diff_text(it.cur, it.new, it.dst) or M("  （差なし）\n"))
 
 
 def update_manifests(items, cfg, manifests):
@@ -1350,12 +1429,13 @@ def update_manifests(items, cfg, manifests):
             manifests["claude"]["release_permissions"] = {"brain": cfg["brain"], "id": rid}
         else:
             manifests["claude"].pop("release_permissions", None)
-            print("  warn: %s がリリースの skill ではないまま残っている（衝突か今のまま）。許可の一覧は渡さない。"
-                  "解消してから ./install.sh --update" % tilde(skill))
+            print(M("  warn: %s がリリースの skill ではないまま残っている（衝突か今のまま）。許可の一覧は渡さない。"
+                    "解消してから ./install.sh --update") % tilde(skill))
     else:
         manifests["claude"].pop("release_permissions", None)
     for where in ("brain", "claude"):
         manifests[where]["version"] = VERSION
+    manifests["claude"]["lang"] = content_lang(cfg)
     package = load_json(os.path.join(KIT, "package.json"))
     if isinstance(package, dict) and isinstance(package.get("version"), str):
         manifests["claude"]["package_version"] = package["version"]
@@ -1385,9 +1465,9 @@ def commit_brain(cfg, paths, msg):
         return
     rc, _, err = git(brain, "commit", "-q", "-m", msg, "--", *rel)
     if rc != 0:
-        print("  warn: brain のコミットに失敗（git の user.name / user.email を設定してから git -C %s commit）" % tilde(brain))
+        print(M("  warn: brain のコミットに失敗（git の user.name / user.email を設定してから git -C %s commit）") % tilde(brain))
     else:
-        print("  brain にコミットした: %s" % msg)
+        print(M("  brain にコミットした: %s") % msg)
 
 
 # ------------------------------------------------------------------ 出力
@@ -1395,40 +1475,40 @@ def print_plan(items, sett, wts, dry, verbose_diff):
     def rows(kind, state):
         return [it for it in items if it.kind == kind and it.state == state]
     groups = [
-        ("足すもの（kit）", rows("kit", "add")),
-        ("上げるもの（kit だけが変わった）", rows("kit", "upgrade")),
-        ("手で直したもの（kit。上書きせずに聞く）", rows("kit", "edited")),
-        ("持ち主だけが変えたもの（触らない）", rows("kit", "owner")),
-        ("両方が変えたもの（衝突。<file>.new を置く）", rows("kit", "conflict")),
-        ("持ち主のディレクトリと重なるもの（書かない）", rows("kit", "collision")),
-        ("kit から外れたもの（消す・残す）", rows("kit", "dropped")),
-        ("足すもの（持ち主の領域の骨格。無いものだけ）", rows("owner", "add")),
+        (M("足すもの（kit）"), rows("kit", "add")),
+        (M("上げるもの（kit だけが変わった）"), rows("kit", "upgrade")),
+        (M("手で直したもの（kit。上書きせずに聞く）"), rows("kit", "edited")),
+        (M("持ち主だけが変えたもの（触らない）"), rows("kit", "owner")),
+        (M("両方が変えたもの（衝突。<file>.new を置く）"), rows("kit", "conflict")),
+        (M("持ち主のディレクトリと重なるもの（書かない）"), rows("kit", "collision")),
+        (M("kit から外れたもの（消す・残す）"), rows("kit", "dropped")),
+        (M("足すもの（持ち主の領域の骨格。無いものだけ）"), rows("owner", "add")),
     ]
     for title, rs in groups:
         if not rs:
             continue
-        print("  %s: %d 件" % (title, len(rs)))
+        print(M("  %s: %d 件") % (title, len(rs)))
         for it in rs:
             extra = ""
             if it.state in ("upgrade", "edited", "owner", "conflict", "dropped"):
                 p, m = diff_count(it.cur, it.new)
                 extra = "  (+%d -%d)" % (p, m)
             if it.state == "dropped":
-                extra += "  " + ("消す" if it.remove else "残す" if it.exists else "記録を外す")
+                extra += "  " + (M("消す") if it.remove else M("残す") if it.exists else M("記録を外す"))
             print("    %s%s" % (tilde(it.dst), extra))
     same = len(rows("kit", "same"))
     keep = len(rows("owner", "keep"))
-    print("  変わらないもの（kit、最新）: %d 件" % same)
-    print("  触らないもの（持ち主のもの。核・辞書・関係・日誌・決定・知識・プロジェクト・記録など）: %d 件＋brain の中身すべて" % keep)
-    for state, title in (("add", "に足すもの"), ("update", "で上げるもの（kit だけが変わった）"),
-                         ("remove", "から外すもの（kit から外れた、変えていない）"),
-                         ("conflict", "の衝突（触らない）"), ("keep", "で残すもの（kit から外れた、持ち主が変えた）")):
+    print(M("  変わらないもの（kit、最新）: %d 件") % same)
+    print(M("  触らないもの（持ち主のもの。核・辞書・関係・日誌・決定・知識・プロジェクト・記録など）: %d 件＋brain の中身すべて") % keep)
+    for state, title in (("add", M("に足すもの")), ("update", M("で上げるもの（kit だけが変わった）")),
+                         ("remove", M("から外すもの（kit から外れた、変えていない）")),
+                         ("conflict", M("の衝突（触らない）")), ("keep", M("で残すもの（kit から外れた、持ち主が変えた）"))):
         if sett[state]:
-            print("  settings.json %s: %d 件" % (title, len(sett[state])))
+            print(M("  settings.json %s: %d 件") % (title, len(sett[state])))
             for entry in sett[state]:
-                print("    " + (entry["name"] + "（" + entry["reason"] + "）" if state == "conflict" else entry))
+                print("    " + (entry["name"] + M("（") + entry["reason"] + M("）") if state == "conflict" else entry))
     for r, path, b, what in wts:
-        print("  worktree %s: %s（ブランチ %s）" % ("足す" if what == "add" else "作らない（別のものが在る）", tilde(path), b))
+        print(M("  worktree %s: %s（ブランチ %s）") % (M("足す") if what == "add" else M("作らない（別のものが在る）"), tilde(path), b))
     if verbose_diff:
         if sett["changed"]:
             sys.stdout.write(diff_text(sett["raw"], sett["new"], sett["path"]))
@@ -1439,6 +1519,8 @@ def print_plan(items, sett, wts, dry, verbose_diff):
 
 
 def changelog_since(v_from):
+    if _LANG == "en":
+        return M("変更履歴（日本語）: %s") % tilde(os.path.join(KIT, "CHANGELOG.md"))
     t = read_text(os.path.join(KIT, "CHANGELOG.md")) or ""
     out = []
     for block in re.split(r"(?m)^## ", t)[1:]:
@@ -1456,41 +1538,43 @@ def cmd_install(args):
     brain = os.path.abspath(os.path.expanduser(args.brain))
     cman = load_json(CLAUDE_MANIFEST, {}) or {}
     if os.path.exists(config_path(brain)):
-        die("%s には brain-kit が入っている（版の記録あり）。更新は --update" % tilde(brain), 1)
+        die(M("%s には brain-kit が入っている（版の記録あり）。更新は --update") % tilde(brain), 1)
     legacy = detect_legacy(brain)
     if legacy and (legacy.get("partner_skill") or legacy.get("dev")):
-        die("%s には前の版の brain-kit が入っている。更新は --update（名前はそのまま引き継ぐ）" % tilde(brain), 1)
+        die(M("%s には前の版の brain-kit が入っている。更新は --update（名前はそのまま引き継ぐ）") % tilde(brain), 1)
     if os.path.exists(brain) and os.listdir(brain) and not args.brain_merge:
         if not interactive(args):
-            die("%s が既にある。上乗せするなら --brain-merge、別の場所にするなら --brain <dir>。会社が違えば別 brain にする。" % tilde(brain), 1)
-        if not ask("  %s が既にある。骨格を足す？（無いものだけ足す。既存ファイルは触らない）[y/N]" % tilde(brain), "n", args).lower().startswith("y"):
+            die(M("%s が既にある。上乗せするなら --brain-merge、別の場所にするなら --brain <dir>。会社が違えば別 brain にする。") % tilde(brain), 1)
+        if not ask(M("  %s が既にある。骨格を足す？（無いものだけ足す。既存ファイルは触らない）[y/N]") % tilde(brain), "n", args).lower().startswith("y"):
             sys.exit(1)
 
-    say("[1/6] 名前を決める（4 人。空 Enter で既定。英字でない名前は id も聞く）")
+    say(M("[1/6] 名前を決める（4 人。空 Enter で既定。英字でない名前は id も聞く）"))
     used = set()
     personas = {}
     for r in ROLES:
         personas[r] = choose_persona(r, args, used, cman)
-    owner = args.user or ask("  あなたの呼び名（相棒があなたをどう呼ぶか）", "持ち主", args)
-    projects = split_csv(args.projects if args.projects is not None else ask("  プロジェクト名（カンマ区切り。無ければ空）", "", args))
-    repos = split_csv(args.repos if args.repos is not None else ask("  GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）", "", args))
+    owner = args.user or ask(M("  あなたの呼び名（相棒があなたをどう呼ぶか）"), M("持ち主"), args)
+    projects = split_csv(args.projects if args.projects is not None else ask(M("  プロジェクト名（カンマ区切り。無ければ空）"), "", args))
+    repos = split_csv(args.repos if args.repos is not None else ask(M("  GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）"), "", args))
     release_permissions = args.release_permissions
     if release_permissions is None:
         release_permissions = ask(
-            "  リリース担当（%s）にだけ、本番の SQL・マージ・環境変数の変更の許可の一覧を入れる？ ほかの人格には入れない [y/N]"
+            M("  リリース担当（%s）にだけ、本番の SQL・マージ・環境変数の変更の許可の一覧を入れる？ ほかの人格には入れない [y/N]")
             % personas["release"]["name"], "", args).lower().startswith("y")
-    cfg = {"version": VERSION, "brain": brain, "owner": owner, "personas": personas, "repos": repos,
+    # main() で決めた言語（--lang、無ければこの機の記録、無ければ日本語）で作って記録する
+    cfg = {"version": VERSION, "lang": args.lang or _LANG, "brain": brain, "owner": owner, "personas": personas, "repos": repos,
            "installed_at": TODAY, "updated_at": TODAY, "history": [{"date": TODAY, "to": VERSION, "how": "install"}],
            "release_permissions": release_permissions}
+    print(M("言語: %s（%s）") % (language_name(cfg["lang"]), cfg["lang"]))
     for r in ROLES:
         p = personas[r]
-        print("  %s: %s（id %s）" % (ROLE_JA[r], p["name"], p["id"]))
+        print(M("  %s: %s（id %s）") % (M(ROLE_JA[r]), p["name"], p["id"]))
     print_release_permissions(cfg)
-    print("  呼び名: %s  projects: %s  repos: %s  brain: %s" % (owner, ",".join(projects) or "なし", ",".join(repos) or "なし", tilde(brain)))
+    print(M("  呼び名: %s  projects: %s  repos: %s  brain: %s") % (owner, ",".join(projects) or M("なし"), ",".join(repos) or M("なし"), tilde(brain)))
 
     backup = Backup("install", {"brain": brain, "from": None, "to": VERSION})
     manifests = {"brain": {}, "claude": cman}
-    say("[2/6] brain と ~/.claude にファイルを置く")
+    say(M("[2/6] brain と ~/.claude にファイルを置く"))
     if not os.path.isdir(brain):
         os.makedirs(brain)
     items = build_plan(cfg, manifests, False, {}, mode="install")
@@ -1501,19 +1585,19 @@ def cmd_install(args):
                 alt = it.dst[:-3] + ".brain-kit.md"
                 if not os.path.exists(alt):
                     put(alt, it.new, backup)
-                    print("  横に置いた（既存と中身が違う）: %s" % tilde(alt))
+                    print(M("  横に置いた（既存と中身が違う）: %s") % tilde(alt))
                 it.state = "declined"
     written, kept = apply_items(items, cfg, backup, args, "install")
-    print("  置いた: %d 件、今のまま: %d 件" % (len(written), len(kept)))
+    print(M("  置いた: %d 件、今のまま: %d 件") % (len(written), len(kept)))
     make_projects(cfg, projects, backup)
     make_cards(cfg, repos, backup)
 
-    say("[3/6] settings.json にマージ（丸ごと上書きしない）")
+    say(M("[3/6] settings.json にマージ（丸ごと上書きしない）"))
     sett = plan_settings(args.codex, manifests["claude"])
     if sett["changed"]:
         put(sett["path"], sett["new"], backup)
     manifests["claude"]["settings"] = sett["record"]
-    print("  追加: %s" % (", ".join(sett["add"]) if sett["add"] else "なし（すべて既にあった）"))
+    print(M("  追加: %s") % (", ".join(sett["add"]) if sett["add"] else M("なし（すべて既にあった）")))
 
     update_manifests(items, cfg, manifests)
     write_state(cfg, manifests, backup)
@@ -1521,27 +1605,27 @@ def cmd_install(args):
     say("[4/6] git: %s" % tilde(brain))
     if git(brain, "rev-parse", "--is-inside-work-tree")[0] != 0:
         git(brain, "init", "-q")
-        msg = "brain: 初期化（brain-kit v%d）" % VERSION
+        msg = M("brain: 初期化（brain-kit v%d）") % VERSION
     else:
-        msg = "brain: brain-kit v%d の骨格を追加" % VERSION
+        msg = M("brain: brain-kit v%d の骨格を追加") % VERSION
     git(brain, "add", "-A")
     if git(brain, "diff", "--cached", "--quiet")[0] != 0:
         if git(brain, "commit", "-q", "-m", msg)[0] != 0:
-            print("  warn: コミットに失敗（git の user.name / user.email を設定してから再実行）")
+            print(M("  warn: コミットに失敗（git の user.name / user.email を設定してから再実行）"))
         else:
-            print("  コミットした: %s" % msg)
+            print(M("  コミットした: %s") % msg)
 
-    say("[5/6] worktree（開発・レビュー・リリースの居場所）")
+    say(M("[5/6] worktree（開発・レビュー・リリースの居場所）"))
     if args.no_worktrees:
-        print("  --no-worktrees なので作らない")
+        print(M("  --no-worktrees なので作らない"))
     else:
         for r, path, b, what in plan_worktrees(cfg, WORKTREE_ROLES):
             if what == "add":
                 make_worktree(cfg, r, path, b, backup)
             else:
-                print("  作らない: %s が既にある（worktree ではない）" % tilde(path))
+                print(M("  作らない: %s が既にある（worktree ではない）") % tilde(path))
 
-    say("[6/6] issue ラベル")
+    say(M("[6/6] issue ラベル"))
     ensure_labels(cfg, False)
     bdir = backup.close()
     finish_message(cfg, bdir, None)
@@ -1552,10 +1636,10 @@ def make_projects(cfg, projects, backup):
         f = os.path.join(cfg["brain"], "projects", p + ".md")
         if os.path.exists(f):
             continue
-        put(f, "---\ndate: %s\nproject: %s\ntags: [project]\n---\n\n# %s\n\n## 目的\n<!-- 何のためのプロジェクトか。1〜3行 -->\n\n"
+        put(f, M("---\ndate: %s\nproject: %s\ntags: [project]\n---\n\n# %s\n\n## 目的\n<!-- 何のためのプロジェクトか。1〜3行 -->\n\n"
                "## 現在地\n<!-- いまどこまで来ているか。動いたら書き換える -->\n\n## 権限\n"
                "<!-- エージェントに許すこと。書かなければ「PR まで、マージしない」 -->\n- PR まで。マージしない\n\n"
-               "## 関連\n<!-- リポジトリ、決定ノート、人 -->\n" % (TODAY, p, p), backup)
+               "## 関連\n<!-- リポジトリ、決定ノート、人 -->\n") % (TODAY, p, p), backup)
         print("  projects/%s.md" % p)
 
 
@@ -1569,9 +1653,9 @@ def make_cards(cfg, repos, backup):
         if os.path.exists(f):
             continue
         s = tpl.replace("<repo>", short).replace("2026-01-01", TODAY)
-        s = s.replace("# %s\n" % short, "# %s\n\nリポジトリ: `%s`\n" % (short, r), 1)
+        s = s.replace("# %s\n" % short, M("# %s\n\nリポジトリ: `%s`\n") % (short, r), 1)
         put(f, s, backup)
-        print("  dev/状況/%s.md（%s）" % (short, r))
+        print(M("  dev/状況/%s.md（%s）") % (short, r))
 
 
 def release_permissions_path(cfg):
@@ -1580,32 +1664,32 @@ def release_permissions_path(cfg):
 
 def print_release_permissions(cfg):
     if cfg.get("release_permissions"):
-        print("  リリースの許可の一覧: 入れた（start-%s だけが読む）" % persona(cfg, "release")["id"])
+        print(M("  リリースの許可の一覧: 入れた（start-%s だけが読む）") % persona(cfg, "release")["id"])
     else:
-        print("  リリースの許可の一覧: 入れていない（あとで ./install.sh --update --release-permissions）")
+        print(M("  リリースの許可の一覧: 入れていない（あとで ./install.sh --update --release-permissions）"))
 
 
 def finish_message(cfg, bdir, v_from):
     p = {r: persona(cfg, r) for r in ROLES if r in cfg["personas"]}
     b = tilde(cfg["brain"])
     print()
-    print("完了（brain-kit v%d）。" % VERSION)
+    print(M("完了（brain-kit v%d）。") % VERSION)
     print("  brain     : %s" % b)
     for r in ROLES:
         if r in p:
-            print("  %-8s: %s（/%s、領域 %s/、起動 ~/.claude/brain-kit/bin/start-%s）"
-                  % (ROLE_JA[r], p[r]["name"], p[r]["id"], area_of(cfg, r), p[r]["id"]))
-    print("  ~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）")
+            print(M("  %-8s: %s（/%s、領域 %s/、起動 ~/.claude/brain-kit/bin/start-%s）")
+                  % (M(ROLE_JA[r]), p[r]["name"], p[r]["id"], area_of(cfg, r), p[r]["id"]))
+    print(M("  ~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）"))
     print_release_permissions(cfg)
     if bdir:
-        print("  退避      : %s（--rollback で戻せる）" % tilde(bdir))
+        print(M("  退避      : %s（--rollback で戻せる）") % tilde(bdir))
     print()
-    print("次にやること:")
-    print("  1. cd %s && claude → /setup（持ち主のこと・声・プロジェクト・4 人の分担を埋める）" % b)
-    print("  2. 相棒は /%s、開発は /%s、レビューは /%s、リリースは /%s"
+    print(M("次にやること:"))
+    print(M("  1. cd %s && claude → /setup（持ち主のこと・声・プロジェクト・4 人の分担を埋める）") % b)
+    print(M("  2. 相棒は /%s、開発は /%s、レビューは /%s、リリースは /%s")
           % tuple(p[r]["id"] if r in p else "-" for r in ROLES))
-    print("  3. 工程表（brain-kit Dashboard）は相棒の skill の「工程表」節。README の「工程表」")
-    print("  4. 初日の練習（任意）: ./install.sh --practice（ローカル限定・本物には触らない。--practice-cleanup で消せる）")
+    print(M("  3. 工程表（brain-kit Dashboard）は相棒の skill の「工程表」節。README の「工程表」"))
+    print(M("  4. 初日の練習（任意）: ./install.sh --practice（ローカル限定・本物には触らない。--practice-cleanup で消せる）"))
 
 
 # ------------------------------------------------------------------ update
@@ -1615,15 +1699,17 @@ def resolve_config(args, cman, quiet=False):
     cfg = load_json(config_path(brain))
     if cfg:
         cfg["brain"] = brain
+        # 言語の記録が無い brain は機械側の記録、それも無ければ日本語（中身を作る言語）
+        cfg["lang"] = record_lang(cfg, cman)
         v = cfg.get("version")
-        return cfg, v, "v%s（brain の .brain-kit/config.json）" % v, False
+        return cfg, v, M("v%s（brain の .brain-kit/config.json）") % v, False
     info = detect_legacy(brain)
     if not info:
-        return None, None, "入っていない", False
+        return None, None, M("入っていない"), False
     if not info.get("partner"):
         if not args.partner:
-            die("相棒の領域（00_核.md を持つディレクトリ）が %s。--partner <名前> で指定する"
-                % ("複数ある: " + ", ".join(info["partners"]) if info["partners"] else "見つからない"), 2)
+            die(M("相棒の領域（00_核.md を持つディレクトリ）が %s。--partner <名前> で指定する")
+                % (M("複数ある: ") + ", ".join(info["partners"]) if info["partners"] else M("見つからない")), 2)
         info["partner"] = args.partner
     dev = info.get("dev") or info.get("dev_title") or args.dev or "dev"
     personas = {
@@ -1641,45 +1727,51 @@ def cmd_update(args):
     cman = load_json(CLAUDE_MANIFEST, {}) or {}
     cfg, v_from, desc, legacy = resolve_config(args, cman)
     if cfg is None:
-        die("%s に brain-kit が見つからない。新しく入れるなら --update を付けずに実行する" % tilde(os.path.expanduser(args.brain)), 1)
+        die(M("%s に brain-kit が見つからない。新しく入れるなら --update を付けずに実行する") % tilde(os.path.expanduser(args.brain)), 1)
+    # 記録が無ければ機械側の記録、それも無ければ日本語（言語を選べるようになる前の入れ方）
+    old_lang = record_lang(cfg, cman)
+    cfg["lang"] = args.lang or old_lang
+    if old_lang != cfg["lang"]:
+        print(M("言語: %s → %s") % (language_name(old_lang), language_name(cfg["lang"])))
+        print(M("持ち主のノート（核・辞書・関係・日誌など）は kit では翻訳しない。"))
     dry = args.dry_run
-    say("brain-kit の更新%s: %s → v%d" % ("（--dry-run: 何も変えない）" if dry else "", desc, VERSION))
+    say(M("brain-kit の更新%s: %s → v%d") % (M("（--dry-run: 何も変えない）") if dry else "", desc, VERSION))
     warning = claude_version_warning(missing=True)
     if warning:
         print(warning)
     for r in ("partner", "dev"):
         p = persona(cfg, r)
-        print("  %s: %s（/%s）… 引き継ぐ" % (ROLE_JA[r], p["name"], p["id"]))
+        print(M("  %s: %s（/%s）… 引き継ぐ") % (M(ROLE_JA[r]), p["name"], p["id"]))
     if args.repos is not None:
         cfg["repos"] = sorted(set((cfg.get("repos") or []) + split_csv(args.repos)))
 
     # 新しく足す役（レビュー・リリース）だけ名前を聞く
     new_roles = [r for r in ROLES if r not in cfg["personas"]]
     if new_roles:
-        say("新しく足す人格: %s" % "・".join(ROLE_JA[r] for r in new_roles))
+        say(M("新しく足す人格: %s") % M("・").join(M(ROLE_JA[r]) for r in new_roles))
         used = {persona(cfg, r)["id"] for r in cfg["personas"]}
         for r in new_roles:
             if dry and not (getattr(args, r) or interactive(args)):
-                cfg["personas"][r] = {"name": ROLE_JA[r], "id": DEFAULT_ID[r], "label": DEFAULT_ID[r]}
-                print("  %s: 名前は実行のときに聞く（既定 %s）" % (ROLE_JA[r], ROLE_JA[r]))
+                cfg["personas"][r] = {"name": M(ROLE_JA[r]), "id": DEFAULT_ID[r], "label": DEFAULT_ID[r]}
+                print(M("  %s: 名前は実行のときに聞く（既定 %s）") % (M(ROLE_JA[r]), M(ROLE_JA[r])))
                 continue
             cfg["personas"][r] = choose_persona(r, args, used, cman)
-            print("  %s: %s（/%s）" % (ROLE_JA[r], cfg["personas"][r]["name"], cfg["personas"][r]["id"]))
+            print(M("  %s: %s（/%s）") % (M(ROLE_JA[r]), cfg["personas"][r]["name"], cfg["personas"][r]["id"]))
 
     previous_permissions = bool(cfg.get("release_permissions", False))
     # 選んでいない入れ方の設定には印を足さない（何も変わらない更新で config を書き換えない）
     if args.release_permissions is not None or "release_permissions" in cfg:
         cfg["release_permissions"] = previous_permissions if args.release_permissions is None else args.release_permissions
     if cfg.get("release_permissions") and "release" not in cfg["personas"]:
-        die("リリースの許可の一覧にはリリース担当が必要。先に人格を追加する", 1)
+        die(M("リリースの許可の一覧にはリリース担当が必要。先に人格を追加する"), 1)
     permissions_changed = previous_permissions != bool(cfg.get("release_permissions"))
     if permissions_changed:
-        print("  リリースの許可の一覧: %s → %s%s" % (
-            "入れた" if previous_permissions else "入れていない",
-            "入れた" if cfg.get("release_permissions") else "入れていない", "（予定）" if dry else ""))
+        print(M("  リリースの許可の一覧: %s → %s%s") % (
+            M("入れた") if previous_permissions else M("入れていない"),
+            M("入れた") if cfg.get("release_permissions") else M("入れていない"), M("（予定）") if dry else ""))
     if dry and args.release_permissions is False and "release" in cfg["personas"] and \
             os.path.isfile(release_permissions_path(cfg)):
-        print("  %s は外す（編集済みなら隣の .off に移し、読まれないようにする）" % tilde(release_permissions_path(cfg)))
+        print(M("  %s は外す（編集済みなら隣の .off に移し、読まれないようにする）") % tilde(release_permissions_path(cfg)))
 
     manifests = load_manifests(cfg["brain"])
     fps = load_fingerprints() if legacy else {}
@@ -1690,14 +1782,14 @@ def cmd_update(args):
     wts = [] if args.no_worktrees else plan_worktrees(cfg, WORKTREE_ROLES)
     print_plan(items, sett, wts, dry, args.diff or dry)
     if dry:
-        print("持ち主が足した agent と道具（名前だけ）:")
+        print(M("持ち主が足した agent と道具（名前だけ）:"))
         for line in inventory_lines(inventory):
             print("  " + line)
         print_collisions(collisions, None)
         if cfg.get("repos"):
             ensure_labels(cfg, True)
         print()
-        print("--dry-run なので何も変えていない。上げるなら --dry-run を外して同じコマンド。")
+        print(M("--dry-run なので何も変えていない。上げるなら --dry-run を外して同じコマンド。"))
         if getattr(args, "edited", None) != "new":
             conf = [it for it in items if it.kind == "kit" and it.state == "conflict"]
             for it in conf:
@@ -1717,7 +1809,7 @@ def cmd_update(args):
             put(perm + ".off", text, backup)
             backup.save(perm)
             os.remove(perm)
-            print("  %s は編集済みなので %s に移した（もう読まれない）。要らなければ手で消す。"
+            print(M("  %s は編集済みなので %s に移した（もう読まれない）。要らなければ手で消す。")
                   % (tilde(perm), os.path.basename(perm + ".off")))
     if sett["changed"]:
         put(sett["path"], sett["new"], backup)
@@ -1751,30 +1843,30 @@ def cmd_update(args):
             make_worktree(cfg, r, path, b, backup)
     ensure_labels(cfg, False)
     touched = list(backup.meta["overwritten"]) + list(backup.meta["added"])
-    commit_brain(cfg, touched, "brain-kit: v%s → v%d に更新（kit のものだけ）" % (v_from if v_from else "?", VERSION))
+    commit_brain(cfg, touched, M("brain-kit: v%s → v%d に更新（kit のものだけ）") % (v_from if v_from else "?", VERSION))
     bdir = backup.close()
 
     print()
     changed = len(set(backup.meta["overwritten"]) | set(backup.meta["added"]))
     if changed == 0 and not backup.meta["worktrees"]:
-        print("変わったもの: なし（すでに v%d）" % VERSION)
+        print(M("変わったもの: なし（すでに v%d）") % VERSION)
     else:
-        print("変わったもの: %d 件（kit %d、持ち主の領域の骨格 %d、ほかは記録・衝突資料など）"
+        print(M("変わったもの: %d 件（kit %d、持ち主の領域の骨格 %d、ほかは記録・衝突資料など）")
               % (changed, len([i for i in written if i.kind == "kit"]), len([i for i in written if i.kind == "owner"])))
     if bdir:
-        print("退避: %s（戻すなら ./install.sh --rollback）" % tilde(bdir))
+        print(M("退避: %s（戻すなら ./install.sh --rollback）") % tilde(bdir))
     if v_from != VERSION:
         cl = changelog_since(v_from)
         if cl:
             print()
-            print("この版で変わったこと（CHANGELOG.md）:")
+            print(M("この版で変わったこと（CHANGELOG.md）:"))
             print(cl)
         if new_roles:
             print()
-            print("新しく使えるもの:")
+            print(M("新しく使えるもの:"))
             print_new_roles(cfg, new_roles)
     if any(it.src == "gen:start-all" for it in written):
-        print("~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）")
+        print(M("~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）"))
     print_conflicts(kept, bundle)
     print_settings_conflicts(sett, bundle)
     print_collisions(collisions, bundle)
@@ -1782,11 +1874,11 @@ def cmd_update(args):
 
 def print_settings_conflicts(sett, bundle):
     if sett["conflict"]:
-        print("settings.json の衝突: %d 件（そのまま。kit の版は資料に）" % len(sett["conflict"]))
+        print(M("settings.json の衝突: %d 件（そのまま。kit の版は資料に）") % len(sett["conflict"]))
         for entry in sett["conflict"]:
-            print("  %s（%s）" % (entry["name"], entry["reason"]))
+            print(M("  %s（%s）") % (entry["name"], entry["reason"]))
         if bundle:
-            print("衝突の資料: %s" % tilde(bundle))
+            print(M("衝突の資料: %s") % tilde(bundle))
 
 
 def print_conflicts(kept, bundle):
@@ -1794,13 +1886,13 @@ def print_conflicts(kept, bundle):
     if not kept:
         return
     print()
-    print("衝突: %d 件（元のファイルはそのまま。新しい版は隣の .new）" % len(kept))
+    print(M("衝突: %d 件（元のファイルはそのまま。新しい版は隣の .new）") % len(kept))
     for it in kept:
-        note = "（前の更新の .new を今回の新しい版で置き換える。前のものは退避）" if getattr(it, "new_replaced", False) else ""
+        note = M("（前の更新の .new を今回の新しい版で置き換える。前のものは退避）") if getattr(it, "new_replaced", False) else ""
         print("  %s.new%s" % (tilde(it.dst), note))
     if bundle:
-        print("衝突の資料: %s" % tilde(bundle))
-    print("相棒と資料を読んで計画を確認し、--resolve で解消する。kit の版にするなら --update --edited new（退避あり）。")
+        print(M("衝突の資料: %s") % tilde(bundle))
+    print(M("相棒と資料を読んで計画を確認し、--resolve で解消する。kit の版にするなら --update --edited new（退避あり）。"))
 
 
 def print_new_roles(cfg, roles):
@@ -1808,30 +1900,30 @@ def print_new_roles(cfg, roles):
     for r in roles:
         p = persona(cfg, r)
         if r == "review":
-            print("  レビュー %s: 開発が PR に `%s` ラベルを付けると、%s が %s/review/規準.md で読んで判定する。"
-                  " 起動は ~/.claude/brain-kit/bin/start-%s（または worktree で /%s）" % (p["name"], label_of(cfg, r), p["name"], b, p["id"], p["id"]))
+            print(M("  レビュー %s: 開発が PR に `%s` ラベルを付けると、%s が %s/review/規準.md で読んで判定する。"
+                  " 起動は ~/.claude/brain-kit/bin/start-%s（または worktree で /%s）") % (p["name"], label_of(cfg, r), p["name"], b, p["id"], p["id"]))
         elif r == "release":
-            print("  リリース %s: 相棒が確認した PR に `%s` ラベルと指示のコメントを付けたときだけ、マージと本番の操作をする。"
-                  " 手順は %s/release/手順.md。起動は ~/.claude/brain-kit/bin/start-%s" % (p["name"], label_of(cfg, r), b, p["id"]))
+            print(M("  リリース %s: 相棒が確認した PR に `%s` ラベルと指示のコメントを付けたときだけ、マージと本番の操作をする。"
+                  " 手順は %s/release/手順.md。起動は ~/.claude/brain-kit/bin/start-%s") % (p["name"], label_of(cfg, r), b, p["id"]))
     print_release_permissions(cfg)
-    print("  工程表（brain-kit Dashboard）: 相棒の skill の「工程表」節。~/.claude/brain-kit/dashboard/")
-    print("  続けて /setup で、足した人格の節（規準・手順・任せる範囲）を埋める")
+    print(M("  工程表（brain-kit Dashboard）: 相棒の skill の「工程表」節。~/.claude/brain-kit/dashboard/"))
+    print(M("  続けて /setup で、足した人格の節（規準・手順・任せる範囲）を埋める"))
 
 
 # ------------------------------------------------------------------ resolve
 def cmd_resolve(args):
     if not args.target:
-        die("--resolve に対象のファイルが要る", 2)
+        die(M("--resolve に対象のファイルが要る"), 2)
     if args.keep and args.from_file:
-        die("--keep と --from は一緒に使えない", 2)
+        die(M("--keep と --from は一緒に使えない"), 2)
     target = os.path.abspath(os.path.expanduser(args.target))
     cman = load_json(CLAUDE_MANIFEST, {}) or {}
     cfg, _, _, legacy = resolve_config(args, cman)
     if cfg is None:
-        die("brain-kit が入っていない。先に install か --update を実行する", 2)
+        die(M("brain-kit が入っていない。先に install か --update を実行する"), 2)
     if legacy:
         # 版の記録が無い入れ方で一部だけ記録すると、次の更新が kit の skill を持ち主のものと取り違える
-        die("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する", 2)
+        die(M("版の記録が無い（v1〜v9 の入れ方）。先に --update で記録を作ってから --resolve する"), 2)
     manifests = load_manifests(cfg["brain"])
     # macOS の /var → /private/var のように、cwd と HOME でディレクトリの書き方が違っても見つける。
     # ファイル名の symlink はたどらない（別のファイルを kit のファイルとして扱わない）
@@ -1846,33 +1938,33 @@ def cmd_resolve(args):
     if settings:
         if os.path.islink(target) and args.from_file:
             # dotfiles などで symlink にしている人もいるので、書かない形（その場で直す・--keep）は受け付ける
-            die("settings.json は symlink。--from では書かない。指す先をその場で直して --resolve <file> か --keep を使う", 2)
+            die(M("settings.json は symlink。--from では書かない。指す先をその場で直して --resolve <file> か --keep を使う"), 2)
         if not os.path.isfile(target):
-            die("settings.json が無い。--resolve は今ある settings.json の衝突だけを扱う（作り直すなら --update）", 2)
+            die(M("settings.json が無い。--resolve は今ある settings.json の衝突だけを扱う（作り直すなら --update）"), 2)
         sett = plan_settings(args.codex, manifests["claude"])
         current = sett["raw"]
         pending = {tuple(e) for e in manifests["claude"].get("settings_conflicts", [])}
         if not sett["conflict"] and not pending and not args.from_file:
-            die("settings.json に衝突は無い", 2)
+            die(M("settings.json に衝突は無い"), 2)
     else:
         items = build_plan(cfg, manifests, legacy, load_fingerprints() if legacy else {}, mode="update")
         it = next((i for i in items if i.kind == "kit" and same(i.dst, target)), None)
         if it is None:
-            die("kit のファイルではない。持ち主のファイルは kit では解消しない: %s" % tilde(target), 2)
+            die(M("kit のファイルではない。持ち主のファイルは kit では解消しない: %s") % tilde(target), 2)
         if it.state in ("add", "dropped", "collision") or not (
                 it.state == "conflict" or os.path.exists(target + ".new")):
-            die("衝突ではない: %s" % tilde(target), 2)
+            die(M("衝突ではない: %s") % tilde(target), 2)
         if os.path.exists(target + ".new") and read_text(target + ".new") != it.new:
-            die(".new が今の kit と違う版。先に --update を実行する", 2)
+            die(M(".new が今の kit と違う版。先に --update を実行する"), 2)
         if os.path.islink(it.dst):
-            die("%s は symlink。指す先は kit のものではないので、--resolve では書かない" % tilde(it.dst), 2)
+            die(M("%s は symlink。指す先は kit のものではないので、--resolve では書かない") % tilde(it.dst), 2)
         current = it.cur
         target = it.dst
     result = read_text(os.path.abspath(os.path.expanduser(args.from_file))) if args.from_file else current
     if result is None:
-        die("解消結果を UTF-8 で読めない", 2)
+        die(M("解消結果を UTF-8 で読めない"), 2)
     if not args.keep and re.search(r"^(<<<<<<< |>>>>>>> )", result, re.M):
-        die("解消結果に衝突マーカーが残っている", 2)
+        die(M("解消結果に衝突マーカーが残っている"), 2)
     if settings:
         # 書く前の衝突も残しておき、--from で一致した項目も受け入れた版を記録する。
         after = plan_settings(args.codex, manifests["claude"], text=result)
@@ -1901,21 +1993,21 @@ def cmd_resolve(args):
                     record.pop(part)
         mp = CLAUDE_MANIFEST
         manifest = manifests["claude"]
-        detail = "settings.json の衝突項目だけ kit の sha を記録する（廃止項目は記録を外す）"
+        detail = M("settings.json の衝突項目だけ kit の sha を記録する（廃止項目は記録を外す）")
     else:
         where, key = manifest_key(target, cfg)
         manifest = manifests[where]
         manifest.setdefault("files", {})[key] = {"sha": sha(it.new), "merged": sha(result)}
         mp = brain_manifest_path(cfg["brain"]) if where == "brain" else CLAUDE_MANIFEST
-        detail = "base と sha に kit の版、merged に解消結果の sha を記録する"
-    print("解消%s: %s" % ("（--dry-run）" if args.dry_run else "", tilde(target)))
+        detail = M("base と sha に kit の版、merged に解消結果の sha を記録する")
+    print(M("解消%s: %s") % (M("（--dry-run）") if args.dry_run else "", tilde(target)))
     if args.dry_run:
         sys.stdout.write(diff_text(current, result, target))
     print("  " + detail)
     if it and os.path.exists(target + ".new"):
-        print("  .new を退避して消す: %s.new" % tilde(target))
+        print(M("  .new を退避して消す: %s.new") % tilde(target))
     if args.dry_run:
-        print("--dry-run なので何も変えていない。退避も作らない。")
+        print(M("--dry-run なので何も変えていない。退避も作らない。"))
         return
     backup = Backup("resolve", {"brain": cfg["brain"], "from": VERSION, "to": VERSION, "target": target})
     if result != current:
@@ -1932,11 +2024,11 @@ def cmd_resolve(args):
         backup.save(mp)  # 同じ内容の --from でも、この解消を先に戻せるようにする。
     # 今の内容をそのまま結果にしたときも、受け入れた中身を記録と一緒にコミットする
     touched = list(backup.meta["overwritten"]) + list(backup.meta["added"]) + [target]
-    commit_brain(cfg, touched, "brain-kit: 更新の衝突を解消")
+    commit_brain(cfg, touched, M("brain-kit: 更新の衝突を解消"))
     bdir = backup.close()
-    print("解消した: %s%s" % (tilde(target), "（今の内容を保った）" if result == current else ""))
+    print(M("解消した: %s%s") % (tilde(target), M("（今の内容を保った）") if result == current else ""))
     if bdir:
-        print("退避: %s（--rollback でこの解消を戻せる）" % tilde(bdir))
+        print(M("退避: %s（--rollback でこの解消を戻せる）") % tilde(bdir))
 
 
 # ------------------------------------------------------------------ uninstall（機械側の記録だけを使う）
@@ -1947,7 +2039,7 @@ def plan_uninstall(args):
     brain = os.path.abspath(os.path.expanduser(args.brain))
     manifest = load_json(claude_manifest, {}) or {}
     if not manifest.get("files"):
-        die("kit の記録が無い（v1〜v9 の導入か、未導入）。先に --update で記録を作る")
+        die(M("kit の記録が無い（v1〜v9 の導入か、未導入）。先に --update で記録を作る"))
     cfg = load_json(config_path(brain))
     protected = [brain]
     if cfg:
@@ -2028,9 +2120,9 @@ def plan_uninstall(args):
             settings_raw = open_bytes(settings_path)
             cur = json.loads(settings_raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as e:
-            die("settings.json が JSON として読めない: %s" % e)
+            die(M("settings.json が JSON として読めない: %s") % e)
         if not isinstance(cur, dict):
-            die("settings.json は JSON オブジェクトにする")
+            die(M("settings.json は JSON オブジェクトにする"))
     pending = {tuple(e) for e in manifest.get("settings_conflicts", [])}
     settings_remove, settings_keep = [], []
     for part, values in manifest.get("settings", {}).items():
@@ -2101,6 +2193,10 @@ def plan_uninstall(args):
     def canonical(path):
         """path が指すもの。記録のある kit のファイルなら、同じ実体を指す記録のパスを全部（symlink の別名も）"""
         real = os.path.realpath(path)
+        # Machine metadata is optional: retained kit hooks fall back to Japanese without it.
+        # It is removed on uninstall, and is not an executable dependency to traverse.
+        if real == os.path.realpath(claude_manifest):
+            return []
         if real in by_real:
             return by_real[real]
         if real.startswith(real_claude + os.sep) and os.path.isfile(real):
@@ -2212,10 +2308,10 @@ def plan_uninstall(args):
             with open(user, "rb") as f:
                 text = f.read(limit).decode("utf-8", "replace")
         except (IOError, OSError) as e:
-            die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
-                "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
+            die(M("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
+                "読めるようにするか、そのフックを外してから --uninstall を実行する") % (tilde(user), e.strerror or e), 1)
         # 自分自身を別名で呼ぶものも積む（別名のディレクトリから見た相対を探すため。同じ組は seen が飛ばす）
-        found(named_files(text, sorted(dirs)), "%s から" % os.path.basename(user))
+        found(named_files(text, sorted(dirs)), M("%s から") % os.path.basename(user))
     return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
                 settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
                 unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,
@@ -2238,47 +2334,47 @@ def cmd_uninstall(args):
     remove, keep, unsafe, other, directories = P["remove"], P["keep"], P["unsafe"], P["other"], P["directories"]
     expected, used, cur, settings_raw = P["expected"], P["used"], P["cur"], P["settings_raw"]
     settings_writable, settings_remove, settings_keep = P["settings_writable"], P["settings_remove"], P["settings_keep"]
-    untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
+    untouched = [tilde(brain) + M("（.brain-kit・kit のファイルも含む全部）")]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
-    untouched.extend(["GitHub のラベル", "Codex CLI", "~/.claude/backup-brain-kit-*（既存の退避）"])
+    untouched.extend([M("GitHub のラベル"), "Codex CLI", M("~/.claude/backup-brain-kit-*（既存の退避）")])
     if os.path.lexists(conflicts):
-        untouched.append(tilde(conflicts) + "（持ち主のマージ結果を含むことがある）")
+        untouched.append(tilde(conflicts) + M("（持ち主のマージ結果を含むことがある）"))
     untouched.extend(tilde(p) for p in sorted(other))
 
     def show(title, rows):
-        say("%s: %d 件" % (title, len(rows)))
+        say(M("%s: %d 件") % (title, len(rows)))
         for row in rows:
             print("  " + row)
 
-    show("消すもの", [tilde(p) for p in sorted(remove)])
-    show("残すもの（持ち主が変えた）", [tilde(p) for p in sorted(keep)])
-    show("残すもの（残すフックが使うため）", ["%s（%s）" % (tilde(p), used[p]) for p in sorted(used)])
-    print("  持ち主が変えた kit のファイル（残す）。.new も今の kit と一致しなければ残す。")
-    show("settings.json から外す項目" + ("（手動）" if not settings_writable else ""), settings_remove)
+    show(M("消すもの"), [tilde(p) for p in sorted(remove)])
+    show(M("残すもの（持ち主が変えた）"), [tilde(p) for p in sorted(keep)])
+    show(M("残すもの（残すフックが使うため）"), [M("%s（%s）") % (tilde(p), used[p]) for p in sorted(used)])
+    print(M("  持ち主が変えた kit のファイル（残す）。.new も今の kit と一致しなければ残す。"))
+    show(M("settings.json から外す項目") + (M("（手動）") if not settings_writable else ""), settings_remove)
     if not settings_writable:
-        print("  settings.json は symlink などのため書かない。上の項目は手で外す。")
-    show("settings.json に残す項目", settings_keep)
-    print("  permissions と記録にない項目は持ち主のものとして残す。")
-    show("触らないもの", untouched)
-    print("  その他の kit 状態: %d 件（残す）" % len(other))
-    show("触らない（記録が ~/.claude の外・symlink など）", [tilde(p) for p in sorted(unsafe)])
+        print(M("  settings.json は symlink などのため書かない。上の項目は手で外す。"))
+    show(M("settings.json に残す項目"), settings_keep)
+    print(M("  permissions と記録にない項目は持ち主のものとして残す。"))
+    show(M("触らないもの"), untouched)
+    print(M("  その他の kit 状態: %d 件（残す）") % len(other))
+    show(M("触らない（記録が ~/.claude の外・symlink など）"), [tilde(p) for p in sorted(unsafe)])
     if args.dry_run:
-        print("--dry-run なので何も変えていない。退避も作らない。")
+        print(M("--dry-run なので何も変えていない。退避も作らない。"))
         return
     if not args.yes:
         if not interactive(args):
-            die("実行には --yes が要る。先に --dry-run で確認できる", 2)
-        if ask("実行する？ [y/N]", args=args).lower() not in ("y", "yes"):
-            print("中止した。何も変えていない。")
+            die(M("実行には --yes が要る。先に --dry-run で確認できる"), 2)
+        if ask(M("実行する？ [y/N]"), args=args).lower() not in ("y", "yes"):
+            print(M("中止した。何も変えていない。"))
             return
     # 確認のあとで計画を作り直し、見せた計画と同じかを比べる。settings.json・残すフックが使うスクリプト
     # （新しく作られたものも）・消すものの中身が、確認の間に変わっていたら古い計画で消さない（何も変えずに止める）
     again = plan_uninstall(args)
     if plan_signature(again) != plan_signature(P):
         if again["settings_raw"] != settings_raw or again["settings_writable"] != settings_writable:
-            die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
-        die("確認の間に、消すもの・残すフックが使うものが変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+            die(M("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する"), 1)
+        die(M("確認の間に、消すもの・残すフックが使うものが変わった。何も変えていない。もう一度 --uninstall を実行する"), 1)
 
     def unchanged(path):
         # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる
@@ -2292,7 +2388,7 @@ def cmd_uninstall(args):
         if not unchanged(path):
             remove.discard(path)
             keep.add(path)
-            print("  残す（確認の間に変わった）: %s" % tilde(path))
+            print(M("  残す（確認の間に変わった）: %s") % tilde(path))
             return
         backup.save(path)
         backup.meta["removed"].append(path)
@@ -2309,7 +2405,7 @@ def cmd_uninstall(args):
             # 何も変えていない退避なので、--rollback の対象にしない（持ち主の新しい settings.json を古い版で戻さない）
             backup.meta.update(rolled_back=True, aborted=True)
             backup._journal()
-            die("書く直前に settings.json が変わった。何も変えていない（--rollback は要らない）", 1)
+            die(M("書く直前に settings.json が変わった。何も変えていない（--rollback は要らない）"), 1)
         backup.meta["written"][settings_path] = sha(text)
         backup._journal()
         fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=claude)
@@ -2338,12 +2434,12 @@ def cmd_uninstall(args):
                 break
             directory = os.path.dirname(directory)
     bdir = backup.close()
-    print("消したファイル: %d 件、残したファイル: %d 件。settings: 外した %d 件、残した %d 件。" % (
+    print(M("消したファイル: %d 件、残したファイル: %d 件。settings: 外した %d 件、残した %d 件。") % (
         len(remove), len(keep | other | unsafe | set(used)), len(settings_remove) if settings_writable else 0,
         len(settings_keep) + (len(settings_remove) if not settings_writable else 0)))
     if bdir:
-        print("退避: %s（--rollback で戻せる。要らなくなったら手で消す）" % tilde(bdir))
-    print("brain/.brain-kit/config.json は残っている。./install.sh --update で ~/.claude 側を入れ直せる。")
+        print(M("退避: %s（--rollback で戻せる。要らなくなったら手で消す）") % tilde(bdir))
+    print(M("brain/.brain-kit/config.json は残っている。./install.sh --update で ~/.claude 側を入れ直せる。"))
 
 
 # ------------------------------------------------------------------ rollback
@@ -2391,25 +2487,25 @@ def cmd_rollback(args):
                 if why:
                     pass
                 elif not isinstance(m.get("rolled_back", False), bool):
-                    why = "rolled_back が true / false でない"
+                    why = M("rolled_back が true / false でない")
                 elif m.get("rolled_back"):
                     continue
                 elif "seq" in m and not (backup_seq(m) and isinstance(m.get("legacy_before"), dict)):
-                    why = "seq か legacy_before が不正"
+                    why = M("seq か legacy_before が不正")
                 else:
                     try:
                         order = backup_order(m, d)
                     except (TypeError, ValueError):
-                        why = "stamp か created が不正"
+                        why = M("stamp か created が不正")
                 if why:
-                    die("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
-                        "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (why, tilde(path)), 1)
+                    die(M("退避の記録が壊れている（%s）: %s。どれから戻すか決められないので何も変えない。"
+                          "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す") % (why, tilde(path)), 1)
                 cands.append((order, d, m))
     if not cands:
-        die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
+        die(M("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）"), 1)
     seqs = [backup_seq(c[2]) for c in cands if backup_seq(c[2])]
     if len(seqs) != len(set(seqs)):
-        die("退避の記録が壊れている（戻していない退避に同じ seq がある）。どれから戻すか決められないので何も変えない", 1)
+        die(M("退避の記録が壊れている（戻していない退避に同じ seq がある）。どれから戻すか決められないので何も変えない"), 1)
     cands.sort()
     stamp, d, meta = cands[-1]
     if backup_seq(meta):
@@ -2418,13 +2514,13 @@ def cmd_rollback(args):
         later = [c[1] for c in cands if "seq" not in c[2] and
                  meta["legacy_before"].get(c[1]) != meta_sha(os.path.join(CLAUDE, c[1]))]
         if later:
-            die("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
-                "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
-                "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (", ".join(later), d), 1)
+            die(M("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
+                  "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
+                  "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す") % (", ".join(later), d), 1)
     bdir = os.path.join(CLAUDE, d)
     target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
-    say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
-                                        "（--dry-run: 何も変えない）" if args.dry_run else ""))
+    say(M("戻す: %s（%s、v%s → %s）%s") % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
+                                        M("（--dry-run: 何も変えない）") if args.dry_run else ""))
     restored, removed, left = [], [], []
     gone = set(meta.get("removed", []))
     written = meta.get("written", {})
@@ -2455,13 +2551,13 @@ def cmd_rollback(args):
             continue
         (removed if cur == h else left).append(path)
     for p in restored:
-        print("  戻す: %s" % tilde(p))
+        print(M("  戻す: %s") % tilde(p))
     for p in removed:
-        print("  消す（更新で足したもの）: %s" % tilde(p))
+        print(M("  消す（更新で足したもの）: %s") % tilde(p))
     for p in left:
-        print("  残す（%sあとに書き換えられている・作られている）: %s" % ("外した" if gone or written else "足した", tilde(p)))
+        print(M("  残す（%sあとに書き換えられている・作られている）: %s") % (M("外した") if gone or written else M("足した"), tilde(p)))
     for w in meta.get("worktrees", []):
-        print("  worktree を外す: %s（中身に変更があれば残す）" % tilde(w["path"]))
+        print(M("  worktree を外す: %s（中身に変更があれば残す）") % tilde(w["path"]))
     if args.dry_run:
         return
     for path in restored:
@@ -2479,17 +2575,17 @@ def cmd_rollback(args):
     for w in reversed(meta.get("worktrees", [])):
         rc, _, err = run(["git", "-C", brain, "worktree", "remove", w["path"]])
         if rc != 0:
-            print("  warn: worktree %s は外さなかった: %s" % (tilde(w["path"]), err.strip()))
+            print(M("  warn: worktree %s は外さなかった: %s") % (tilde(w["path"]), err.strip()))
             continue
         if w.get("new_branch"):
             if run(["git", "-C", brain, "branch", "-d", w["branch"]])[0] != 0:
-                print("  warn: ブランチ %s は main に入っていない変更があるので残した" % w["branch"])
+                print(M("  warn: ブランチ %s は main に入っていない変更があるので残した") % w["branch"])
     if meta.get("kind") != "uninstall" and brain and os.path.isdir(brain):
-        commit_brain({"brain": brain}, restored + removed, "brain-kit: 更新を戻した（%s）" % d)
+        commit_brain({"brain": brain}, restored + removed, M("brain-kit: 更新を戻した（%s）") % d)
     meta["rolled_back"] = True
     meta["rolled_back_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     write_atomic(os.path.join(bdir, "meta.json"), dump_json(meta))
-    print("戻した: %d 件、消した: %d 件、残した: %d 件。ラベルは消さない（GitHub 側はそのまま）。" % (len(restored), len(removed), len(left)))
+    print(M("戻した: %d 件、消した: %d 件、残した: %d 件。ラベルは消さない（GitHub 側はそのまま）。") % (len(restored), len(removed), len(left)))
 
 
 # ------------------------------------------------------------------ doctor
@@ -2508,14 +2604,35 @@ def is_empty_note(p):
         return True
     t = re.sub(r"^---.*?---", "", t, count=1, flags=re.S)
     t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-    return not any(l.strip() and not l.lstrip().startswith("#") and not l.startswith("持ち主:") for l in t.splitlines())
+    return not any(l.strip() and not l.lstrip().startswith("#") and not l.startswith(("持ち主:", "Owner:")) for l in t.splitlines())
+
+
+def stalled_line(stalled):
+    """collect.py の 1 行の要約を表示の言語で。日本語は collect.py の行をそのまま使う（同じバイト）。"""
+    if _LANG == "ja":
+        return stalled["line"]
+    groups = []
+    for kind, label in (("issue", M("作業中の issue")), ("pr", M("レビュー済みで未リリースの PR")),
+                        ("session", M("止まったセッション"))):
+        refs = []
+        for it in stalled["items"]:
+            if it["kind"] != kind:
+                continue
+            if kind == "session":
+                refs.append(M("%s（%s、%s）") % (it["name"], M(ROLE_JA[it["role"]]),
+                            M("記録なし") if it["idle_hours"] is None else M("%d 時間") % it["idle_hours"]))
+            else:
+                refs.append("%s#%s" % (it["repo"].split("/")[-1], it["number"]))
+        if refs:
+            groups.append(label + " " + M("・").join(refs[:5]) + (M("…ほか %d 件") % (len(refs) - 5) if len(refs) > 5 else ""))
+    return M("止まっている（%s 時間以上動きなし）: %s") % (format(stalled["hours"], "g"), M("／").join(groups)) if groups else ""
 
 
 def cmd_doctor(args):
     rows, todo = [], []
 
     def row(item, ok, detail="", status=None):
-        rows.append((item, status or ("OK" if ok else "無い"), detail))
+        rows.append((item, status or ("OK" if ok else M("無い")), detail))
 
     def first(cmd, timeout=8):
         rc, out, err = run(cmd, timeout=timeout)
@@ -2526,125 +2643,133 @@ def cmd_doctor(args):
     cfg, v_from, desc, legacy = resolve_config(args, cman)
     brain = os.path.abspath(os.path.expanduser(args.brain))
 
-    rows.append(("[版]", "", ""))
-    row("  kit（この手元）", True, "v%d" % VERSION)
+    # 表示の言語（--lang）ではなく、記録された持ち主の言語を出す
+    owner_lang = record_lang(cfg, cman)
+    recorded = []
+    for path, record in ((config_path(brain), load_json(config_path(brain))), (CLAUDE_MANIFEST, cman)):
+        if isinstance(record, dict) and record.get("lang") in tuple(LANG_NAMES):
+            recorded.append(tilde(path))
+    row(M("  言語"), True, M("%s（%s）; 記録: %s") % (
+        language_name(owner_lang), owner_lang, ", ".join(recorded) or M("未記録（既定 ja）")))
+    rows.append((M("[版]"), "", ""))
+    row(M("  kit（この手元）"), True, "v%d" % VERSION)
     if cfg is None:
-        row("  brain", False, "brain-kit が入っていない（%s）" % tilde(brain), "要対応")
-        todo.append("./install.sh（新しく入れる）")
+        row("  brain", False, M("brain-kit が入っていない（%s）") % tilde(brain), M("要対応"))
+        todo.append(M("./install.sh（新しく入れる）"))
     else:
         old = v_from != VERSION
-        row("  brain", not old, desc, "古い" if old else "OK")
+        row("  brain", not old, desc, M("古い") if old else "OK")
         cv = cman.get("version")
-        row("  ~/.claude", cv == VERSION, "v%s" % cv if cv else "版の記録なし", "OK" if cv == VERSION else "古い")
+        row("  ~/.claude", cv == VERSION, "v%s" % cv if cv else M("版の記録なし"), "OK" if cv == VERSION else M("古い"))
         if old or cv != VERSION:
-            todo.append("./install.sh --update --dry-run で中身を見て、./install.sh --update")
+            todo.append(M("./install.sh --update --dry-run で中身を見て、./install.sh --update"))
 
     if cfg:
         row("  start-all", os.path.isfile(os.path.join(KIT_STATE, "bin", "start-all")),
             "~/.claude/brain-kit/bin/start-all")
-        rows.append(("[人格]", "", ""))
+        rows.append((M("[人格]"), "", ""))
         for r in ROLES:
             if r not in cfg["personas"]:
-                row("  %s" % ROLE_JA[r], False, "まだ居ない（--update で足す）", "無い")
+                row("  %s" % M(ROLE_JA[r]), False, M("まだ居ない（--update で足す）"), M("無い"))
                 continue
             p = persona(cfg, r)
             sk = os.path.isfile(os.path.join(CLAUDE, "skills", p["id"], "SKILL.md"))
             ar = os.path.isdir(os.path.join(brain, area_of(cfg, r)))
             wt = worktree_of(cfg, r)
             wt_ok = r == "partner" or os.path.isdir(wt)
-            detail = "skill /%s %s・領域 %s/ %s%s" % (p["id"], "○" if sk else "×", area_of(cfg, r), "○" if ar else "×",
-                                                    "" if r == "partner" else "・worktree %s %s" % (tilde(wt), "○" if wt_ok else "×"))
-            row("  %s %s" % (ROLE_JA[r], p["name"]), sk and ar and wt_ok, detail, None if sk and ar and wt_ok else "要対応")
+            detail = M("skill /%s %s・領域 %s/ %s%s") % (p["id"], "○" if sk else "×", area_of(cfg, r), "○" if ar else "×",
+                                                    "" if r == "partner" else M("・worktree %s %s") % (tilde(wt), "○" if wt_ok else "×"))
+            row("  %s %s" % (M(ROLE_JA[r]), p["name"]), sk and ar and wt_ok, detail, None if sk and ar and wt_ok else M("要対応"))
         release = cfg["personas"].get("release")
         if cfg.get("release_permissions") and release:
             perm = os.path.join(KIT_STATE, "permissions", release["id"] + ".json")
             exists = os.path.isfile(perm)
-            row("  リリースの許可の一覧", exists,
-                "%s（start-%s だけが読む）" % (tilde(perm), release["id"]), "入れた" if exists else "無い")
+            row(M("  リリースの許可の一覧"), exists,
+                M("%s（start-%s だけが読む）") % (tilde(perm), release["id"]), M("入れた") if exists else M("無い"))
             if not exists:
-                todo.append("./install.sh --update（リリースの許可の一覧を戻す）")
+                todo.append(M("./install.sh --update（リリースの許可の一覧を戻す）"))
         else:
-            row("  リリースの許可の一覧", True, "任意（./install.sh --update --release-permissions）", "入れていない")
+            row(M("  リリースの許可の一覧"), True, M("任意（./install.sh --update --release-permissions）"), M("入れていない"))
             if release and os.path.isfile(release_permissions_path(cfg)):
                 row("  " + tilde(release_permissions_path(cfg)), False,
-                    "選んでいないのに在る（起動スクリプトは設定を見て読まない）。要らなければ手で消す", "要確認")
+                    M("選んでいないのに在る（起動スクリプトは設定を見て読まない）。要らなければ手で消す"), M("要確認"))
         starts = os.path.join(KIT_STATE, "bin")
         if os.path.isdir(starts):
             for name in sorted(os.listdir(starts)):
                 if name.startswith("start-") and (not release or name != "start-" + release["id"]):
                     path = os.path.join(starts, name)
                     if os.path.isfile(path) and "--settings" in (read_text(path) or ""):
-                        row("  " + tilde(path), False, "リリース以外が --settings を読む", "要確認")
+                        row("  " + tilde(path), False, M("リリース以外が --settings を読む"), M("要確認"))
         pcore = os.path.join(brain, persona(cfg, "partner")["name"], "00_核.md")
         if os.path.exists(pcore) and is_empty_note(pcore):
-            row("  相棒の憲法", False, "00_核.md が空。/setup で埋める", "要対応")
+            row(M("  相棒の憲法"), False, M("00_核.md が空。/setup で埋める"), M("要対応"))
             todo.append("cd %s && claude → /setup" % tilde(brain))
 
-        rows.append(("[kit のファイル]", "", ""))
+        rows.append((M("[kit のファイル]"), "", ""))
         manifests = load_manifests(brain)
         items = build_plan(cfg, manifests, legacy, load_fingerprints() if legacy else {})
         kits = [i for i in items if i.kind == "kit"]
         cnt = {}
         for i in kits:
             cnt.setdefault(i.state, []).append(i)
-        row("  最新", True, "%d 件" % len(cnt.get("same", [])))
+        row(M("  最新"), True, M("%d 件") % len(cnt.get("same", [])))
         if cnt.get("upgrade"):
-            row("  kit だけの更新待ち", False, "%d 件" % len(cnt["upgrade"]), "更新待ち")
+            row(M("  kit だけの更新待ち"), False, M("%d 件") % len(cnt["upgrade"]), M("更新待ち"))
         if cnt.get("add"):
-            row("  足りない", False, "%d 件: %s" % (len(cnt["add"]), ", ".join(tilde(i.dst) for i in cnt["add"][:4])
-                                                  + (" …" if len(cnt["add"]) > 4 else "")), "要対応")
+            row(M("  足りない"), False, M("%d 件: %s") % (len(cnt["add"]), ", ".join(tilde(i.dst) for i in cnt["add"][:4])
+                                                  + (" …" if len(cnt["add"]) > 4 else "")), M("要対応"))
         for i in cnt.get("owner", []):
-            row("  持ち主だけが変更", True, tilde(i.dst), "持ち主の変更")
+            row(M("  持ち主だけが変更"), True, tilde(i.dst), M("持ち主の変更"))
         for i in cnt.get("conflict", []):
-            row("  衝突", False, tilde(i.dst), "衝突")
+            row(M("  衝突"), False, tilde(i.dst), M("衝突"))
         for i in kits:
             if os.path.exists(i.dst + ".new"):
-                row("  .new が残っている", False, tilde(i.dst + ".new"), "要確認")
+                row(M("  .new が残っている"), False, tilde(i.dst + ".new"), M("要確認"))
         if cnt.get("upgrade") or cnt.get("add"):
-            if "./install.sh --update --dry-run で中身を見て、./install.sh --update" not in todo:
-                todo.append("./install.sh --update --dry-run で中身を見て、./install.sh --update")
+            if M("./install.sh --update --dry-run で中身を見て、./install.sh --update") not in todo:
+                todo.append(M("./install.sh --update --dry-run で中身を見て、./install.sh --update"))
         own_missing = [i for i in items if i.kind == "owner" and i.state == "add"]
         if own_missing:
-            row("  持ち主の領域の骨格", False, "無いもの %d 件（--update で足す）" % len(own_missing), "要対応")
+            row(M("  持ち主の領域の骨格"), False, M("無いもの %d 件（--update で足す）") % len(own_missing), M("要対応"))
 
     shared = load_json(os.path.join(CLAUDE, "settings.json"), {}) or {}
     permissions = shared.get("permissions", {})
     allow = permissions.get("allow", []) if isinstance(permissions, dict) else []
     template = load_json(os.path.join(KIT, "claude", "brain-kit", "permissions", "release.json"))
     if isinstance(allow, list) and any(rule in allow for rule in template["permissions"]["allow"]):
-        row("  ~/.claude/settings.json", False, "リリースの許可が全人格で共有されている", "要確認")
+        row("  ~/.claude/settings.json", False, M("リリースの許可が全人格で共有されている"), M("要確認"))
 
     rows.append(("[brain]", "", tilde(brain)))
     if os.path.isdir(brain):
         rc, n = first(["git", "-C", brain, "rev-list", "--count", "HEAD"])
         if rc == 0:
             rc2, rem = first(["git", "-C", brain, "remote"])
-            row("  git", True, "コミット %s、remote %s" % (n, "あり" if rem else "無し"), "OK" if rem else "要対応")
+            row("  git", True, M("コミット %s、remote %s") % (n, M("あり") if rem else M("無し")), "OK" if rem else M("要対応"))
             if not rem:
-                todo.append("git -C %s remote add origin <private リポジトリ>" % tilde(brain))
+                todo.append(M("git -C %s remote add origin <private リポジトリ>") % tilde(brain))
             rc3, dirty = first(["git", "-C", brain, "status", "--porcelain"])
             if dirty:
-                row("  未コミット", False, "brain に未コミットの変更がある", "要対応")
+                row(M("  未コミット"), False, M("brain に未コミットの変更がある"), M("要対応"))
         else:
-            row("  git", False, "リポジトリではない", "要対応")
+            row("  git", False, M("リポジトリではない"), M("要対応"))
             todo.append("git -C %s init" % tilde(brain))
     else:
-        row("  骨格", False, "brain が無い", "要対応")
+        row(M("  骨格"), False, M("brain が無い"), M("要対応"))
 
     rows.append(("[~/.claude]", "", tilde(CLAUDE)))
     for h in ["session-end-brain.sh", "brain-digest.js"]:
         p = os.path.join(CLAUDE, "hooks", h)
-        row("  hooks/%s" % h, os.path.isfile(p), "" if not os.path.isfile(p) or os.access(p, os.X_OK) else "実行権限なし")
+        row("  hooks/%s" % h, os.path.isfile(p), "" if not os.path.isfile(p) or os.access(p, os.X_OK) else M("実行権限なし"))
     sp = os.path.join(CLAUDE, "settings.json")
     st = load_json(sp)
     if st is None:
-        row("  settings.json", False, "無いか JSON として読めない", "要対応")
+        row("  settings.json", False, M("無いか JSON として読めない"), M("要対応"))
     else:
         se = any("session-end-brain.sh" in (h.get("command") or "") for g in st.get("hooks", {}).get("SessionEnd", []) for h in g.get("hooks", []))
-        row("  settings: SessionEnd フック", se, "daily/ への自動追記")
+        row(M("  settings: SessionEnd フック"), se, M("daily/ への自動追記"))
         ep = st.get("enabledPlugins", {})
         row("  settings: plugin pr-review-toolkit", any(k.startswith("pr-review-toolkit") for k in ep))
-        row("  settings: plugin codex", any(k.startswith("codex") for k in ep), "任意（--codex）", None if any(k.startswith("codex") for k in ep) else "無い")
+        row("  settings: plugin codex", any(k.startswith("codex") for k in ep), M("任意（--codex）"), None if any(k.startswith("codex") for k in ep) else M("無い"))
 
     notice = "brain-kit-update-check.py"
     notice_hook = os.path.isfile(os.path.join(CLAUDE, "hooks", notice)) and any(
@@ -2653,8 +2778,8 @@ def cmd_doctor(args):
     notice_off = os.path.exists(os.path.join(KIT_STATE, "no-update-check"))
     cached = load_json(os.path.join(KIT_STATE, "update-check.json"))
     latest = cached.get("latest") if isinstance(cached, dict) else None
-    row("  更新のお知らせ", True, "npm 公開版: %s（前回の確認）" % latest if latest else "",
-        "止めてある" if notice_off else "有効" if notice_hook else "フック無し")
+    row(M("  更新のお知らせ"), True, M("npm 公開版: %s（前回の確認）") % latest if latest else "",
+        M("止めてある") if notice_off else M("有効") if notice_hook else M("フック無し"))
 
     reread = "brain-kit-core-reread.py"
     reread_hook = os.path.isfile(os.path.join(CLAUDE, "hooks", reread)) and any(
@@ -2663,57 +2788,57 @@ def cmd_doctor(args):
         for h in g.get("hooks", []))
     reread_off = (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
                   os.path.exists(os.path.join(KIT_STATE, "no-core-reread")))
-    row("  要約のあとの核の読み直し", True, "",
-        "止めてある" if reread_off else "有効" if reread_hook else "フック無し")
+    row(M("  要約のあとの核の読み直し"), True, "",
+        M("止めてある") if reread_off else M("有効") if reread_hook else M("フック無し"))
 
     rows.append(("[CLI]", "", ""))
 
     def cli(name, vercmd=None, optional=False):
         if not have(name):
-            row("  " + name, False, "任意" if optional else "", "無い" if optional else "要対応")
+            row("  " + name, False, M("任意") if optional else "", M("無い") if optional else M("要対応"))
             return False
         rc, v = first(vercmd) if vercmd else (0, "")
         row("  " + name, True, v[:40])
         return True
     if not have("claude"):
-        row("  claude", False, status="要対応")
-        todo.append("Claude Code CLI を入れる")
+        row("  claude", False, status=M("要対応"))
+        todo.append(M("Claude Code CLI を入れる"))
     else:
         result = run(["claude", "--version"], timeout=15)
         lines = (result[1] or result[2]).strip().splitlines()
         row("  claude", True, lines[0][:40] if lines else "")
         warning = claude_version_warning(result=result)
-        status = "要確認" if warning and "版を読めない" in warning else "古い" if warning else "OK"
-        row("  Claude Code の版", warning is None,
-            warning[len("warn: "):] if warning else "動作を確かめた版 %s 以上" % VERIFIED_CLAUDE_CODE, status)
-        if status == "古い":
-            todo.append("claude update（動作を確かめた版 %s より古い）" % VERIFIED_CLAUDE_CODE)
+        status = M("要確認") if warning and M("版を読めない") in warning else M("古い") if warning else "OK"
+        row(M("  Claude Code の版"), warning is None,
+            warning[len("warn: "):] if warning else M("動作を確かめた版 %s 以上") % VERIFIED_CLAUDE_CODE, status)
+        if status == M("古い"):
+            todo.append(M("claude update（動作を確かめた版 %s より古い）") % VERIFIED_CLAUDE_CODE)
     cli("node", ["node", "--version"])
     cli("python3", ["python3", "--version"])
     gh_ok = False
     if cli("gh", ["gh", "--version"]):
         ok = run(["gh", "auth", "status"], timeout=15)[0] == 0
         gh_ok = ok
-        row("  gh auth", ok, "認証済み" if ok else "未認証", "OK" if ok else "要対応")
+        row("  gh auth", ok, M("認証済み") if ok else M("未認証"), "OK" if ok else M("要対応"))
         if not ok:
-            todo.append("gh auth login（ラベル・PR・工程表の集計に要る）")
+            todo.append(M("gh auth login（ラベル・PR・工程表の集計に要る）"))
         elif cfg and cfg.get("repos"):
             for r in cfg["repos"]:
                 rc, out, _ = run(["gh", "label", "list", "-R", r, "--limit", "200", "--json", "name", "--jq", ".[].name"], timeout=20)
                 if rc != 0:
-                    row("  ラベル %s" % r, False, "読めない", "要対応")
+                    row(M("  ラベル %s") % r, False, M("読めない"), M("要対応"))
                     continue
                 miss = [l for l in wanted_labels(cfg) if l not in set(out.splitlines())]
-                row("  ラベル %s" % r, not miss, "足りない: " + " ".join(miss) if miss else "揃っている", None if not miss else "要対応")
+                row(M("  ラベル %s") % r, not miss, M("足りない: ") + " ".join(miss) if miss else M("揃っている"), None if not miss else M("要対応"))
     if cli("codex", ["codex", "--version"], optional=True):
         ok = run(["codex", "login", "status"], timeout=15)[0] == 0
-        row("  codex login", ok, "" if ok else "未ログインか確認不可", "OK" if ok else "要対応")
+        row("  codex login", ok, "" if ok else M("未ログインか確認不可"), "OK" if ok else M("要対応"))
     cli("tailscale", ["tailscale", "version"], optional=True)
     orca = shutil.which("orca-ide") or ("/opt/Orca/orca-ide" if os.access("/opt/Orca/orca-ide", os.X_OK) else None)
-    row("  orca-ide", bool(orca), orca or "任意（base のみ。setup-base.sh）", None if orca else "無い")
+    row("  orca-ide", bool(orca), orca or M("任意（base のみ。setup-base.sh）"), None if orca else M("無い"))
     if have("orca"):
         rc, v = first(["orca", "automations", "list"], timeout=15)
-        row("  orca automations", rc == 0, v[:40] if rc == 0 else "一覧を取れない（serve が止まっているか、--environment が要る）", None if rc == 0 else "要対応")
+        row("  orca automations", rc == 0, v[:40] if rc == 0 else M("一覧を取れない（serve が止まっているか、--environment が要る）"), None if rc == 0 else M("要対応"))
 
     if cfg:
         # 読み込みでも .pyc を作らない。診断はローカルにも書かない。
@@ -2724,67 +2849,67 @@ def cmd_doctor(args):
             collect = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(collect)
         except Exception:  # noqa: BLE001  集計が無い古い kit でも診断を続ける
-            rows.append(("[止まっている仕事]", "", ""))
-            row("  集計", False, status="確かめられない")
+            rows.append((M("[止まっている仕事]"), "", ""))
+            row(M("  集計"), False, status=M("確かめられない"))
         else:
             hours = collect.stall_hours(cfg, args.stall_hours)
-            rows.append(("[止まっている仕事]", "", "%s 時間以上動きなし" % format(hours, "g")))
+            rows.append((M("[止まっている仕事]"), "", M("%s 時間以上動きなし") % format(hours, "g")))
             repo_data = {}
             if not cfg.get("repos"):
-                row("  GitHub", False, "repos が無い", "飛ばした")
+                row("  GitHub", False, M("repos が無い"), M("飛ばした"))
             elif not have("gh"):
-                row("  GitHub", False, "gh が無い（issue・PR は見ない）", "飛ばした")
+                row("  GitHub", False, M("gh が無い（issue・PR は見ない）"), M("飛ばした"))
             elif not gh_ok:
-                row("  GitHub", False, "gh が未認証", "飛ばした")
+                row("  GitHub", False, M("gh が未認証"), M("飛ばした"))
             else:
                 for repo in cfg["repos"]:
                     try:
                         repo_data[repo] = collect.fetch(repo, timeout=20)
                     except Exception:  # noqa: BLE001  通信できないときもローカルは見る
-                        row("  GitHub " + repo, False, "読めない（ネットワークか権限）", "飛ばした")
+                        row("  GitHub " + repo, False, M("読めない（ネットワークか権限）"), M("飛ばした"))
             stalled = collect.find_stalled(cfg, brain, repo_data, hours)
             work_items = [it for it in stalled["items"] if it["kind"] != "session"]
             for it in work_items:
-                row("  作業中の issue" if it["kind"] == "issue" else "  レビュー済みで未リリースの PR", False,
-                    "%s#%s %s（%d 時間）" % (it["repo"], it["number"], it["title"][:30], it["idle_hours"]), "止まっている")
+                row(M("  作業中の issue") if it["kind"] == "issue" else M("  レビュー済みで未リリースの PR"), False,
+                    M("%s#%s %s（%d 時間）") % (it["repo"], it["number"], it["title"][:30], it["idle_hours"]), M("止まっている"))
             if repo_data and not work_items:
-                row("  issue・PR", True, "なし")
+                row(M("  issue・PR"), True, M("なし"))
             sessions = {it["role"]: it for it in stalled["items"] if it["kind"] == "session"}
             for role in ROLES:
                 if role not in cfg.get("personas", {}):
                     continue
                 p = persona(cfg, role)
                 at = collect.last_session(brain, p["id"], role)
-                detail = "最後 " + at.astimezone().strftime("%Y-%m-%d %H:%M") if at else "記録なし"
-                status = "参考"
+                detail = M("最後 ") + at.astimezone().strftime("%Y-%m-%d %H:%M") if at else M("記録なし")
+                status = M("参考")
                 if role != "partner" and repo_data:
                     work = collect.waiting_work(cfg, repo_data, role)
-                    status = "止まっている" if role in sessions else "OK"
+                    status = M("止まっている") if role in sessions else "OK"
                     if role in sessions:
                         it = sessions[role]
                         if at:
-                            detail += "（%d 時間前）" % it["idle_hours"]
-                        detail += "・仕事 %d 件" % work
+                            detail += M("（%d 時間前）") % it["idle_hours"]
+                        detail += M("・仕事 %d 件") % work
                     elif not work:
-                        detail = "仕事なし"
-                row("  セッション " + p["name"], status == "OK", detail, status)
+                        detail = M("仕事なし")
+                row(M("  セッション ") + p["name"], status == "OK", detail, status)
             if stalled["line"]:
-                todo.append("止まっている仕事を確かめる（%s）" % stalled["line"])
+                todo.append(M("止まっている仕事を確かめる（%s）") % stalled_line(stalled))
         finally:
             sys.dont_write_bytecode = before_bytecode
 
-    table = [("項目", "状態", "補足")] + rows
+    table = [(M("項目"), M("状態"), M("補足"))] + rows
     c0 = max(w(r[0]) for r in table)
     c1 = max(w(r[1]) for r in table)
     for item, status, detail in table:
         print((pad(item, c0) + "  " + pad(status, c1) + "  " + detail).rstrip())
     print()
     if todo:
-        print("次にやること（未実施のものだけ）")
+        print(M("次にやること（未実施のものだけ）"))
         for i, t in enumerate(todo, 1):
             print("  %d. %s" % (i, t))
     else:
-        print("次にやること: なし")
+        print(M("次にやること: なし"))
 
 
 # ------------------------------------------------------------------ 入口
@@ -2796,18 +2921,18 @@ def lock_home():
     try:
         import fcntl
     except ImportError:
-        die("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める", 1)
+        die(M("この環境では同時実行を防げない（fcntl が無い）。何も変えずに止める"), 1)
     try:
         fd = os.open(HOME, os.O_RDONLY)
     except OSError as e:
-        die("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める" % (HOME, e), 1)
+        die(M("同時実行を防ぐロックが取れない（%s を開けない: %s）。何も変えずに止める") % (HOME, e), 1)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
         os.close(fd)
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-            die("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度", 1)
-        die("同時実行を防ぐロックが取れない（%s）。何も変えずに止める" % e, 1)
+            die(M("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度"), 1)
+        die(M("同時実行を防ぐロックが取れない（%s）。何も変えずに止める") % e, 1)
     return fd
 
 
@@ -2815,6 +2940,7 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
     ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
     ap.add_argument("--stall-hours", type=float, default=None)
+    ap.add_argument("--lang", choices=["ja", "en"])
     ap.add_argument("--target")
     ap.add_argument("--from", dest="from_file")
     ap.add_argument("--keep", action="store_true")
@@ -2838,6 +2964,7 @@ def main(argv):
     ap.add_argument("--edited", choices=["new", "keep"], default=None)
     ap.add_argument("--yes", "-y", action="store_true")
     args = ap.parse_args(argv)
+    set_lang(args.lang or startup_lang(config_path(os.path.abspath(os.path.expanduser(args.brain)))))
     if args.cmd in ("install", "update", "resolve", "uninstall", "rollback"):
         lock_home()   # fd はプロセスが終わるまで開いたまま（終了でロックが外れる）
     if args.cmd == "install":
