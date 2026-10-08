@@ -1206,6 +1206,44 @@ g["cmd_rollback"](argparse.Namespace(dry_run=False))
 assert g["read_text"](p) == "kit1"
 PY
 check "退避: 戻していない退避の meta.json が壊れていれば、ほかの退避から戻さずに止まる" test $? -eq 0
+# 退避の名前の項目が外のディレクトリへの symlink（中の meta.json は正しい形で、通し番号がいちばん新しい）なら、
+# 何も戻さずに止まる。持ち主のファイルも、外のディレクトリも変えない
+HOME="$TMP/order-dirlink" python3 - "$KIT" "$TMP/order-dirlink-outside" <<'PY' >"$TMP/order-dirlink.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+outside = sys.argv[2]
+p = os.path.join(g["CLAUDE"], "order-dirlink.md")
+g["write_text"](p, "owner")
+backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](p, "kit", backup)
+real = backup.close()
+# 外のディレクトリに、持ち主のファイルを別の中身で戻す退避を置く
+stamp = "29990101-000000"
+os.makedirs(os.path.join(outside, "files", os.path.dirname(p).lstrip(os.sep)))
+g["write_text"](os.path.join(outside, "files", p.lstrip(os.sep)), "outside")
+g["write_text"](os.path.join(outside, "meta.json"), g["dump_json"](dict(
+    g["load_json"](real + "/meta.json"), stamp=stamp, seq=99, legacy_before={},
+    created="2999-01-01T00:00:00.000000")))
+os.symlink(outside, os.path.join(g["CLAUDE"], "backup-brain-kit-" + stamp))
+def tree(top):
+    out = {}
+    for root, dirs, files in os.walk(top):
+        for f in files:
+            q = os.path.join(root, f)
+            out[os.path.relpath(q, top)] = open(q, "rb").read()
+    return out
+before_outside, before_real = tree(outside), tree(real)
+try:
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    raise AssertionError("rollback が止まらなかった: %r" % g["read_text"](p))
+except SystemExit as e:
+    assert e.code == 1, e.code
+assert g["read_text"](p) == "kit", g["read_text"](p)
+assert tree(outside) == before_outside
+assert tree(real) == before_real
+PY
+check "退避: 退避の名前の項目が外のディレクトリへの symlink なら、何も戻さずに止まる（持ち主のファイルも外も変えない）" test $? -eq 0
 # 新しい版で更新 → 古い版で更新（番号の無い退避）→ 新しい版で更新。最後のは戻せ、そのあとは決められないので止まる
 HOME="$TMP/order-mixed" python3 - "$KIT" <<'PY' >"$TMP/order-mixed.log" 2>&1
 import argparse, os, runpy, sys
