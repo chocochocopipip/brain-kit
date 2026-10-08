@@ -122,6 +122,12 @@ def main():
     role = role_at(cwd, brain, personas)
     if role is None:
         return
+    # 起動スクリプトは worktree が無いと brain で始める（--no-worktrees・worktree が消えた）。そのときは
+    # 起動スクリプトが渡した役を使い、開発・レビュー・リリースのセッションに相棒の核を出さない。
+    # worktree の中では場所で決めた役のまま
+    launched = os.environ.get("BRAIN_KIT_PERSONA")
+    if role == "partner" and launched in ("dev", "review", "release") and launched in personas:
+        role = launched
     person = personas[role]
     area = person["name"] if role == "partner" else role
     parts = []

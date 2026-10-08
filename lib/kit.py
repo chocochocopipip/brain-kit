@@ -356,6 +356,8 @@ def gen_start(role, cfg):
     if role != "partner":
         lines.append("# main の決定・規約を取り込んでから始める（衝突したら何もしない）")
         lines.append('git merge -q --no-edit main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1')
+    # worktree が無く brain で始まるときも、要約のあとのフックが自分の人格の核を読むように役を渡す
+    lines.append("export BRAIN_KIT_PERSONA=%s" % role)
     lines.append('exec claude "$@" "/%s"' % p["id"])
     return "\n".join(lines) + "\n"
 

@@ -3458,6 +3458,15 @@ finally:
         (brain / "dev").unlink()
     real_dev.rename(brain / "dev")
 assert compact(h / "brain-ren") == expected("開発", "Ren", roles[1][3])
+# 起動スクリプトが brain で始めたとき（worktree が無い）：渡された役の核を出し、相棒の核は出さない。worktree の中では場所が勝つ
+def launched(cwd, persona):
+    return run(json.dumps({"source": "compact", "cwd": str(cwd)}).encode(), cwd=h, extra={"BRAIN_KIT_PERSONA": persona})
+assert launched(brain, "dev") == expected(*roles[1][:2], roles[1][3])
+assert launched(brain, "review") == expected(*roles[2][:2], roles[2][3])
+assert launched(brain, "release") == expected(*roles[3][:2], roles[3][3])
+assert launched(brain, "partner") == expected(*roles[0][:2], roles[0][3])
+assert launched(brain, "../x") == expected(*roles[0][:2], roles[0][3])
+assert launched(h / "brain-mio", "dev") == expected(*roles[2][:2], roles[2][3])
 for source in ("startup", "resume", "clear", None, 0):
     assert run(json.dumps({"source": source, "cwd": str(brain)}).encode()) == ""
 want = expected(*roles[0][:2], roles[0][3])
@@ -3729,6 +3738,24 @@ assert s["hooks"]["SessionStart"] == [{"matcher": "compact|resume", "hooks": [
     {"type": "command", "command": command, "timeout": 10}]}]
 PY
 check "核: 編集した matcher も項目ごとそのまま残す" test $? -eq 0
+
+# ------------------------------------------------------------------ worktree 無しで起動スクリプトから始めた人格
+section "要約のあとの核の読み直し（worktree 無しの起動）"
+H="$TMP/core-reread-nowt"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes </dev/null >"$H.log" 2>&1
+check "核（worktree 無し）: install が 0" test $? -eq 0
+printf '相棒だけの核\n' >"$H/brain/Aoi/00_核.md"
+printf '開発の核\n' >"$H/brain/dev/00_核.md"
+fakec="$TMP/fake-claude-core"; mkdir -p "$fakec"
+# 起動スクリプトが exec する claude の代わりに、要約のあとのフックをその場で走らせる
+# shellcheck disable=SC2016  # $HOME は偽の claude の中で展開させる
+printf '#!/bin/sh\nprintf %%s "{\\"source\\":\\"compact\\"}" | python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"\n' >"$fakec/claude"
+chmod +x "$fakec/claude"
+HOME="$H" PATH="$fakec:$PATH" "$H/.claude/brain-kit/bin/start-ren" >"$H.ren" 2>&1
+check "核（worktree 無し）: 開発の起動は開発の核を出す" grep -q '開発の核' "$H.ren"
+check "核（worktree 無し）: 開発の起動は相棒の核を出さない" sh -c "! grep -q '相棒だけの核' '$H.ren'"
+HOME="$H" PATH="$fakec:$PATH" "$H/.claude/brain-kit/bin/start-aoi" >"$H.aoi" 2>&1
+check "核（worktree 無し）: 相棒の起動は相棒の核を出す" grep -q '相棒だけの核' "$H.aoi"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
