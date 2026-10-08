@@ -1,7 +1,7 @@
 {
   "_comment": [
     "install.sh がこの内容を ~/.claude/settings.json にマージする（丸ごと上書きはしない）。",
-    "hooks: SessionEnd は brain の日次ノートへ自動追記、SessionStart の brain-kit-update-check.py は更新のお知らせ。それ以外は Orca 用の中継フック。",
+    "hooks: SessionEnd は brain の日次ノートへ自動追記、SessionStart の brain-kit-update-check.py は更新のお知らせ、brain-kit-core-reread.py は要約のあとの核の読み直し。それ以外は Orca 用の中継フック。",
     "Orca 用フックは ~/.orca/agent-hooks/claude-hook.sh が無ければ '{}' を返して何もしない。Orca を使わないなら消してよい。",
     "Orca デスクトップが自分でフックを書き込むと、同じイベントに Windows 対応の長い版が並ぶことがある。重複しても害はない。",
     "permissions.allow は各自の環境依存。ここには最小の例だけ置く。",
@@ -31,6 +31,16 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/brain-kit-update-check.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/brain-kit-core-reread.py\"",
             "timeout": 10
           }
         ]

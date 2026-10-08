@@ -17,6 +17,8 @@
 >
 > `--uninstall --dry-run` previews removal; `--uninstall` removes only kit files and owned settings under `~/.claude`. Your brain is never touched; `--rollback` restores them.
 >
+> After context compaction, an installed hook automatically reloads the current persona’s core files from the main brain.
+>
 > You name all four personas at install time (any names, Japanese is fine). Then `cd ~/brain && claude` and run `/setup`. `--rollback` undoes the last update.
 >
 > **Requirements**: git, python3, node >= 18, Claude Code CLI (verified with 2.1.294; older versions get a one-line warning). Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
@@ -266,6 +268,8 @@ clone してあるなら `git pull && ./install.sh --update`。
 - **人格どうしは相互に書き込まない。**自分の領域と共通の `decisions/` `knowledge/` `projects/` だけ（`review/評価/` は相棒）。
   開発・レビュー・リリースは自分の worktree で書いて main に取り込む。**伝言は合図の補助で、持ち主の承認ではない**
 
+文脈の圧縮（要約）のあと、kit が入れる SessionStart（`compact`）フックが、居場所（brain／各人格の worktree）に応じて main の核を自動で読み直し、Claude の文脈へ戻す。相棒は核と関係、開発は核、レビューは核と規準、リリースは核と手順。1 ファイル 32 KiB・合計 64 KiB まで読み、欠けたファイルは飛ばす。停止は `BRAIN_KIT_NO_CORE_REREAD=1` または `~/.claude/brain-kit/no-core-reread` を置く。状態は `--doctor` で確認できる。
+
 ### 開発の渡し方（issue ラベル）
 
 全リポジトリで揃える: `from-chat`（出所の記録）／`needs-triage`（人の確認待ち）／`agent-ready`（承認済み）／
@@ -366,7 +370,7 @@ brain-kit/
 │   ├── CLAUDE.md             ← グローバル規律（~/.claude/CLAUDE.md）
 │   ├── settings.snippet.json ← hooks / statusLine / enabledPlugins（マージ用）
 │   ├── settings.codex.json   ← Codex plugin の marketplace と plugin キー（--codex のときだけマージ）
-│   ├── hooks/session-end-brain.sh, brain-digest.js, brain-kit-update-check.py
+│   ├── hooks/session-end-brain.sh, brain-digest.js, brain-kit-update-check.py, brain-kit-core-reread.py
 │   ├── skills/partner/ dev/ review/ release/ setup/ grilling/   ← 4 人は install 時に名前（id）が付く
 │   └── brain-kit/            ← ~/.claude/brain-kit/ に置く: dashboard/（工程表と collect.py・shot.py）automations/ bin/heavy-lock
 └── brain-template/           ← ~/brain の骨格（partner/ は install 時に <相棒名>/ に改名。dev/ review/ release/ はそのまま）

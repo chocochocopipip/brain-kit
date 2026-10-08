@@ -358,6 +358,8 @@ def gen_start(role, cfg):
     if role != "partner":
         lines.append("# main の決定・規約を取り込んでから始める（衝突したら何もしない）")
         lines.append('git merge -q --no-edit main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1')
+    # worktree が無く brain で始まるときも、要約のあとのフックが自分の人格の核を読むように役を渡す
+    lines.append("export BRAIN_KIT_PERSONA=%s" % role)
     lines.append('exec claude "$@" "/%s"' % p["id"])
     return "\n".join(lines) + "\n"
 
@@ -2543,6 +2545,16 @@ def cmd_doctor(args):
     latest = cached.get("latest") if isinstance(cached, dict) else None
     row("  更新のお知らせ", True, "npm 公開版: %s（前回の確認）" % latest if latest else "",
         "止めてある" if notice_off else "有効" if notice_hook else "フック無し")
+
+    reread = "brain-kit-core-reread.py"
+    reread_hook = os.path.isfile(os.path.join(CLAUDE, "hooks", reread)) and any(
+        reread in (h.get("command") or "")
+        for g in (st or {}).get("hooks", {}).get("SessionStart", []) if g.get("matcher") == "compact"
+        for h in g.get("hooks", []))
+    reread_off = (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
+                  os.path.exists(os.path.join(KIT_STATE, "no-core-reread")))
+    row("  要約のあとの核の読み直し", True, "",
+        "止めてある" if reread_off else "有効" if reread_hook else "フック無し")
 
     rows.append(("[CLI]", "", ""))
 
