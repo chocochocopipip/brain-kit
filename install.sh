@@ -116,7 +116,8 @@ Usage: ./install.sh [--lang ja|en] [--mode local|base] [--yes]
   --rollback [--dry-run] | --doctor | --version
   --practice | --practice-status | --practice-cleanup [--dry-run] [--yes]
   --practice-dir DIR (default ~/brain-kit-practice; first-day practice, local only)
-Language is asked first on interactive installs. Existing installs default to Japanese.
+Language is asked first on interactive installs. Without --lang, non-interactive installs
+use the language recorded on this machine, else Japanese. Existing installs keep their record.
 Use --update --dry-run --lang en to preview a language change.
 Owner notes are not translated. File and folder names stay unchanged.
 HELP
@@ -157,7 +158,16 @@ if [ "$ACTION" = install ] && [ -z "$OWNER_LANG" ]; then
       exit 2
     fi
   else
-    OWNER_LANG=ja
+    # 聞けないときは、この機の記録（前に選んだ言語）、無ければ日本語
+    OWNER_LANG="$(python3 -c '
+import json, sys
+try:
+    lang = json.load(open(sys.argv[1], encoding="utf-8")).get("lang")
+except Exception:
+    lang = None
+print(lang if lang in ("ja", "en") else "ja")
+' "$HOME/.claude/brain-kit/manifest.json" 2>/dev/null)" || OWNER_LANG=ja
+    case "$OWNER_LANG" in ja|en) ;; *) OWNER_LANG=ja ;; esac
   fi
 fi
 [ -z "$OWNER_LANG" ] || PYARGS+=(--lang "$OWNER_LANG")

@@ -298,6 +298,21 @@ printf '[1]\n' >"$HM/brain/.brain-kit/config.json"
 new "$HM" --rollback --dry-run >"$HM.rollback" 2>&1
 check "Malformed config: rollback --dry-run still runs" test $? -eq 0
 cp "$HM.config" "$HM/brain/.brain-kit/config.json"
+# 新しい brain でも、--lang が無ければこの機の記録（English）で作る（install.sh の非対話も kit.py の直接も）
+for how in sh py; do
+  HD="$TMP/lang-machine-$how"
+  mkdir -p "$HD/.claude/brain-kit"
+  printf '{"lang": "en"}\n' >"$HD/.claude/brain-kit/manifest.json"
+  if [ "$how" = sh ]; then
+    new "$HD" --yes --no-worktrees </dev/null >"$HD.log" 2>&1
+  else
+    HOME="$HD" python3 "$KIT/lib/kit.py" install --yes --no-worktrees </dev/null >"$HD.log" 2>&1
+  fi
+  check "Machine language $how: install exits 0" test $? -eq 0
+  check "Machine language $how: config records English" grep -q '"lang": "en"' "$HD/brain/.brain-kit/config.json"
+  check "Machine language $how: manifest stays English" grep -q '"lang": "en"' "$HD/.claude/brain-kit/manifest.json"
+  check "Machine language $how: English templates" grep -q 'Every persona always replies to the owner' "$HD/brain/CLAUDE.md"
+done
 # brain の記録に言語が無くても、機械側が English なら English を引き継ぐ
 python3 - "$HE/brain/.brain-kit/config.json" <<'PY'
 import json, sys

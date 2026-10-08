@@ -1491,7 +1491,8 @@ def cmd_install(args):
     owner = args.user or ask(M("  あなたの呼び名（相棒があなたをどう呼ぶか）"), M("持ち主"), args)
     projects = split_csv(args.projects if args.projects is not None else ask(M("  プロジェクト名（カンマ区切り。無ければ空）"), "", args))
     repos = split_csv(args.repos if args.repos is not None else ask(M("  GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）"), "", args))
-    cfg = {"version": VERSION, "lang": args.lang or "ja", "brain": brain, "owner": owner, "personas": personas, "repos": repos,
+    # main() で決めた言語（--lang、無ければこの機の記録、無ければ日本語）で作って記録する
+    cfg = {"version": VERSION, "lang": args.lang or _LANG, "brain": brain, "owner": owner, "personas": personas, "repos": repos,
            "installed_at": TODAY, "updated_at": TODAY, "history": [{"date": TODAY, "to": VERSION, "how": "install"}]}
     print(M("言語: %s（%s）") % (language_name(cfg["lang"]), cfg["lang"]))
     for r in ROLES:

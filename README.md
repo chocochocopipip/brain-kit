@@ -51,7 +51,7 @@ Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で�
 
 <a id="language"></a>
 
-対話式の導入では、最初に `Language / 言語` を聞く。`en` または `ja` を選ぶと、その後の質問、テンプレート・skill、持ち主への返事、doctor・更新・削除・復元・衝突解消の表示、フックの通知と要約がその言語になる。`npx brainkit-agents --lang en`（または `./install.sh --lang ja`）なら質問を省ける。対話の既定はロケールに従い、`--yes` や非対話で言語を指定しない場合と既存の導入は日本語のまま。
+対話式の導入では、最初に `Language / 言語` を聞く。`en` または `ja` を選ぶと、その後の質問、テンプレート・skill、持ち主への返事、doctor・更新・削除・復元・衝突解消の表示、フックの通知と要約がその言語になる。`npx brainkit-agents --lang en`（または `./install.sh --lang ja`）なら質問を省ける。対話の既定はロケールに従う。`--yes` や非対話で言語を指定しない場合は、この機で前に選んだ言語（`~/.claude/brain-kit/manifest.json`）、無ければ日本語。既存の導入は記録の言語（記録が無ければ日本語）のまま。
 
 言語は brain の `.brain-kit/config.json` と機械側の `~/.claude/brain-kit/manifest.json` に記録する。ファイル・フォルダ名は、どの言語でも日本語のまま変えない。
 
