@@ -31,5 +31,9 @@ brain-template/dev/状況/_テンプレート.md	{brain}/dev/状況/_テンプ�
 brain-template/review/README.md	{brain}/review/README.md	render
 brain-template/review/記録/README.md	{brain}/review/記録/README.md	render
 brain-template/review/評価/README.md	{brain}/review/評価/README.md	render
+brain-template/review/評価/_テンプレート.md	{brain}/review/評価/_テンプレート.md
+brain-template/review/規準の版/README.md	{brain}/review/規準の版/README.md	render
+brain-template/review/読み直し/README.md	{brain}/review/読み直し/README.md	render
+brain-template/review/読み直し/_テンプレート.md	{brain}/review/読み直し/_テンプレート.md
 brain-template/release/README.md	{brain}/release/README.md	render
 brain-template/release/記録/README.md	{brain}/release/記録/README.md	render

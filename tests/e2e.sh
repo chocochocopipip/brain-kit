@@ -60,7 +60,8 @@ owner_snap() {
   snap "$1" | grep ' brain/' | grep -v -e ' brain/\.brain-kit/' -e ' brain/CLAUDE.md$' -e ' brain/README.md$' \
     -e ' brain/dev/README.md$' -e ' brain/dev/状況/_テンプレート.md$' -e ' brain/review/README.md$' \
     -e ' brain/review/記録/README.md$' -e ' brain/review/評価/README.md$' -e ' brain/release/README.md$' \
-    -e ' brain/release/記録/README.md$'
+    -e ' brain/release/記録/README.md$' -e ' brain/review/評価/_テンプレート.md$' -e ' brain/review/規準の版/README.md$' \
+    -e ' brain/review/読み直し/README.md$' -e ' brain/review/読み直し/_テンプレート.md$'
 }
 
 old_kit() { # old_kit <sha> <dir>
@@ -96,6 +97,11 @@ check "worktree で相棒の領域が見えない" test ! -e "$H/brain-ren/Aoi"
 check "起動スクリプト" test -x "$H/.claude/brain-kit/bin/start-mio"
 check "状況カード" test -f "$H/brain/dev/状況/app.md"
 check "projects/app.md" test -f "$H/brain/projects/app.md"
+for f in review/規準の版/README.md review/読み直し/README.md review/読み直し/_テンプレート.md review/評価/_テンプレート.md \
+  Aoi/20_振り返り.md Aoi/21_読み直しの答え.md; do check "自分を直す雛形 $f" test -f "$H/brain/$f"; done
+check "読み直しの答えはレビューの worktree から見えない" test ! -e "$H/brain-mio/Aoi/21_読み直しの答え.md"
+check "読み直しの使い方はレビューの worktree から見える" test -f "$H/brain-mio/review/読み直し/README.md"
+check "読み直しの使い方に相棒の名前" grep -q 'Aoi/21_読み直しの答え.md' "$H/brain/review/読み直し/README.md"
 check "brain にコミット" test "$(commits "$H")" -ge 1
 check "印が残っていない（~/.claude）" sh -c "! grep -r -e '<相棒名>' -e '<開発担当名>' -e '<レビュー担当名>' -e '<リリース担当名>' -e '<相棒id>' '$H/.claude/skills'"
 check "印が残っていない（brain）" sh -c "! grep -r -e '<相棒名>' -e '<開発担当名>' -e '<レビュー担当名>' -e '<リリース担当名>' '$H/brain' --include=*.md"
@@ -148,7 +154,7 @@ cp -R "$H9" "$TMP/v9-keep" ; cp -R "$H9" "$TMP/v9-new" ; cp -R "$H9" "$TMP/v9-di
 
 new "$H9" --update --review 澪 --review-id mio --release 湊 --release-id minato </dev/null >"$H9.up" 2>&1
 check "v9 → v10 が 0" test $? -eq 0
-check "持ち主のものは 1 バイトも変わらない" test "$own0" = "$(owner_snap "$H9" | grep -v -e ' brain/review/' -e ' brain/release/' -e ' brain/光/03_' -e ' brain/光/20_')"
+check "持ち主のものは 1 バイトも変わらない" test "$own0" = "$(owner_snap "$H9" | grep -v -e ' brain/review/' -e ' brain/release/' -e ' brain/光/03_' -e ' brain/光/20_' -e ' brain/光/21_')"
 check "相棒の skill は同じ名前のまま" test -f "$H9/.claude/skills/光/SKILL.md"
 check "開発の skill は同じ名前のまま" test -f "$H9/.claude/skills/匠/SKILL.md"
 check "新しい skill mio" test -f "$H9/.claude/skills/mio/SKILL.md"
@@ -231,7 +237,7 @@ check "--doctor が v8 系と判定" grep -q 'v8（版の記録なし\|v6〜v8�
 new "$H8" --update --review Mio --release Sora </dev/null >"$H8.up" 2>&1
 check "v8 → v10 が 0" test $? -eq 0
 check "v8: 手で直したものは無い" sh -c "! grep -q '今のままにしたもの' '$H8.up'"
-check "v8: 持ち主のものは変わらない" test "$o8" = "$(owner_snap "$H8" | grep -v -e ' brain/review/' -e ' brain/release/' -e ' brain/Aoi/03_' -e ' brain/Aoi/20_')"
+check "v8: 持ち主のものは変わらない" test "$o8" = "$(owner_snap "$H8" | grep -v -e ' brain/review/' -e ' brain/release/' -e ' brain/Aoi/03_' -e ' brain/Aoi/20_' -e ' brain/Aoi/21_')"
 check "v8: skill mio" test -f "$H8/.claude/skills/mio/SKILL.md"
 check "v8: 相棒の skill が上がった" grep -q 'レビュー' "$H8/.claude/skills/Aoi/SKILL.md"
 s8="$(snap "$H8")"
@@ -2413,6 +2419,52 @@ assert any(h["timeout"] == 20 for g in s["hooks"]["SessionStart"] for h in g["ho
            if "brain-kit-update-check.py" in h["command"])
 PY
 check "通知: 編集した項目をそのまま残す" test $? -eq 0
+
+# ------------------------------------------------------------------ 自分を直す雛形（#9 の 3 番）：足すだけ・持ち主の手直しを保つ
+section "自分を直す雛形"
+PRE93=62952c7   # 雛形が入る前の main
+H="$TMP/self-improve"
+old_install "$PRE93" "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes --no-worktrees
+check "前の版には答えの表が無い" test ! -e "$H/brain/Aoi/21_読み直しの答え.md"
+printf '| 2026-01-03 | Ren | 持ち主の行 | 手順外 | dev/00_核.md | |\n' >>"$H/brain/Aoi/20_振り返り.md"
+printf '\n## F. 持ち主の項目\n' >>"$H/brain/review/規準.md"
+git -C "$H/brain" add -A >/dev/null && git -C "$H/brain" commit -qm owner >/dev/null
+furi0="$(cat "$H/brain/Aoi/20_振り返り.md")"; kijun0="$(cat "$H/brain/review/規準.md")"
+new "$H" --update --no-worktrees </dev/null >"$H.up" 2>&1
+check "雛形: 更新が 0" test $? -eq 0
+for f in review/規準の版/README.md review/読み直し/README.md review/読み直し/_テンプレート.md review/評価/_テンプレート.md Aoi/21_読み直しの答え.md; do
+  check "雛形: 更新で足す $f" test -f "$H/brain/$f"
+done
+check "雛形: 持ち主の振り返りの表に触らない" test "$furi0" = "$(cat "$H/brain/Aoi/20_振り返り.md")"
+check "雛形: 持ち主の規準に触らない" test "$kijun0" = "$(cat "$H/brain/review/規準.md")"
+check "雛形: 答えの表は持ち主のもの（kit の記録に無い）" sh -c "! grep -q '21_読み直しの答え' '$H/brain/.brain-kit/manifest.json'"
+check "雛形: 使い方は kit のもの（kit の記録に有る）" grep -q '読み直し/README.md' "$H/brain/.brain-kit/manifest.json"
+s1="$(snap "$H")"
+new "$H" --update --no-worktrees </dev/null >"$H.up2" 2>&1
+check "雛形: 2 回目の更新は何も変えない" test "$s1" = "$(snap "$H")"
+# 持ち主が答えを書き、採点表の雛形を自分の列に直す。次の版の kit が同じファイルを変えても上書きしない
+printf '\n## 2026-01（規準 版 1）\n| 1 | example/app#1 | abc1234 | a.ts:1 — 持ち主の答え | A1 | 捕まえた |\n' >>"$H/brain/Aoi/21_読み直しの答え.md"
+printf '\n持ち主が足した列の説明。\n' >>"$H/brain/review/評価/_テンプレート.md"
+git -C "$H/brain" add -A >/dev/null && git -C "$H/brain" commit -qm owner2 >/dev/null
+ans0="$(cat "$H/brain/Aoi/21_読み直しの答え.md")"; tmpl0="$(cat "$H/brain/review/評価/_テンプレート.md")"
+NEXT93="$TMP/kit-next93"
+mkdir -p "$NEXT93"
+while IFS= read -r -d '' f; do
+  mkdir -p "$NEXT93/$(dirname "$f")"
+  cp "$KIT/$f" "$NEXT93/$f"
+done < <(git -C "$KIT" ls-files --cached --others --exclude-standard -z)
+for f in partner/21_読み直しの答え.md partner/20_振り返り.md review/規準.md review/評価/_テンプレート.md review/読み直し/README.md; do
+  printf '\n次の版の行。\n' >>"$NEXT93/brain-template/$f"
+done
+HOME="$H" bash "$NEXT93/install.sh" --update --no-worktrees </dev/null >"$H.next" 2>&1
+check "雛形: 次の版への更新が 0" test $? -eq 0
+check "雛形: 持ち主の答えに触らない" test "$ans0" = "$(cat "$H/brain/Aoi/21_読み直しの答え.md")"
+check "雛形: 振り返りの表に触らない（次の版でも）" test "$furi0" = "$(cat "$H/brain/Aoi/20_振り返り.md")"
+check "雛形: 規準に触らない（次の版でも）" test "$kijun0" = "$(cat "$H/brain/review/規準.md")"
+check "雛形: 持ち主の .new を作らない" test ! -e "$H/brain/Aoi/21_読み直しの答え.md.new"
+check "雛形: 手で直した採点表の雛形は上書きしない" test "$tmpl0" = "$(cat "$H/brain/review/評価/_テンプレート.md")"
+check "雛形: 手で直した採点表の雛形は .new に" grep -q '次の版の行。' "$H/brain/review/評価/_テンプレート.md.new"
+check "雛形: 直していない使い方は上がる" grep -q '次の版の行。' "$H/brain/review/読み直し/README.md"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
