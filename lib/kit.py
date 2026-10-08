@@ -2002,6 +2002,10 @@ def cmd_rollback(args):
             if os.path.islink(path) or not os.path.isfile(path) or sha(open_bytes(path)) != written[path]:
                 left.append(path)
                 continue
+        elif meta.get("kind") == "uninstall":
+            # 退避したあと、消す・書く前に止まったもの（記録が書けなかったなど）。今の中身が持ち主のものなので戻さない
+            left.append(path)
+            continue
         restored.append(path)
     for path, h in meta.get("added", {}).items():
         cur = None

@@ -1658,7 +1658,20 @@ def save(self, path):
     if os.path.basename(path) == "settings.json":
         with open(settings, "a") as f:     # 退避のあと、書く直前に持ち主が保存した
             f.write("\n")
-patches = [mock.patch.object(os, "replace", replace)] if mode == "replace" else [mock.patch.object(g["Backup"], "save", save)]
+real_journal = g["Backup"]._journal
+def journal(self):
+    # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
+    if any(os.path.basename(p) == "settings.json" for p in self.meta["overwritten"]) and not self.meta.get("journal_failed"):
+        if not self.meta.get("written"):
+            real_journal(self)              # 退避そのものは記録に残る
+            self.meta["journal_failed"] = True
+            return
+    if self.meta.get("journal_failed"):
+        raise OSError("injected: journal failed")
+    return real_journal(self)
+patches = {"replace": [mock.patch.object(os, "replace", replace)],
+           "race": [mock.patch.object(g["Backup"], "save", save)],
+           "journal": [mock.patch.object(g["Backup"], "_journal", journal)]}[mode]
 for p in patches:
     p.start()
 try:
@@ -1688,6 +1701,16 @@ check "書く直前の持ち主の変更を上書きしない" cmp -s "$H.settin
 check "書く直前の変更なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
 new "$H" --rollback --dry-run >"$H.rb2" 2>&1
 check "止めた退避は rollback の対象にしない" sh -c "! grep -q 'uninstall' '$H.rb2'"
+# 退避のあと「書いた」印の記録に失敗して止まり、そのあと持ち主が settings.json を変えた → rollback は上書きしない
+H="$TMP/uninstall-journal"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+uninstall_fault "$H" journal >"$H.journal" 2>&1
+check "記録の失敗で uninstall は 0 以外" test $? -ne 0
+check "記録の失敗なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+printf '{"owner": "edited after failure"}\n' >"$H/.claude/settings.json"
+new "$H" --rollback >"$H.rb" 2>&1
+check "記録の失敗のあとの rollback が 0" test $? -eq 0
+check "記録の失敗のあとの持ち主の settings を rollback で上書きしない" grep -q 'edited after failure' "$H/.claude/settings.json"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
