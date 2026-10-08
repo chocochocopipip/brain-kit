@@ -1681,6 +1681,15 @@ def open_bytes(path):
     if os.path.getsize(path) > 1024 * 1024:
         raise MemoryError("read whole file over 1 MiB: %s" % path)
     return real_open_bytes(path)
+real_split, real_shlex = g["shlex"].split, g["shlex"].shlex
+def split(line, *a, **k):
+    if len(line) > 4096:
+        raise MemoryError("shlex.split on a %d-char line" % len(line))
+    return real_split(line, *a, **k)
+def shlex_cls(line, *a, **k):
+    if isinstance(line, str) and len(line) > 4096:
+        raise MemoryError("shlex.shlex on a %d-char line" % len(line))
+    return real_shlex(line, *a, **k)
 real_journal = g["Backup"]._journal
 def journal(self):
     # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
@@ -1696,11 +1705,12 @@ patches = {"replace": [mock.patch.object(os, "replace", replace)],
            "race": [mock.patch.object(g["Backup"], "save", save)],
            "journal": [mock.patch.object(g["Backup"], "_journal", journal)],
            "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)],
-           "bigread": [mock.patch.dict(g["main"].__globals__, {"open_bytes": open_bytes})]}[mode]
+           "bigread": [mock.patch.dict(g["main"].__globals__, {"open_bytes": open_bytes})],
+           "longline": [mock.patch.object(g["shlex"], "split", split), mock.patch.object(g["shlex"], "shlex", shlex_cls)]}[mode]
 for p in patches:
     p.start()
 try:
-    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--yes"])
+    g["main"](["rollback"] if mode == "rollback" else ["uninstall", "--dry-run"] if mode == "longline" else ["uninstall", "--yes"])
 except SystemExit as e:
     sys.exit(e.code or 0)
 except OSError as e:
@@ -1998,6 +2008,8 @@ s = json.load(open(p))
 s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "wc -c ~/.claude/big.dat"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
+uninstall_fault "$H" longline >"$H.long" 2>&1
+check "1 MiB の 1 行のデータファイルを shlex に渡さない（遅くなる。CI の bash 3.2 で止まった）" test $? -eq 0
 uninstall_fault "$H" bigread >"$H.big" 2>&1
 check "残すフックが名指しした大きなファイルを丸ごと読まずに uninstall が 0" test $? -eq 0
 check "大きなファイルは残る" test -f "$H/.claude/big.dat"

@@ -1914,6 +1914,8 @@ def plan_uninstall(args):
         # 引用符の中（空白を含むパス）と、\ で逃がした空白も 1 つの引数として見る
         args += [a or b for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', text)]
         for line in text.splitlines():
+            if len(line) > 4096:           # shlex は 1 文字ずつ組み立てるので、長い行（データ）は上の分け方だけにする
+                continue
             try:
                 args += shlex.split(line, comments=True)
                 # ; | & ( ) < > をパスから切り離す（my\ hook.sh; echo のような形）
