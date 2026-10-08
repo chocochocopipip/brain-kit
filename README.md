@@ -8,15 +8,15 @@ Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で�
 
 ## English
 
-The four sections below are kept in sync with the Japanese ones. The detailed reference after them is in Japanese, and so are the installer's prompts and messages.
+The four sections below are kept in sync with the Japanese ones. The detailed reference after them is in Japanese. The installer itself works in English or Japanese: it asks for the language first (`--lang en` or `--lang ja` skips the question), and prompts, templates, skills and messages follow that choice. File and folder names stay Japanese; see the [glossary](#language).
 
 ### Five-minute quickstart
 
 Requirements: Linux, macOS or WSL (Windows itself is not supported — use WSL), git, python3 (3.8+), node 18+, and the Claude Code CLI (verified with 2.1.294; an older one gets a one-line warning and the install continues). Optional for the install: gh (issue labels; the personas use it for issues and PRs on GitHub), Codex CLI, Tailscale + Orca (base mode).
 
-1. **Install.** You name all four personas now; Japanese is fine. A name that is not ASCII also needs an ASCII id (asked, or `--partner-id` etc.). Anything not given as a flag is asked; `--yes` takes the defaults.
+1. **Install.** You name all four personas now; Japanese is fine. A name that is not ASCII also needs an ASCII id (asked, or `--partner-id` etc.). Anything not given as a flag is asked; `--yes` takes the defaults (without `--lang`, that is the language recorded on this machine, else Japanese).
    ```bash
-   npx brainkit-agents --partner Hikari --dev Takumi --review Mio --release Sora
+   npx brainkit-agents --lang en --partner Hikari --dev Takumi --review Mio --release Sora
    # or: git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
    ```
    This creates `~/brain` (your vault, a git repo), the skills and hooks under `~/.claude`, and a worktree for each of dev, review and release (`~/brain-<id>`). `~/.claude/settings.json` is merged, never overwritten; anything replaced is backed up first.
@@ -64,7 +64,7 @@ flowchart LR
 |---|---|---|
 | A persona's window sits at a prompt and never starts | First start of Claude Code in a folder (`~/brain` and each worktree) asks "Do you trust the files in this folder?". start-all prints which tab, window or tmux window | Go there, choose the first option "Yes, proceed / Yes, I trust this folder" and press Enter. Once per folder. tmux: `tmux attach -t brain-kit`, then Ctrl-b w |
 | The same persona runs twice | start-all was run again after it said "まだ見えない" (not visible yet), or a session was opened by hand (`claude`, then `/<id>`). start-all only recognizes a `claude` process whose last argument is `/<id>`, which is how `start-<id>` launches it | Exit the extra session in its window and confirm with `~/.claude/brain-kit/bin/start-all --status`. Do not rerun start-all for a persona that is not visible yet; look at its tab first. Open personas with `start-all` or `~/.claude/brain-kit/bin/start-<id>` |
-| A persona stops: a permission prompt or the classifier blocked it | Intended. Personas do not retry a blocked action in another form and never hand it to another persona; permission dialogs are your gate | You decide: approve it in that window, or add a rule to `permissions.allow` in `~/.claude/settings.json` yourself (general Claude Code practice; the kit itself does not guide this step). The kit only adds a three-line minimal example when `permissions` is missing and never touches it afterwards |
+| A persona stops: a permission prompt or the classifier blocked it | Intended. Personas do not retry a blocked action in another form and never hand it to another persona; permission dialogs are your gate | You decide: approve it in that window, or add a rule to `permissions.allow` in `~/.claude/settings.json` yourself (general Claude Code practice; the kit itself does not guide this step). The kit only adds a three-line minimal example when `permissions` is missing and never touches it afterwards. For the release persona alone, see `--release-permissions` below |
 | Install stops: `~/brain` already exists | An earlier brain-kit, or your own vault, is there | brain-kit already there: `--update`. Your own vault: `--brain-merge` (adds only what is missing) or `--brain <dir>` |
 | "別の brain-kit … がこの HOME で動いている" | install, `--update`, `--resolve`, `--uninstall` and `--rollback` run one at a time per HOME | Nothing was changed. Wait for the other one to finish, then run again |
 | `--rollback` stops: "どれから戻すか決められない" | A backup record is broken, or an unnumbered backup from an older kit came after a numbered one | Nothing was changed. Compare `files/` and `meta.json` in each `~/.claude/backup-brain-kit-*/` and restore by hand |
@@ -77,6 +77,7 @@ npx brainkit-agents --update               # upgrade kit files only (v1–v9 ins
 npx brainkit-agents --rollback --dry-run   # what a rollback would restore
 npx brainkit-agents --rollback             # undo the most recent step; run again to go further back
 npx brainkit-agents --uninstall --dry-run  # preview removing the kit from ~/.claude; then --uninstall
+npx brainkit-agents --update --dry-run --lang en   # preview a language change; apply without --dry-run
 ```
 
 From a clone: `git pull && ./install.sh --update`. `npx github:chocochocopipip/brain-kit` takes the same flags straight from GitHub.
@@ -84,6 +85,8 @@ From a clone: `git pull && ./install.sh --update`. `npx github:chocochocopipip/b
 - **Only kit files move** (skills, rules, scripts, hooks; listed in `kitfiles.tsv`). Your notes — core, journal, decisions, knowledge, projects, status cards, reports, records, criteria, procedure — are never touched. A second `--update` changes nothing.
 - **If both you and the kit changed a file**, your file stays. The kit's version goes to `<file>.new`, with a diff (and a merge candidate when the earlier kit version is known) under `~/.claude/brain-kit/conflicts/<timestamp>/`. Go through it with the partner, then record the result: `--resolve <file> --from <merged file>`, `--resolve <file>` (as it is now) or `--resolve --keep <file>`. `settings.json` is compared per entry and only the conflicting entries are listed.
 - **Backups and rollback.** Anything overwritten is first copied to `~/.claude/backup-brain-kit-<timestamp>/`. `--rollback` undoes the latest `--resolve` first, then the update (or install, or `--uninstall`): replaced files, `.new` and `settings.json` come back, added files go, and worktrees it created are removed. A file or worktree you changed afterwards is kept and listed. GitHub labels stay.
+- **Language.** `--update --lang en|ja` switches unedited kit files to the other language; edited ones become conflicts as above. Your own notes are not translated.
+- **Release-only permissions** (optional, off by default): `--update --release-permissions` adds a permission list that only `start-<release-id>` reads; `--update --no-release-permissions` removes it. A plain update keeps the choice.
 - **`--uninstall`** takes out only unchanged kit files and kit-owned settings under `~/.claude`. Your brain is never touched; `--rollback` brings them back.
 - **Update notice.** At most once a day, in the background, a SessionStart hook checks the published npm release; from the next session Claude mentions a newer one in one line. It never updates on its own. Opt out with `BRAIN_KIT_NO_UPDATE_CHECK=1` or `touch ~/.claude/brain-kit/no-update-check`.
 
@@ -93,7 +96,7 @@ From a clone: `git pull && ./install.sh --update`. `npx github:chocochocopipip/b
 
 必要なもの: Linux・macOS・WSL（**Windows は対象外**。WSL の Ubuntu で実行する）、`git`、`python3`（3.8 以上）、`node`（18 以上）、Claude Code CLI（2.1.294 で動作確認。古い版は 1 行知らせてそのまま続ける）。導入には任意: `gh`（issue ラベル。人格が GitHub の issue・PR を扱うのに使う）、Codex CLI、Tailscale と Orca（base）。
 
-1. **入れる。**4 人の名前をここで全部決める（日本語でよい）。英字でない名前は英字の id も要る（聞かれる。`--partner-id` などでも渡せる）。引数に無いものは聞かれ、`--yes` で全部既定。
+1. **入れる。**4 人の名前をここで全部決める（日本語でよい）。英字でない名前は英字の id も要る（聞かれる。`--partner-id` などでも渡せる）。最初に言語（日本語／English）を聞く（`--lang ja|en` で省ける）。引数に無いものは聞かれ、`--yes` で全部既定（`--lang` が無ければこの機で前に選んだ言語、無ければ日本語）。
    ```bash
    npx brainkit-agents --partner 光 --partner-id hikari --dev 匠 --dev-id takumi --review 澪 --review-id mio --release 湊 --release-id minato
    # または: git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit && ./install.sh
@@ -143,7 +146,7 @@ flowchart LR
 |---|---|---|
 | 人格のウィンドウが確認で止まったまま始まらない | フォルダ（`~/brain` と各 worktree）での Claude Code の初回は「Do you trust the files in this folder?（このフォルダを信頼しますか）」を聞いて待つ。start-all がどのタブ・ウィンドウ・tmux ウィンドウかを出す | そこで最初の「Yes, proceed / Yes, I trust this folder」を選び Enter。同じフォルダでは 1 回だけ。tmux は `tmux attach -t brain-kit` のあと Ctrl-b w |
 | 同じ人格が 2 つ動いている | 「まだ見えない」と出たあとに start-all をもう一度実行した。または手で開いた（`claude` のあと `/<id>`）。start-all は最後の引数が `/<id>` の `claude` のプロセス（`start-<id>` の起動のしかた）しか見分けない | 余分なほうをそのウィンドウで終了し、`~/.claude/brain-kit/bin/start-all --status` で確かめる。まだ見えない人格に start-all を重ねず、先にそのタブを見る。人格は `start-all` か `~/.claude/brain-kit/bin/start-<id>` で開く |
-| 人格が「権限の確認・分類器で止められた」と言って止まる | 設計どおり。止められたことを形を変えて試さず、別の人格にもやらせない。権限ダイアログはあなたの関門 | あなたが決める：そのウィンドウで承諾するか、`~/.claude/settings.json` の `permissions.allow` に自分で規則を足す（Claude Code の一般的なやり方で、kit はこの手順を案内していない）。kit は `permissions` が無いときだけ 3 行の最小例を置き、以後は触らない |
+| 人格が「権限の確認・分類器で止められた」と言って止まる | 設計どおり。止められたことを形を変えて試さず、別の人格にもやらせない。権限ダイアログはあなたの関門 | あなたが決める：そのウィンドウで承諾するか、`~/.claude/settings.json` の `permissions.allow` に自分で規則を足す（Claude Code の一般的なやり方で、kit はこの手順を案内していない）。kit は `permissions` が無いときだけ 3 行の最小例を置き、以後は触らない。リリースだけに許すなら下の `--release-permissions` |
 | install が止まる：`~/brain` が既にある | 前の版の brain-kit か、自前の vault がある | brain-kit なら `--update`。自前の vault なら `--brain-merge`（無いものだけ足す）か `--brain <dir>` |
 | 「別の brain-kit … がこの HOME で動いている」 | install・`--update`・`--resolve`・`--uninstall`・`--rollback` は同じ HOME で 1 つずつ動く | 何も変わっていない。もう一方が終わってから再実行する |
 | `--rollback` が「どれから戻すか決められない」で止まる | 退避の記録が壊れている。または古い版の kit が作った番号の無い退避が、番号のある退避のあとにある | 何も変わっていない。各 `~/.claude/backup-brain-kit-*/` の `files/` と `meta.json` を見比べて、手で戻す |
@@ -156,6 +159,7 @@ npx brainkit-agents --update               # kit のものだけを上げる（v
 npx brainkit-agents --rollback --dry-run   # 戻すと何が戻るかを見る
 npx brainkit-agents --rollback             # 直前の 1 段を戻す。もう一度でさらに前へ
 npx brainkit-agents --uninstall --dry-run  # ~/.claude から kit を外す計画を見る。外すなら --uninstall
+npx brainkit-agents --update --dry-run --lang ja   # 言語を変える前に見る。--dry-run を外すと変わる
 ```
 
 clone してあるなら `git pull && ./install.sh --update`。`npx github:chocochocopipip/brain-kit` に同じ引数を渡せば GitHub から直接。
@@ -163,6 +167,8 @@ clone してあるなら `git pull && ./install.sh --update`。`npx github:choco
 - **上がるのは kit のものだけ**（skill・規約・台本・フック。一覧は `kitfiles.tsv`）。核・日誌・決定・知識・プロジェクト・状況カード・報告・記録・規準・手順など、あなたのものには触らない。2 回目の `--update` は何も変えない。
 - **あなたと kit の両方が変えたファイル**は今のまま残し、kit の版を `<file>.new` に、差分と（前の kit の版が分かれば）機械マージ候補を `~/.claude/brain-kit/conflicts/<日時>/` に置く。相棒と見て、結果を `--resolve <file> --from <merged file>`・`--resolve <file>`（今の内容）・`--resolve --keep <file>` のどれかで記録する。`settings.json` は項目ごとに比べ、衝突した項目だけを出す。
 - **退避と戻し**：上書きする前のファイルを `~/.claude/backup-brain-kit-<日時>/` に写す。`--rollback` は最後の `--resolve` から戻し、その次に更新（か install・`--uninstall`）を戻す。置き換えたファイル・`.new`・`settings.json` を戻し、足したものを消し、作った worktree を外す。そのあとあなたが変えたファイル・worktree は残して一覧に出す。GitHub のラベルは消さない。
+- **言語**：`--update --lang en|ja` で未編集の kit ファイルを別の言語にする。編集済みのものは上のとおり衝突になる。あなたのノートは翻訳しない。
+- **リリースだけの許可**（任意・既定は入れない）：`--update --release-permissions` で `start-<リリースid>` だけが読む許可の一覧を足し、`--update --no-release-permissions` で外す。ふだんの更新は選んだままにする。
 - **`--uninstall`** は `~/.claude` の未変更の kit ファイルと kit の settings 項目だけを外す。brain には触らない。`--rollback` で戻せる。
 - **更新のお知らせ**：SessionStart のフックが npm の公開版を 1 日 1 回まで裏で確かめ、次のセッションから新しい版を 1 行で伝える。自動では更新しない。止めるには `BRAIN_KIT_NO_UPDATE_CHECK=1` か `touch ~/.claude/brain-kit/no-update-check`。
 
