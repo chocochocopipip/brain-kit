@@ -4,6 +4,10 @@
 
 ## 次の版（作業中）
 
+- Claude Code 2.1.294 を動作確認版として記録。導入・更新は古い版や確認できない場合に 1 行だけ知らせて続行し、`--doctor` にも版の判定を表示
+- `--version` で kit の版だけを表示（npx からも同じ）
+- `check.sh` で VERSION・package.json の major・CHANGELOG の最新の版見出しの一致を検査
+
 - `--uninstall` を追加。機械側の記録に従い、`~/.claude` の未変更の kit ファイルと所有 settings 項目だけを退避して外す。編集済みファイル・衝突資料・持ち主の設定は残す
 - `--dry-run` で削除と保持の計画を表示。非対話の実行は `--yes` が必要。brain 全体・worktree・GitHub ラベル・Codex CLI・既存の退避には触らない
 - アンインストールも `--rollback` でバイトと実行権限を復元でき、brain のコミットは増えない。残った brain の設定で `--update` から再導入できる

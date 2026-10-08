@@ -49,6 +49,9 @@ check.sh は引数の語に加えて、次を**常に**探す:
 
 `~/.orca/` `~/.config/orca/` の中身は**一切**入れない（ORCA.md の表を参照）。ファイル名の一覧だけ。
 
+- 新しい Claude Code で動作を確かめ直したら、`lib/kit.py` の `VERIFIED_CLAUDE_CODE` を上げ、確認した版を CHANGELOG に 1 行記す。
+- `VERSION`・`package.json` の major・CHANGELOG の最新の版見出しを揃える（`check.sh` が検査する）。
+
 ## 5. 最後に
 
 ```bash

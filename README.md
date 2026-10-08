@@ -14,7 +14,7 @@
 >
 > You name all four personas at install time (any names, Japanese is fine). Then `cd ~/brain && claude` and run `/setup`. `--rollback` undoes the last update.
 >
-> **Requirements**: git, python3, node >= 18, Claude Code CLI. Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
+> **Requirements**: git, python3, node >= 18, Claude Code CLI (verified with 2.1.294; older versions get a one-line warning). Optional: gh (issue labels), Tailscale + Orca (base mode). Docs below are in Japanese.
 
 Claude Code を「記憶を持つ相棒」「開発を回す手」「規準で読むレビュー」「マージと本番を入れるリリース」の四人格で運用するための、**仕組みだけ**のテンプレート。
 記憶・個人データ・人名・店名・リポジトリ名・認証情報は入っていない。中身はあなたが書く。
@@ -125,7 +125,12 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
 必要なもの: `git` `python3` `node`（18 以上。フックの要約用）`claude` CLI。任意: `gh`（ラベル作成）。base なら `sudo` と Ubuntu 22.04/24.04。
 **Windows は対象外**（WSL の Ubuntu で実行する）。macOS は local のみ（`install.sh` は macOS 標準の bash 3.2 でも動く書き方だけを使う。本体は `lib/kit.py`（Python 3.8 以上、標準ライブラリだけ）。bash 4 以降の機能・GNU 拡張・column は使っていない。任意の `heavy-lock` だけ awk を使う）。
 
+Claude Code は 2.1.294 で動作確認。古い版は導入・更新で 1 行だけ知らせ、そのまま続ける。
+
 入ったか確かめる: `./install.sh --doctor`（`npx brainkit-agents --doctor`・`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／kit だけの更新待ち／足りない／持ち主の変更／衝突）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
+
+`--doctor` は Claude Code の版を OK／古い／要確認で示し、古い場合は `claude update` を案内する。
+kit の版だけを見る: `./install.sh --version`（`npx brainkit-agents --version` も同じ）。
 
 ## 更新のしかた（すでに使っている人）
 

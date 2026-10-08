@@ -43,6 +43,8 @@ def read_version():
 
 
 VERSION = read_version()
+# この kit の動作を確かめた Claude Code の版。上げるときは CHANGELOG にも記す（CHECKLIST.md）。
+VERIFIED_CLAUDE_CODE = "2.1.294"
 
 ROLES = ["partner", "dev", "review", "release"]
 ROLE_JA = {"partner": "相棒", "dev": "開発", "review": "レビュー", "release": "リリース"}
@@ -149,6 +151,25 @@ def run(cmd, cwd=None, inp=None, timeout=60):
 
 def have(cmd):
     return shutil.which(cmd) is not None
+
+
+def claude_version_warning(missing=False, result=None):
+    """版の注意を最大 1 行で返す。確認できなくても処理は続ける。"""
+    if result is None:
+        if not have("claude"):
+            return "warn: Claude Code CLI（claude）が無い。版を確かめられない（このまま続ける）" if missing else None
+        result = run(["claude", "--version"], timeout=15)
+    rc, out, err = result
+    match = re.match(r"\s*(\d+\.\d+\.\d+)", out)
+    if rc != 0 or not match:
+        lines = (out or err).splitlines()
+        detail = lines[0][:60] if lines else "終了コード %s、出力なし" % rc
+        return "warn: Claude Code の版を読めない（claude --version: %s）。このまま続ける" % detail
+    version = match.group(1)
+    if tuple(map(int, version.split("."))) < tuple(map(int, VERIFIED_CLAUDE_CODE.split("."))):
+        return ("warn: Claude Code %s は動作を確かめた版（%s）より古い。"
+                "claude update で上げられる（このまま続ける）" % (version, VERIFIED_CLAUDE_CODE))
+    return None
 
 
 def split_csv(s):
@@ -1304,6 +1325,9 @@ def changelog_since(v_from):
 
 # ------------------------------------------------------------------ install
 def cmd_install(args):
+    warning = claude_version_warning()
+    if warning:
+        print(warning)
     brain = os.path.abspath(os.path.expanduser(args.brain))
     cman = load_json(CLAUDE_MANIFEST, {}) or {}
     if os.path.exists(config_path(brain)):
@@ -1474,6 +1498,9 @@ def cmd_update(args):
         die("%s に brain-kit が見つからない。新しく入れるなら --update を付けずに実行する" % tilde(os.path.expanduser(args.brain)), 1)
     dry = args.dry_run
     say("brain-kit の更新%s: %s → v%d" % ("（--dry-run: 何も変えない）" if dry else "", desc, VERSION))
+    warning = claude_version_warning(missing=True)
+    if warning:
+        print(warning)
     for r in ("partner", "dev"):
         p = persona(cfg, r)
         print("  %s: %s（/%s）… 引き継ぐ" % (ROLE_JA[r], p["name"], p["id"]))
@@ -2387,8 +2414,19 @@ def cmd_doctor(args):
         rc, v = first(vercmd) if vercmd else (0, "")
         row("  " + name, True, v[:40])
         return True
-    if not cli("claude", ["claude", "--version"]):
+    if not have("claude"):
+        row("  claude", False, status="要対応")
         todo.append("Claude Code CLI を入れる")
+    else:
+        result = run(["claude", "--version"], timeout=15)
+        lines = (result[1] or result[2]).strip().splitlines()
+        row("  claude", True, lines[0][:40] if lines else "")
+        warning = claude_version_warning(result=result)
+        status = "要確認" if warning and "版を読めない" in warning else "古い" if warning else "OK"
+        row("  Claude Code の版", warning is None,
+            warning[len("warn: "):] if warning else "動作を確かめた版 %s 以上" % VERIFIED_CLAUDE_CODE, status)
+        if status == "古い":
+            todo.append("claude update（動作を確かめた版 %s より古い）" % VERIFIED_CLAUDE_CODE)
     cli("node", ["node", "--version"])
     cli("python3", ["python3", "--version"])
     if cli("gh", ["gh", "--version"]):

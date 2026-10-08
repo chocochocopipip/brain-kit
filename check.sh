@@ -29,6 +29,28 @@ report() { # report <label> <grep の出力>
     printf '\n[%s]\n%s\n' "$1" "$2"
   fi
 }
+# 配布する版の記録は 3 か所で揃える。作業中の節は版の見出しに数えない。
+kit_version="$(tr -d '[:space:]' 2>/dev/null < VERSION)"
+package_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json 2>/dev/null | sed -n '1p')"
+changelog_heading="$(grep '^## v[0-9]' CHANGELOG.md 2>/dev/null | sed -n '1p')"
+changelog_version="$(printf '%s\n' "$changelog_heading" | sed -n 's/^## v\([0-9][0-9.]*\)\([[:space:]].*\)\{0,1\}$/\1/p')"
+valid_kit=0
+if printf '%s\n' "$kit_version" | grep -qE '^[1-9][0-9]*$'; then
+  valid_kit=1
+else
+  report version "VERSION が無いか正の整数ではない: ${kit_version:-（空）}"
+fi
+if ! printf '%s\n' "$package_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  report version "package.json の version が無いか X.Y.Z ではない: ${package_version:-（空）}"
+elif [ "$valid_kit" = 1 ] && [ "${package_version%%.*}" != "$kit_version" ]; then
+  report version "package.json の版 $package_version の major が VERSION $kit_version と違う"
+fi
+if ! printf '%s\n' "$changelog_version" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+  report version "CHANGELOG.md の先頭の版見出しが無いか読めない: ${changelog_heading:-（空）}"
+elif [ "$valid_kit" = 1 ] && [ "${changelog_version%%.*}" != "$kit_version" ]; then
+  report version "CHANGELOG.md の先頭の版 v$changelog_version の major が VERSION $kit_version と違う"
+fi
+
 # 対象のファイル（.git と check.sh を除く）。grep の --exclude-dir は BusyBox に無いので find で集める
 FILES=()
 while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -path ./.git -prune -o -type f ! -name check.sh -print0)
@@ -58,6 +80,7 @@ if [ -f "$WORDS_FILE" ]; then
 fi
 
 if [ "$found" = 0 ]; then
+  echo "ok: 版 VERSION=$kit_version / package.json=$package_version / CHANGELOG=v$changelog_version"
   echo "ok: 0 件（引数 $nwords 語 + ファイル $nfile 語 + 組み込みパターン ${#BUILTIN[*]}）"
   exit 0
 fi
