@@ -1880,22 +1880,44 @@ def cmd_uninstall(args):
                 out.update([os.path.join(home, rel), "~/" + rel, "$HOME/" + rel, "${HOME}/" + rel])
         return out
 
-    for path in sorted(remove - {claude_manifest}):
-        hit = next((part for part, command in commands if any(f in command for f in forms(path))), None)
-        if hit:
-            used[path] = hit
+    candidates = sorted((remove | keep) - {claude_manifest})   # 記録のある kit のファイル（変えたものも）
+
+    def mark(path, why):
+        if path in remove:
+            used[path] = why
             remove.discard(path)
+
+    # 起点：残る command が指す kit のファイルと、command に書かれた ~/.claude の中のファイル（持ち主のスクリプトも）
+    seeds = []
+    for part, command in commands:
+        for path in candidates:
+            if any(f in command for f in forms(path)):
+                mark(path, part)
+                seeds.append(path)
+        for arg in re.split(r"[\s'\";|&()<>]+", command):
+            for prefix in ("${HOME}/", "$HOME/", "~/"):
+                if arg.startswith(prefix):
+                    arg = os.path.join(HOME, arg[len(prefix):])
+            arg = os.path.abspath(arg) if arg.startswith(os.sep) else ""
+            if arg and arg.startswith(claude + os.sep) and os.path.isfile(arg) and safe(arg):
+                seeds.append(arg)
     # 残すスクリプトが呼ぶ kit のファイルも残す（session-end-brain.sh → "$HOOK_DIR/brain-digest.js" など）。
-    # パスの形か、同じディレクトリのファイル名が中身に出てくれば「使う」とみなす（残す側に倒す）。くり返して閉じる
-    queue = sorted(used)
+    # 持ち主が変えて残すスクリプトも辿る。パスの形か、同じディレクトリのファイル名が中身に出てくれば「使う」とみなす
+    # （残す側に倒す）。一度見たものは見ない
+    seen = set()
+    queue = list(dict.fromkeys(seeds))
     while queue:
         user = queue.pop(0)
+        if user in seen:
+            continue
+        seen.add(user)
         text = read_text(user) or ""
-        for path in sorted(remove - {claude_manifest}):
+        for path in candidates:
+            if path == user:
+                continue
             sibling = os.path.dirname(path) == os.path.dirname(user) and os.path.basename(path) in text
             if sibling or any(f in text for f in forms(path)):
-                used[path] = "%s から" % os.path.basename(user)
-                remove.discard(path)
+                mark(path, "%s から" % os.path.basename(user))
                 queue.append(path)
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:

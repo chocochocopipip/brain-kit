@@ -1780,6 +1780,30 @@ check "持ち主のフックが呼ぶ collect.py も残る" test -f "$H/.claude/
 check "残す session-end-brain.sh が呼ぶ brain-digest.js も残す" test -f "$H/.claude/hooks/brain-digest.js"
 check "どのフックも呼ばない kit のファイルは消す" test ! -e "$H/.claude/brain-kit/bin/heavy-lock"
 check "どのフックも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 持ち主が session-end-brain.sh を書き換え、SessionEnd の項目も変えた → 書き換えたスクリプトが呼ぶ brain-digest.js も残す
+# 持ち主のスクリプト（kit の外）が kit の heavy-lock を呼ぶ → heavy-lock も残す
+H="$TMP/uninstall-hookref-edited"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf '\n# 持ち主の追記\n' >>"$H/.claude/hooks/session-end-brain.sh"
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >"$H/.claude/hooks/mine.sh"
+chmod +x "$H/.claude/hooks/mine.sh"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"] = 120
+s["hooks"].setdefault("Notification", []).append(
+    {"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/mine.sh\""}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "書き換えたスクリプト: uninstall が 0" test $? -eq 0
+check "書き換えた session-end-brain.sh は残る" grep -q '持ち主の追記' "$H/.claude/hooks/session-end-brain.sh"
+check "書き換えた session-end-brain.sh が呼ぶ brain-digest.js も残る" test -f "$H/.claude/hooks/brain-digest.js"
+check "持ち主のスクリプトが呼ぶ heavy-lock も残る" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+check "持ち主のスクリプトは残る" test -x "$H/.claude/hooks/mine.sh"
+check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 持ち主が何も変えていなければ、SessionEnd の項目もスクリプトも外す
 H="$TMP/uninstall-hookref-plain"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
