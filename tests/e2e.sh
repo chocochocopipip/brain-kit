@@ -1622,10 +1622,14 @@ check "確認中に settings が変わると止まる" test $? -ne 0
 check "止まったとき settings は持ち主の書いたまま" grep -q '"owner": true' "$H/.claude/settings.json"
 check "止まったとき kit の skill は消えていない" test -f "$H/.claude/skills/aoi/SKILL.md"
 check "止まったとき退避を作らない" test "$backups_before" = "$(find "$H/.claude" -type d -name 'backup-brain-kit-*' | sort)"
-# 確認を待つ間に kit の skill を持ち主が書き換えたら、それは消さない
+# 確認を待つ間に kit の skill を持ち主が書き換えたら、計画が変わったので何も消さずに止まる
 { sleep 3; printf 'edited while waiting\n' >>"$H/.claude/skills/mio/SKILL.md"; echo y; } |
   BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race2" 2>&1
-check "確認中の書き換え: uninstall が 0" test $? -eq 0
+check "確認中の書き換え: 計画が変わったので止まる" test $? -ne 0
+check "確認中の書き換え: ほかの kit の skill も消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+# もう一度（新しい計画で）外す。書き換えた skill は「持ち主が変えた」として残る
+new "$H" --uninstall --yes >"$H.race2b" 2>&1
+check "もう一度の uninstall が 0" test $? -eq 0
 check "確認中に書き換えた skill は残す" grep -q 'edited while waiting' "$H/.claude/skills/mio/SKILL.md"
 check "ほかの kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 check "記録の無い base のファイルは残す" test -f "$H/.claude/brain-kit/base/owner-note.md"
@@ -1879,6 +1883,39 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "変えていなければ SessionEnd の項目を外す" sh -c "! grep -q 'session-end-brain.sh' '$H/.claude/settings.json'"
 check "変えていなければ session-end-brain.sh も消す" test ! -e "$H/.claude/hooks/session-end-brain.sh"
 check "変えていなければ brain-digest.js も消す" test ! -e "$H/.claude/hooks/brain-digest.js"
+# 同じ実体の別名（skills/sora → skills/ren のディレクトリ symlink）：残すフックが sora の側を読むなら、ren の側も消さない
+H="$TMP/uninstall-alias"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+mv "$H/.claude/skills/sora" "$H/sora-moved"
+ln -s ren "$H/.claude/skills/sora"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "cat ~/.claude/skills/sora/SKILL.md"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "別名: uninstall が 0" test $? -eq 0
+check "別名で読まれる skills/ren/SKILL.md は消さない" test -f "$H/.claude/skills/ren/SKILL.md"
+check "別名: 読まれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 計画のときには無かった持ち主のスクリプトが、確認を待つ間に作られ、kit のファイルを呼ぶ → 止まる
+H="$TMP/uninstall-appear"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/later.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+# shellcheck disable=SC2016  # $HOME はスクリプトの中で展開させる
+{ sleep 3; printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/heavy-lock" true\n' >"$H/.claude/hooks/later.sh"; echo y; } |
+  BRAIN_KIT_INTERACTIVE=1 HOME="$H" bash "$KIT/install.sh" --uninstall >"$H.race" 2>&1
+check "確認中に現れたスクリプト: 止まる" test $? -ne 0
+check "確認中に現れたスクリプトが呼ぶ heavy-lock は消えていない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "もう一度の uninstall は heavy-lock を残す" test -x "$H/.claude/brain-kit/bin/heavy-lock"
 # 残すフックが名指しした 2 MiB のファイルを丸ごと読まない（1 MiB を超えて読んだら落ちるようにして走らせる）
 H="$TMP/uninstall-bigread"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1

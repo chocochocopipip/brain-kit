@@ -1738,7 +1738,8 @@ def cmd_resolve(args):
 
 
 # ------------------------------------------------------------------ uninstall（機械側の記録だけを使う）
-def cmd_uninstall(args):
+def plan_uninstall(args):
+    """何を消す・残すかを決める（何も書かない）。確認のあとにもう一度呼び、同じ計画になるかを比べる。"""
     # HOME に // が混ざっても（macOS の TMPDIR は / で終わる）比べられるように、正規化した形だけを使う
     claude, claude_manifest, kit_state = (os.path.abspath(p) for p in (CLAUDE, CLAUDE_MANIFEST, KIT_STATE))
     brain = os.path.abspath(os.path.expanduser(args.brain))
@@ -1891,17 +1892,18 @@ def cmd_uninstall(args):
     # 辿るときは ~/.claude の中の symlink もたどる（消すかどうかの safe() とは別。読むだけ）。
     # 指す先が記録のある kit のファイルなら、その記録のパスとして残す
     real_claude = os.path.realpath(claude)
-    by_real = {os.path.realpath(c): c for c in candidates}
+    by_real = {}
+    for c in candidates:
+        by_real.setdefault(os.path.realpath(c), []).append(c)
 
     def canonical(path):
+        """path が指すもの。記録のある kit のファイルなら、同じ実体を指す記録のパスを全部（symlink の別名も）"""
         real = os.path.realpath(path)
         if real in by_real:
             return by_real[real]
         if real.startswith(real_claude + os.sep) and os.path.isfile(real):
-            return real
-        return None
-
-    looked = {}   # 辿るときに読んだファイルとディレクトリ。確認のあとで変わっていれば止める
+            return [real]
+        return []
 
     def named_files(text, here=None):
         """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
@@ -1925,15 +1927,15 @@ def cmd_uninstall(args):
                     arg = os.path.join(HOME, arg[len(prefix):])
             if not arg.startswith(os.sep):
                 arg = os.path.join(here, arg) if here and "/" in arg else ""
-            if arg and os.path.abspath(arg).startswith(claude + os.sep) and canonical(arg):
-                out.add(canonical(arg))
+            if arg and os.path.abspath(arg).startswith(claude + os.sep):
+                out.update(canonical(arg))
         if here and os.path.isdir(here):
-            looked[("dir", here)] = sorted(os.listdir(here))
-            out.update(canonical(os.path.join(here, name)) for name in sorted(os.listdir(here))
-                       if name in text and canonical(os.path.join(here, name)))
+            for name in sorted(os.listdir(here)):
+                if name in text:
+                    out.update(canonical(os.path.join(here, name)))
         for path in candidates:
             if any(f in text for f in forms(path)):
-                out.add(path)
+                out.update(canonical(path) or [path])
         return sorted(out)
 
     # 起点：残る command に書かれた ~/.claude の中のファイル（kit のものも持ち主のスクリプトも）。
@@ -1945,18 +1947,7 @@ def cmd_uninstall(args):
             mark(path, part)
             queue.append(path)
     seen = set()
-
     limit = 1024 * 1024
-
-    def fingerprint(path):
-        """中身の sha（1 MiB まで）と、実体・大きさ・更新時刻。大きなファイルを丸ごと読まない"""
-        try:
-            st = os.stat(path)
-            with open(path, "rb") as f:
-                head = f.read(limit)
-            return (os.path.realpath(path), st.st_size, st.st_mtime_ns, sha(head))
-        except (IOError, OSError):
-            return None
     while queue:
         user = queue.pop(0)
         if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
@@ -1969,11 +1960,31 @@ def cmd_uninstall(args):
         except (IOError, OSError) as e:
             die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
                 "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
-        looked[("file", user)] = fingerprint(user)
         for path in named_files(text, os.path.dirname(user)):
             if path != user:
                 mark(path, "%s から" % os.path.basename(user))
                 queue.append(path)
+    return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
+                settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
+                unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,
+                settings_raw=settings_raw, settings_writable=settings_writable,
+                settings_remove=settings_remove, settings_keep=settings_keep)
+
+
+def plan_signature(p):
+    """確認の前と後で比べるもの。消すもの（と中身の sha）・残すもの・settings の元のバイトと外す項目"""
+    return (sorted(p["remove"]), sorted(p["expected"].items()), sorted(p["keep"]), sorted(p["used"]),
+            sorted(p["unsafe"]), sorted(p["other"]), p["settings_raw"], p["settings_writable"],
+            p["settings_remove"], p["settings_keep"])
+
+
+def cmd_uninstall(args):
+    P = plan_uninstall(args)
+    claude, kit_state, claude_manifest = P["claude"], P["kit_state"], P["claude_manifest"]
+    brain, cfg, settings_path, conflicts, safe = P["brain"], P["cfg"], P["settings_path"], P["conflicts"], P["safe"]
+    remove, keep, unsafe, other, directories = P["remove"], P["keep"], P["unsafe"], P["other"], P["directories"]
+    expected, used, cur, settings_raw = P["expected"], P["used"], P["cur"], P["settings_raw"]
+    settings_writable, settings_remove, settings_keep = P["settings_writable"], P["settings_remove"], P["settings_keep"]
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
@@ -2008,16 +2019,13 @@ def cmd_uninstall(args):
         if ask("実行する？ [y/N]", args=args).lower() not in ("y", "yes"):
             print("中止した。何も変えていない。")
             return
-    # 確認を待つ間に settings.json が変わったら、古い計画で上書きしない（何も変えずに止める）
-    now_raw = open_bytes(settings_path) if os.path.lexists(settings_path) and not os.path.isdir(settings_path) else None
-    if now_raw != settings_raw or safe(settings_path) != settings_writable:
-        die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
-    # 残すフックが使うものを調べたときに読んだスクリプト・ディレクトリが変わっていたら、計画が古い。何も変えずに止める
-    for (kind, path), before in sorted(looked.items()):
-        now = (sorted(os.listdir(path)) if os.path.isdir(path) else None) if kind == "dir" else fingerprint(path)
-        if now != before:
-            die("確認の間に %s が変わった（残すフックが使うものを調べ直す）。何も変えていない。もう一度 --uninstall を実行する"
-                % tilde(path), 1)
+    # 確認のあとで計画を作り直し、見せた計画と同じかを比べる。settings.json・残すフックが使うスクリプト
+    # （新しく作られたものも）・消すものの中身が、確認の間に変わっていたら古い計画で消さない（何も変えずに止める）
+    again = plan_uninstall(args)
+    if plan_signature(again) != plan_signature(P):
+        if again["settings_raw"] != settings_raw or again["settings_writable"] != settings_writable:
+            die("確認の間に settings.json が変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
+        die("確認の間に、消すもの・残すフックが使うものが変わった。何も変えていない。もう一度 --uninstall を実行する", 1)
 
     def unchanged(path):
         # 消す直前にもう一度、~/.claude の中（親の symlink をたどった先も）・symlink でない・中身が計画のときと同じ、を確かめる
