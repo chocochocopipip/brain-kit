@@ -1887,45 +1887,52 @@ def cmd_uninstall(args):
             used[path] = why
             remove.discard(path)
 
-    def named_files(text):
-        """text に書かれた ~/.claude の中のファイル（絶対・~/・$HOME/・${HOME}/ の形）。持ち主のスクリプトも辿るため"""
-        out = []
-        for arg in re.split(r"[\s'\"`;|&()<>=]+", text):
+    def inside_claude(path):
+        return path.startswith(claude + os.sep) and os.path.isfile(path) and safe(path)
+
+    def named_files(text, here=None):
+        """text に書かれた ~/.claude の中のファイル。絶対・~/・$HOME/・${HOME}/ の形と、here（読んだファイルの
+        ディレクトリ）からの相対パス・同じディレクトリのファイル名。持ち主のスクリプトも辿るため（残す側に倒す）"""
+        out = set()
+        for arg in re.split(r"[\s'\"`;|&()<>=,]+", text):
             for prefix in ("${HOME}/", "$HOME/", "~/"):
                 if arg.startswith(prefix):
                     arg = os.path.join(HOME, arg[len(prefix):])
-            arg = os.path.abspath(arg) if arg.startswith(os.sep) else ""
-            if arg and arg.startswith(claude + os.sep) and os.path.isfile(arg) and safe(arg):
-                out.append(arg)
-        return out
-
-    # 起点：残る command が指す kit のファイルと、command に書かれた ~/.claude の中のファイル（持ち主のスクリプトも）
-    seeds = []
-    for part, command in commands:
+            if not arg.startswith(os.sep):
+                arg = os.path.join(here, arg) if here and "/" in arg else ""
+            if arg and inside_claude(os.path.abspath(arg)):
+                out.add(os.path.abspath(arg))
+        if here and os.path.isdir(here):
+            out.update(os.path.join(here, name) for name in sorted(os.listdir(here))
+                       if name in text and inside_claude(os.path.join(here, name)))
         for path in candidates:
-            if any(f in command for f in forms(path)):
-                mark(path, part)
-                seeds.append(path)
-        seeds.extend(named_files(command))
-    # 残すスクリプトが呼ぶ kit のファイルも残す（session-end-brain.sh → "$HOOK_DIR/brain-digest.js" など）。
-    # 持ち主が変えて残すスクリプトも辿る。パスの形か、同じディレクトリのファイル名が中身に出てくれば「使う」とみなす
-    # （残す側に倒す）。一度見たものは見ない
+            if any(f in text for f in forms(path)):
+                out.add(path)
+        return sorted(out)
+
+    # 起点：残る command に書かれた ~/.claude の中のファイル（kit のものも持ち主のスクリプトも）。
+    # そこから、読んだファイルに書かれたファイルを何段でも辿る（session-end-brain.sh → "$HOOK_DIR/brain-digest.js"、
+    # 持ち主のフック → 持ち主の補助スクリプト → kit のファイル）。見たものは飛ばす。1 MiB を超えるファイルは読まない
+    queue = []
+    for part, command in commands:
+        for path in named_files(command):
+            mark(path, part)
+            queue.append(path)
     seen = set()
-    queue = list(dict.fromkeys(seeds))
     while queue:
         user = queue.pop(0)
         if user in seen:
             continue
         seen.add(user)
-        text = read_text(user) or ""
-        for path in candidates:
-            if path == user:
-                continue
-            sibling = os.path.dirname(path) == os.path.dirname(user) and os.path.basename(path) in text
-            if sibling or any(f in text for f in forms(path)):
+        try:
+            big = os.path.getsize(user) > 1024 * 1024
+        except OSError:
+            big = True
+        text = "" if big else (read_text(user) or "")
+        for path in named_files(text, os.path.dirname(user)):
+            if path != user:
                 mark(path, "%s から" % os.path.basename(user))
                 queue.append(path)
-        queue.extend(named_files(text))          # 持ち主の補助スクリプトを何段でも辿る（見たものは飛ばす）
     untouched = [tilde(brain) + "（.brain-kit・kit のファイルも含む全部）"]
     if cfg:
         untouched.extend(tilde(worktree_of(cfg, r)) for r in WORKTREE_ROLES if r in cfg["personas"])
