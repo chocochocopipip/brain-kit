@@ -3,13 +3,14 @@
 """SessionStart(compact): 今いる人格の核を main の brain から文脈へ戻す。通信・書き込みはしない。"""
 import json
 import os
+import re
+import select
 import stat
 import sys
 import threading
 import time
 
 
-BRAIN = r"""<brain>"""
 ROLE_JA = {"partner": "相棒", "dev": "開発", "review": "レビュー", "release": "リリース"}
 CORE_FILES = {"partner": ("00_核.md", "02_関係.md"), "dev": ("00_核.md",),
               "review": ("00_核.md", "規準.md"), "release": ("00_核.md", "手順.md")}
@@ -18,30 +19,26 @@ TOTAL_LIMIT = 64 * 1024
 
 
 def input_json():
-    # pipe の書き手が閉じなくても待たない。入力の量と読み続ける時間にも上限を置く。
+    # 遅れて届く分割入力も、合計 1 秒・64 KiB まで待つ。
     data = bytearray()
-    try:
-        if sys.stdin.isatty():
-            return {}
-        fd = sys.stdin.fileno()
-        blocking = os.get_blocking(fd)
+    fd = sys.stdin.fileno()
+    deadline = time.monotonic() + 1.0
+    while len(data) < 65536:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+            break
+        chunk = os.read(fd, 65536 - len(data))
+        if not chunk:
+            break
+        data.extend(chunk)
         try:
-            os.set_blocking(fd, False)
-            deadline = time.monotonic() + .02
-            while len(data) < 65536 and time.monotonic() < deadline:
-                try:
-                    chunk = os.read(fd, 65536 - len(data))
-                except BlockingIOError:
-                    break
-                if not chunk:
-                    break
-                data.extend(chunk)
-        finally:
-            os.set_blocking(fd, blocking)
-        value = json.loads(data)
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
+            value = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(value, dict):
+            return value
+    # 無入力だけはセッション cwd を使う。不正・未完の入力は無視する。
+    return {} if not data else None
 
 
 def read_file(path, limit):
@@ -53,27 +50,72 @@ def read_file(path, limit):
         return f.read(limit)
 
 
+def inside(path, root):
+    return path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def valid_personas(personas):
+    for person in personas.values():
+        if not isinstance(person, dict) or not isinstance(person.get("id"), str):
+            return False
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", person["id"]):
+            return False
+    name = personas["partner"]["name"]
+    return (isinstance(name, str) and bool(name) and not name.startswith(".")
+            and not os.path.isabs(name) and not any(c in name for c in ("/", "\\", "\0")))
+
+
+def role_at(cwd, brain, personas):
+    # 最寄りの .git が境界。別リポジトリから親の人格へは戻らない。
+    top = cwd
+    while not os.path.lexists(os.path.join(top, ".git")):
+        parent = os.path.dirname(top)
+        if parent == top:
+            return None
+        top = parent
+    git = os.path.join(top, ".git")
+    if os.path.isdir(git):
+        return "partner" if os.path.realpath(git) == os.path.realpath(os.path.join(brain, ".git")) else None
+    link = read_file(git, 65536).decode("utf-8").strip()
+    if not link.startswith("gitdir: "):
+        return None
+    gitdir = os.path.realpath(os.path.join(top, link[len("gitdir: "):]))
+    if not inside(gitdir, os.path.realpath(os.path.join(brain, ".git", "worktrees"))):
+        return None
+    for role in ("dev", "review", "release"):
+        person = personas.get(role)
+        if person and top == os.path.realpath(brain + "-" + person["id"]):
+            return role
+    head = read_file(os.path.join(gitdir, "HEAD"), 65536).decode("utf-8").strip()
+    for role in ("dev", "review", "release"):
+        person = personas.get(role)
+        if person and head == "ref: refs/heads/" + person["id"]:
+            return role
+    return None
+
+
 def main():
     if (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
             os.path.exists(os.path.expanduser("~/.claude/brain-kit/no-core-reread"))):
         return
     event = input_json()
-    if "source" in event and event["source"] != "compact":
+    if event is None or ("source" in event and event["source"] != "compact"):
         return
-    brain = os.path.expanduser(BRAIN)
+    brain = read_file(os.path.expanduser("~/.claude/brain-kit/brain-path"), 65536).decode("utf-8")
+    if brain.endswith("\n"):
+        brain = brain[:-1]
+    if not brain:
+        return
+    brain = os.path.expanduser(brain)
     cfg = json.loads(read_file(os.path.join(brain, ".brain-kit", "config.json"), 1024 * 1024))
-    cwd = os.path.realpath(event.get("cwd") or os.getcwd())
-    matches = []
-    for role in ROLE_JA:
-        person = cfg["personas"].get(role)
-        if not person:
-            continue
-        root = os.path.realpath(brain if role == "partner" else brain + "-" + person["id"])
-        if cwd == root or cwd.startswith(root.rstrip(os.sep) + os.sep):
-            matches.append((len(root), role, person))
-    if not matches:
+    personas = cfg["personas"]
+    if not valid_personas(personas):
         return
-    _, role, person = max(matches, key=lambda match: match[0])
+    cwd = os.path.realpath(event.get("cwd") or os.getcwd())
+    role = role_at(cwd, brain, personas)
+    if role is None:
+        return
+    person = personas[role]
     area = person["name"] if role == "partner" else role
     parts = []
     remaining = TOTAL_LIMIT
@@ -81,7 +123,10 @@ def main():
         path = area + "/" + name
         limit = min(FILE_LIMIT, remaining)
         try:
-            data = read_file(os.path.join(brain, path), limit + 1)
+            core = os.path.realpath(os.path.join(brain, path))
+            if not inside(core, os.path.realpath(os.path.join(brain, area))):
+                continue
+            data = read_file(core, limit + 1)
         except Exception:
             continue
         # UTF-8 の途中で切れても壊れた文字を出さず、本文のバイト数で上限を守る。

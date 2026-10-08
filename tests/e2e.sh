@@ -3322,7 +3322,9 @@ brain = h / "brain"
 hook = h / ".claude/hooks/brain-kit-core-reread.py"
 text = hook.read_text(encoding="utf-8")
 # HOME に // が混ざる環境（macOS の TMPDIR）では ~ の形にならず、絶対パスで埋まる
-assert "<brain>" not in text and ("~/brain" in text or os.path.abspath(str(brain)) in text)
+assert "<brain>" not in text
+brain_path = h / ".claude/brain-kit/brain-path"
+assert brain_path.read_text() in ("~/brain\n", os.path.abspath(str(brain)) + "\n")
 command = 'python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"'
 group = {"matcher": "compact", "hooks": [{"type": "command", "command": command, "timeout": 10}]}
 s = json.loads((h / ".claude/settings.json").read_text())
@@ -3332,6 +3334,7 @@ m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
 assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
     json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 assert m["files"][".claude/hooks/brain-kit-core-reread.py"]["sha"] == hashlib.sha256(hook.read_bytes()).hexdigest()
+assert m["files"][".claude/brain-kit/brain-path"]["sha"] == hashlib.sha256(brain_path.read_bytes()).hexdigest()
 roles = [
     ("相棒", "Aoi", "brain", ["Aoi/00_核.md", "Aoi/02_関係.md"]),
     ("開発", "Ren", "brain-ren", ["dev/00_核.md"]),
@@ -3380,24 +3383,62 @@ for elsewhere in (h, pathlib.Path("/"), h / "brain-renx", h / "brainx"):
     if elsewhere.parent == h:
         elsewhere.mkdir(exist_ok=True)
     assert compact(elsewhere) == "", str(elsewhere)
-# worktree の実体が brain 内にある場合は、長い一致（開発）を優先する。
+# 最寄りの git の所属で判定する。移動先が brain 内でも partner にはならない。
 dev = h / "brain-ren"
-nested = brain / "nested-dev"
-dev.rename(nested)
+nested = brain / "worktrees/ren"
+nested.parent.mkdir()
+subprocess.run(["git", "-C", str(brain), "worktree", "move", str(dev), str(nested)], check=True)
 try:
-    dev.symlink_to(nested, target_is_directory=True)
+    assert not dev.exists()
     assert compact(nested) == expected("開発", "Ren", roles[1][3])
+    dev.mkdir()  # 元の名前を持つだけの持ち主のディレクトリ
+    assert compact(dev) == ""
+    plain = h / "brain-ren2"
+    plain.mkdir()
+    assert compact(plain) == ""
+    # 移動先でブランチに一致しなければ、brain 内でも無出力。
+    gitdir = pathlib.Path((nested / ".git").read_text().strip()[8:])
+    head = gitdir / "HEAD"
+    saved_head = head.read_bytes()
+    head.write_text("ref: refs/heads/unmatched\n")
+    assert compact(nested) == ""
+    head.write_bytes(saved_head)
 finally:
-    dev.unlink()
-    nested.rename(dev)
+    dev.rmdir()
+    subprocess.run(["git", "-C", str(brain), "worktree", "move", str(nested), str(dev)], check=True)
+foreign = brain / "nested"
+subprocess.run(["git", "init", "-q", str(foreign)], check=True)
+assert compact(foreign) == ""
+# 相棒の本文への symlink は開発セッションへ漏らさない。
+core = brain / "dev/00_核.md"
+core.unlink()
+core.symlink_to(brain / "Aoi/00_核.md")
+assert compact(dev) == ""
+core.unlink()
+core.write_text(contents["dev/00_核.md"], encoding="utf-8")
+# 中間ディレクトリの symlink でも領域外なら読まない。
+core.unlink()
+outside = brain / "Aoi/linked"
+outside.mkdir()
+(outside / "core.md").write_text("相棒の秘密", encoding="utf-8")
+link = brain / "dev/linked"
+link.symlink_to(outside, target_is_directory=True)
+core.symlink_to(link / "core.md")
+assert compact(dev) == ""
+core.unlink()
+link.unlink()
+core.write_text(contents["dev/00_核.md"], encoding="utf-8")
 for source in ("startup", "resume", "clear", None, 0):
     assert run(json.dumps({"source": source, "cwd": str(brain)}).encode()) == ""
 want = expected(*roles[0][:2], roles[0][3])
-for raw in (b"", b"invalid json", b"[]", b"null", b"{}", b'{"source":"compact"}'):
+for raw in (b"", b"{}", b'{"source":"compact"}'):
     assert run(raw) == want
     assert run(raw, cwd=h) == ""
-# 書き手が pipe を閉じない場合も 1 秒以内。届いている完全な JSON は読み取る。
-for raw, cwd, output in ((b"", brain, want), (b"invalid", brain, want),
+for raw in (b"invalid json", b"[]", b"null", b" ", b'{"source":"compact","cwd":'):
+    assert run(raw) == ""
+# 書き手が pipe を閉じなくても合計約 1 秒。完全な JSON は直ちに読む。
+for raw, cwd, output in ((b"", brain, want), (b"invalid", brain, ""),
+                         (b'{"source":"compact","cwd":', brain, ""),
                          (json.dumps({"source": "compact", "cwd": str(brain)}).encode(), h, want)):
     started = time.monotonic()
     proc = subprocess.Popen([sys.executable, str(hook)], cwd=str(cwd), env=env,
@@ -3406,8 +3447,8 @@ for raw, cwd, output in ((b"", brain, want), (b"invalid", brain, want),
         if raw:
             proc.stdin.write(raw)
             proc.stdin.flush()
-        proc.wait(timeout=.9)
-        assert time.monotonic() - started < 1
+        proc.wait(timeout=1.5)
+        assert time.monotonic() - started < 1.5
         assert proc.returncode == 0 and proc.stderr.read() == b""
         assert proc.stdout.read().decode("utf-8") == output
     finally:
@@ -3417,6 +3458,32 @@ for raw, cwd, output in ((b"", brain, want), (b"invalid", brain, want),
         proc.stdin.close()
         proc.stdout.close()
         proc.stderr.close()
+# 書き手が遅れて、JSON を二分して送る。
+proc = subprocess.Popen([sys.executable, str(hook)], cwd=str(brain), env=env,
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    time.sleep(.3)
+    proc.stdin.write(b'{"source":"compact","cwd":')
+    proc.stdin.flush()
+    time.sleep(.1)
+    proc.stdin.write(json.dumps(str(dev)).encode() + b"}")
+    proc.stdin.close()
+    proc.stdin = None
+    out, err = proc.communicate(timeout=1.5)
+    assert proc.returncode == 0 and err == b""
+    assert out.decode("utf-8") == expected("開発", "Ren", roles[1][3])
+finally:
+    if proc.poll() is None:
+        proc.kill()
+        proc.communicate()
+# パスデータが無い・読めない場合は静かに終了する。
+saved_path = brain_path.read_bytes()
+brain_path.unlink()
+assert compact(brain) == ""
+brain_path.mkdir()
+assert compact(brain) == ""
+brain_path.rmdir()
+brain_path.write_bytes(saved_path)
 assert run(b"{}", extra={"BRAIN_KIT_NO_CORE_REREAD": "1"}) == ""
 stop = h / ".claude/brain-kit/no-core-reread"
 stop.touch()
@@ -3473,6 +3540,20 @@ for value in (b"invalid", b"[]", b"{}"):
 cfg.unlink()
 assert compact(brain) == ""
 cfg.write_bytes(saved)
+# 不正な名前の参照先にも本文を置き、欠損による無出力と区別する。
+for escaped in (h / "x", h / "absolute"):
+    escaped.mkdir()
+    (escaped / "00_核.md").write_text("領域外の核", encoding="utf-8")
+for role, field, values in (
+        ("partner", "name", ("../x", str(h / "absolute"), ".hidden", ".", "..", "x/y", "x\\y", "x\0y", "")),
+        ("dev", "id", ("..", "ren..", "Ren", "x" * 41, "ren\n"))):
+    for value in values:
+        invalid = json.loads(saved)
+        invalid["personas"][role][field] = value
+        cfg.write_text(json.dumps(invalid))
+        assert compact(brain) == ""
+        assert compact(dev) == ""
+cfg.write_bytes(saved)
 # 出力先の切断でも stderr に何も出さず 0 で終わる。
 read_fd, write_fd = os.pipe()
 os.close(read_fd)
@@ -3511,10 +3592,37 @@ check "核: doctor は compact の設定が無ければフック無し" grep -q 
 mv "$H.settings" "$H/.claude/settings.json"
 new "$H" --uninstall --yes >"$H.un" 2>&1
 check "核: uninstall が 0" test $? -eq 0
+check "核: 未変更の brain-path を外す" test ! -e "$H/.claude/brain-kit/brain-path"
 check "核: 未変更のスクリプトを外す" test ! -e "$H/.claude/hooks/brain-kit-core-reread.py"
 check "核: 未変更の項目を外す" sh -c "! grep -q brain-kit-core-reread.py '$H/.claude/settings.json'"
 new "$H" --doctor >"$H.doctor-none" 2>&1
 check "核: uninstall のあとはフック無し" grep -q '要約のあとの核の読み直し.*フック無し' "$H.doctor-none"
+
+section "核の読み直し（Python の文字列にならない brain パス）"
+python3 - "$TMP" "$KIT" <<'PY'
+import os, pathlib, subprocess, sys
+root, kit = map(pathlib.Path, sys.argv[1:])
+for i, suffix in enumerate(('trailing\\', 'triple"""')):
+    home = root / ("core-path-%d" % i)
+    home.mkdir()
+    brain = home / suffix
+    env = dict(os.environ, HOME=str(home))
+    result = subprocess.run(["bash", str(kit / "install.sh"), "--brain", str(brain),
+                             "--partner", "Aoi", "--dev", "Ren", "--review", "Mio",
+                             "--release", "Sora", "--user", "Ken", "--yes"],
+                            input=b"", env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    path = home / ".claude/brain-kit/brain-path"
+    assert os.path.expanduser(path.read_text()[:-1].replace("~", str(home), 1)) == str(brain)
+    hook = home / ".claude/hooks/brain-kit-core-reread.py"
+    assert hook.read_bytes() == (kit / "claude/hooks/brain-kit-core-reread.py").read_bytes()
+    (brain / "Aoi/00_核.md").write_text("path core", encoding="utf-8")
+    result = subprocess.run([sys.executable, str(hook)], input=b"", cwd=str(brain), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
+    assert result.returncode == 0 and result.stderr == b"", result
+    assert "--- Aoi/00_核.md ---\npath core" in result.stdout.decode("utf-8")
+PY
+check "核: 末尾のバックスラッシュ・三重引用符の brain パスでも動く" test $? -eq 0
 
 section "核の読み直し（日本語の名前）"
 H="$TMP/core-reread-ja"
@@ -3561,7 +3669,10 @@ assert s == json.loads(pathlib.Path(str(h) + ".settings-before").read_text())
 m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
 assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
     json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-assert "<brain>" not in (h / ".claude/hooks/brain-kit-core-reread.py").read_text()
+path = h / ".claude/brain-kit/brain-path"
+assert "<brain>" not in path.read_text()
+assert path.read_text().endswith("brain\n")
+assert m["files"][".claude/brain-kit/brain-path"]["sha"] == hashlib.sha256(path.read_bytes()).hexdigest()
 PY
 check "核: update で compact 項目と所有記録を追加し既存設定を保持" test $? -eq 0
 before="$(snap "$H")"
