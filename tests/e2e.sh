@@ -1060,6 +1060,7 @@ for old in (False, True):
         if old:
             meta = g["load_json"](directory + "/meta.json")
             del meta["created"]
+            del meta["seq"]
             g["write_text"](directory + "/meta.json", g["dump_json"](meta))
         entries.append(directory)
     assert entries[-1].endswith("-12") if not old else entries[-1].endswith("-24")
@@ -1069,6 +1070,42 @@ for old in (False, True):
         assert g["read_text"](p) == (str(i - 1) if i else None)
 PY
 check "退避: 同じ秒の 12 件を新旧の記録とも新しい順に戻す" test $? -eq 0
+# 壁時計は戻ることがある（NTP や仮想機械の時刻合わせで数 ms）。作った順は時計でなく退避の通し番号で決める
+HOME="$TMP/order-clock" python3 - "$KIT" <<'PY' >"$TMP/order-clock.log" 2>&1
+import argparse, datetime, os, runpy, sys, types
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+ticks = [datetime.datetime(2030, 1, 1, 1, 1, 2, 5000)]
+class Clock(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        ticks.append(ticks[-1] - datetime.timedelta(milliseconds=10))   # 呼ぶたびに 10 ms 戻る
+        return ticks[-1]
+fake = types.ModuleType("datetime")
+fake.__dict__.update(datetime.__dict__)
+fake.datetime = Clock
+g["datetime"] = fake
+p = os.path.join(g["CLAUDE"], "order-clock.md")
+# 先頭の 2 件は記録の古い退避（通し番号も作った時刻も無い）。次の 3 件は同じ秒、最後は時計が前の秒に戻った退避
+entries = []
+for i, stamp in enumerate(["20300101-010100", "20300101-010100", "20300101-010102", "20300101-010102",
+                           "20300101-010102", "20300101-010101"]):
+    g["STAMP"] = stamp
+    backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
+    g["put"](p, str(i), backup)
+    directory = backup.close()
+    if i < 2:
+        meta = g["load_json"](directory + "/meta.json")
+        meta.pop("created")
+        meta.pop("seq", None)
+        g["write_text"](directory + "/meta.json", g["dump_json"](meta))
+    entries.append(directory)
+for i in range(len(entries) - 1, -1, -1):
+    g["cmd_rollback"](argparse.Namespace(dry_run=False))
+    assert g["load_json"](entries[i] + "/meta.json")["rolled_back"], (i, entries[i])
+    assert g["read_text"](p) == (str(i - 1) if i else None), (i, g["read_text"](p))
+PY
+check "退避: 時計が戻っても作った順の逆に戻す（同じ秒・前の秒・古い記録）" test $? -eq 0
 HOME="$TMP/collision-with" python3 - "$NEXT" <<'PY' >"$TMP/no-read.log" 2>&1
 import builtins, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")

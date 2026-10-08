@@ -915,6 +915,24 @@ def print_collisions(collisions, bundle):
 
 
 # ------------------------------------------------------------------ 退避と戻し
+def backup_seq(meta):
+    seq = meta.get("seq")
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0 else None
+
+
+def next_backup_seq():
+    """今ある退避（戻し済みも含む）の通し番号の最大 + 1。"""
+    top = 0
+    if os.path.isdir(CLAUDE):
+        for d in os.listdir(CLAUDE):
+            if d.startswith("backup-brain-kit-"):
+                m = load_json(os.path.join(CLAUDE, d, "meta.json"))
+                seq = backup_seq(m) if isinstance(m, dict) else None
+                if seq:
+                    top = max(top, seq)
+    return top + 1
+
+
 class Backup(object):
     def __init__(self, kind, meta):
         self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s" % STAMP)
@@ -922,7 +940,10 @@ class Backup(object):
         while os.path.exists(self.dir):
             n += 1
             self.dir = os.path.join(CLAUDE, "backup-brain-kit-%s-%d" % (STAMP, n))
-        self.meta = dict(meta, kind=kind, stamp=STAMP, created=datetime.datetime.now().isoformat(timespec="microseconds"),
+        # 作った順は壁時計でなく通し番号で持つ。時計は NTP や仮想機械の時刻合わせで数 ms 戻ることがあり、
+        # 同じ秒の退避の created や、前の秒に戻った STAMP では新旧が入れ替わる
+        self.meta = dict(meta, kind=kind, stamp=STAMP, seq=next_backup_seq(),
+                         created=datetime.datetime.now().isoformat(timespec="microseconds"),
                          overwritten=[], added={}, worktrees=[], rolled_back=False)
         self.opened = False
 
@@ -2225,12 +2246,17 @@ def restore_atomic(src, path):
 
 
 def backup_order(meta, directory):
+    """新しいほど大きい。通し番号のある退避は、番号の無い古い記録の退避よりあとに作られている。"""
     stamp = meta.get("stamp", "")
     suffix = directory[len("backup-brain-kit-" + stamp):].lstrip("-")
+    suffix = int(suffix) if suffix.isdigit() else 1
     created = meta.get("created")
     if not created:
         created = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S").isoformat(timespec="microseconds")
-    return created, int(suffix) if suffix.isdigit() else 1
+    seq = backup_seq(meta)
+    if seq:
+        return 1, seq, created, suffix
+    return 0, 0, created, suffix
 
 
 def cmd_rollback(args):
