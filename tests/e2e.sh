@@ -1187,6 +1187,7 @@ signal.alarm(20)
 for make in (lambda: open(odd, "w").close(), lambda: os.symlink(odd + "-missing", odd), lambda: os.symlink(dirs[2], odd),
              fifo_meta, meta_link):
     make()
+    g["Backup"]("update", {"brain": None, "from": 10, "to": 10})   # 新しい退避を作るときの見回りも開かずに飛ばす
     try:
         g["cmd_rollback"](argparse.Namespace(dry_run=False))
         raise AssertionError("rollback が止まらなかった: %s" % os.path.lexists(odd))

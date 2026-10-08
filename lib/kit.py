@@ -927,6 +927,26 @@ def meta_sha(directory):
     return sha(open_bytes(path)) if os.path.isfile(path) else None
 
 
+def read_backup_meta(d):
+    """~/.claude/<d>/meta.json を読む。(meta, None)、無い（本物のディレクトリで meta.json だけ無い）なら (None, None)、
+    確かめられない・壊れているなら (None, 理由)。FIFO などで止まらないよう、普通のファイルでなければ開かない。"""
+    top = os.path.join(CLAUDE, d)
+    path = os.path.join(top, "meta.json")
+    try:
+        if not stat.S_ISDIR(os.lstat(top).st_mode):
+            return None, "退避がディレクトリでない（symlink・ファイル）"
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None, "meta.json が普通のファイルでない"
+    except OSError as e:
+        if e.errno == errno.ENOENT and os.path.isdir(top) and not os.path.islink(top):
+            return None, None
+        return None, "確かめられない: %s" % e
+    m = load_json(path)
+    if not isinstance(m, dict) or not m:
+        return None, "読めない・JSON の object でない"
+    return m, None
+
+
 def scan_backups():
     """(今ある退避（戻し済みも含む）の通し番号の最大 + 1, {通し番号の無い退避の名前: その meta.json の sha})。
     一覧は新しい退避の meta に残し、番号の無い退避がこの退避より前に書き終わっていたことの証にする
@@ -935,9 +955,9 @@ def scan_backups():
     if os.path.isdir(CLAUDE):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
-                m = load_json(os.path.join(CLAUDE, d, "meta.json"))
-                if not isinstance(m, dict):
-                    continue
+                m, why = read_backup_meta(d)
+                if why or m is None:
+                    continue   # 壊れた退避は --rollback が止まる。ここでは開かずに飛ばす
                 if "seq" not in m:
                     legacy[d] = meta_sha(os.path.join(CLAUDE, d))
                 elif backup_seq(m):
@@ -2280,21 +2300,11 @@ def cmd_rollback(args):
         for d in sorted(os.listdir(CLAUDE)):
             if d.startswith("backup-brain-kit-"):
                 path = os.path.join(CLAUDE, d, "meta.json")
-                why = None
-                try:
-                    if not stat.S_ISDIR(os.lstat(os.path.join(CLAUDE, d)).st_mode):
-                        why = "退避がディレクトリでない（symlink・ファイル）"
-                    elif not stat.S_ISREG(os.lstat(path).st_mode):
-                        why = "meta.json が普通のファイルでない"
-                except OSError as e:
-                    if e.errno == errno.ENOENT and not why and os.path.isdir(os.path.join(CLAUDE, d)):
-                        continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
-                    why = "確かめられない: %s" % e
-                m = None if why else load_json(path)
+                m, why = read_backup_meta(d)
+                if m is None and why is None:
+                    continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
                 if why:
                     pass
-                elif not isinstance(m, dict) or not m:
-                    why = "読めない・JSON の object でない"
                 elif not isinstance(m.get("rolled_back", False), bool):
                     why = "rolled_back が true / false でない"
                 elif m.get("rolled_back"):
