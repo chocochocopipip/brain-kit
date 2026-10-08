@@ -1175,6 +1175,18 @@ for target in (dirs[2], dirs[0]):
         open(target + "/meta.json", "wb").write(good[target])
         assert g["read_text"](p) == "kit2"
         assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
+# 退避の名前のファイル・行き先の無い symlink・ディレクトリへの symlink は、何が書かれたか確かめられないので止まる
+odd = os.path.join(g["CLAUDE"], "backup-brain-kit-29990101-000000")
+for make in (lambda: open(odd, "w").close(), lambda: os.symlink(odd + "-missing", odd), lambda: os.symlink(dirs[2], odd)):
+    make()
+    try:
+        g["cmd_rollback"](argparse.Namespace(dry_run=False))
+        raise AssertionError("rollback が止まらなかった: %s" % os.path.lexists(odd))
+    except SystemExit as e:
+        assert e.code == 1, e.code
+    os.remove(odd)
+    assert g["read_text"](p) == "kit2"
+    assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
 os.makedirs(os.path.join(g["CLAUDE"], "backup-brain-kit-20000101-000000", "files"))   # meta の無い退避
 g["cmd_rollback"](argparse.Namespace(dry_run=False))
 assert g["read_text"](p) == "kit1"

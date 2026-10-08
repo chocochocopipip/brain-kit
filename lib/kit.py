@@ -26,6 +26,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -2281,9 +2282,12 @@ def cmd_rollback(args):
                 path = os.path.join(CLAUDE, d, "meta.json")
                 why = None
                 try:
-                    os.lstat(path)
+                    if not stat.S_ISDIR(os.lstat(os.path.join(CLAUDE, d)).st_mode):
+                        why = "退避がディレクトリでない（symlink・ファイル）"
+                    else:
+                        os.lstat(path)
                 except OSError as e:
-                    if e.errno in (errno.ENOENT, errno.ENOTDIR):
+                    if e.errno == errno.ENOENT and not why and os.path.isdir(os.path.join(CLAUDE, d)):
                         continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない
                     why = "確かめられない: %s" % e
                 m = None if why else load_json(path)
