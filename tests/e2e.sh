@@ -1639,6 +1639,56 @@ check "書き換えた settings は上書きしない" grep -q '"owner": "after"
 check "ほかの外したものは戻る" test -f "$H/.claude/skills/sora/SKILL.md"
 check "manifest も戻る" test -f "$H/.claude/brain-kit/manifest.json"
 
+section "uninstall の settings.json：置き換えの失敗と書く直前の変更"
+# kit.py を読み込み、os.replace（settings.json だけ）か退避の直後を差し替えて uninstall を走らせる
+uninstall_fault() { # uninstall_fault <home> <replace|race>
+  HOME="$1" python3 - "$KIT/lib/kit.py" "$2" <<'PY2'
+import os, runpy, sys
+from unittest import mock
+g = runpy.run_path(sys.argv[1], run_name="kit_under_test")
+mode = sys.argv[2]
+settings = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+real_replace, real_save = os.replace, g["Backup"].save
+def replace(src, dst, *a, **k):
+    if os.path.basename(dst) == "settings.json":
+        raise OSError("injected: replace failed")
+    return real_replace(src, dst, *a, **k)
+def save(self, path):
+    real_save(self, path)
+    if os.path.basename(path) == "settings.json":
+        with open(settings, "a") as f:     # 退避のあと、書く直前に持ち主が保存した
+            f.write("\n")
+patches = [mock.patch.object(os, "replace", replace)] if mode == "replace" else [mock.patch.object(g["Backup"], "save", save)]
+for p in patches:
+    p.start()
+try:
+    g["main"](["uninstall", "--yes"])
+except SystemExit as e:
+    sys.exit(e.code or 0)
+except OSError as e:
+    print("raised: %s" % e)
+    sys.exit(3)
+PY2
+}
+H="$TMP/uninstall-fault"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+cp "$H/.claude/settings.json" "$H.settings-orig"
+uninstall_fault "$H" replace >"$H.replace" 2>&1
+check "置き換えが失敗すると uninstall は 0 以外" test $? -ne 0
+check "置き換えが失敗しても settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "置き換えが失敗しても一時ファイルを残さない" sh -c "! ls -a '$H/.claude' | grep -q '^\.settings\.json\.'"
+check "置き換えが失敗したら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+new "$H" --rollback >"$H.rb" 2>&1
+check "置き換えの失敗のあとの rollback が 0" test $? -eq 0
+check "rollback のあとも settings.json は元のバイト" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+uninstall_fault "$H" race >"$H.race" 2>&1
+check "書く直前の変更で uninstall は 0 以外" test $? -ne 0
+printf '\n' >>"$H.settings-orig"
+check "書く直前の持ち主の変更を上書きしない" cmp -s "$H.settings-orig" "$H/.claude/settings.json"
+check "書く直前の変更なら kit のファイルは消していない" test -f "$H/.claude/skills/aoi/SKILL.md"
+new "$H" --rollback --dry-run >"$H.rb2" 2>&1
+check "止めた退避は rollback の対象にしない" sh -c "! grep -q 'uninstall' '$H.rb2'"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
