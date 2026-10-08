@@ -1738,8 +1738,10 @@ def cmd_resolve(args):
 
 # ------------------------------------------------------------------ uninstall（機械側の記録だけを使う）
 def cmd_uninstall(args):
+    # HOME に // が混ざっても（macOS の TMPDIR は / で終わる）比べられるように、正規化した形だけを使う
+    claude, claude_manifest, kit_state = (os.path.abspath(p) for p in (CLAUDE, CLAUDE_MANIFEST, KIT_STATE))
     brain = os.path.abspath(os.path.expanduser(args.brain))
-    manifest = load_json(CLAUDE_MANIFEST, {}) or {}
+    manifest = load_json(claude_manifest, {}) or {}
     if not manifest.get("files"):
         die("kit の記録が無い（v1〜v9 の導入か、未導入）。先に --update で記録を作る")
     cfg = load_json(config_path(brain))
@@ -1747,9 +1749,10 @@ def cmd_uninstall(args):
     if cfg:
         protected.append(cfg["brain"])
         protected.extend(worktree_of(cfg, r) for r in WORKTREE_ROLES if r in cfg["personas"])
-    settings_path = os.path.join(CLAUDE, "settings.json")
-    base = os.path.join(KIT_STATE, "base")
-    conflicts = os.path.join(KIT_STATE, "conflicts")
+    protected = [os.path.abspath(p) for p in protected]
+    settings_path = os.path.join(claude, "settings.json")
+    base = os.path.join(kit_state, "base")
+    conflicts = os.path.join(kit_state, "conflicts")
     remove, keep, unsafe = set(), set(), set()
 
     def inside(path, directory):
@@ -1758,11 +1761,11 @@ def cmd_uninstall(args):
     def safe(path):
         parent = os.path.realpath(os.path.dirname(path))
         real = os.path.realpath(path)
-        return (path.startswith(CLAUDE + os.sep) and
-                inside(parent, os.path.realpath(CLAUDE)) and not os.path.islink(path) and
+        return (path.startswith(claude + os.sep) and
+                inside(parent, os.path.realpath(claude)) and not os.path.islink(path) and
                 not any(p.startswith("backup-brain-kit-") for p in
-                        os.path.relpath(path, CLAUDE).split(os.sep) +
-                        os.path.relpath(real, os.path.realpath(CLAUDE)).split(os.sep)) and
+                        os.path.relpath(path, claude).split(os.sep) +
+                        os.path.relpath(real, os.path.realpath(claude)).split(os.sep)) and
                 not any(inside(path, p) or inside(real, os.path.realpath(p)) for p in protected))
 
     rendered, expected = {}, {}
@@ -1770,7 +1773,7 @@ def cmd_uninstall(args):
         rendered = {os.path.abspath(dst): (src, flags) for src, dst, flags in load_kitfiles(cfg)}
     for key, ent in manifest["files"].items():
         path = os.path.abspath(os.path.join(HOME, key))
-        if not safe(path) or path in (settings_path, CLAUDE_MANIFEST) or inside(path, conflicts):
+        if not safe(path) or path in (settings_path, claude_manifest) or inside(path, conflicts):
             unsafe.add(path)
             continue
         if os.path.lexists(path):
@@ -1793,11 +1796,11 @@ def cmd_uninstall(args):
     # base は kit の原文。symlink はたどらず、その他の状態や衝突資料は残す。
     other = set()
     directories = set()
-    for root, dirs, files in os.walk(KIT_STATE, followlinks=False):
+    for root, dirs, files in os.walk(kit_state, followlinks=False):
         dirs.sort()
         for name in files + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
             path = os.path.join(root, name)
-            if path == CLAUDE_MANIFEST or path in remove or path in keep or path in unsafe:
+            if path == claude_manifest or path in remove or path in keep or path in unsafe:
                 continue
             # base は記録のある kit のファイルの原文だけを消す（記録の sha と一致するもの）。ほかは残す
             ent = manifest["files"].get(os.path.relpath(path, base)) if inside(path, base) else None
@@ -1809,11 +1812,11 @@ def cmd_uninstall(args):
         if inside(root, base) and safe(root):
             directories.add(root)
     # manifest 自体が symlink なら参照先も記録もそのまま残す。
-    if safe(CLAUDE_MANIFEST) and os.path.isfile(CLAUDE_MANIFEST):
-        remove.add(CLAUDE_MANIFEST)
-        expected[CLAUDE_MANIFEST] = sha(open_bytes(CLAUDE_MANIFEST))
+    if safe(claude_manifest) and os.path.isfile(claude_manifest):
+        remove.add(claude_manifest)
+        expected[claude_manifest] = sha(open_bytes(claude_manifest))
     else:
-        unsafe.add(CLAUDE_MANIFEST)
+        unsafe.add(claude_manifest)
 
     cur, settings_raw = {}, None
     if os.path.lexists(settings_path):
@@ -1924,7 +1927,7 @@ def cmd_uninstall(args):
             die("書く直前に settings.json が変わった。何も変えていない（--rollback は要らない）", 1)
         backup.meta["written"][settings_path] = sha(text)
         backup._journal()
-        fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=CLAUDE)
+        fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=claude)
         try:
             with io.open(fd, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
@@ -1935,12 +1938,12 @@ def cmd_uninstall(args):
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-    for path in sorted(remove - {CLAUDE_MANIFEST}):
+    for path in sorted(remove - {claude_manifest}):
         drop(path)
-    if CLAUDE_MANIFEST in remove:
-        drop(CLAUDE_MANIFEST)
-        directories.add(KIT_STATE)
-    stops = {CLAUDE} | {os.path.join(CLAUDE, p) for p in ("skills", "hooks", "agents")}
+    if claude_manifest in remove:
+        drop(claude_manifest)
+        directories.add(kit_state)
+    stops = {claude} | {os.path.join(claude, p) for p in ("skills", "hooks", "agents")}
     for directory in sorted(directories, key=len, reverse=True):
         while directory not in stops and safe(directory):
             try:
