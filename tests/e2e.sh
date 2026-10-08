@@ -2627,10 +2627,29 @@ PY
 check "停滞: 無効値・境界時刻・省略・brain の指定・直下の最新記録・時間切れ" test $? -eq 0
 FAKE_GH_MODE=offline stall_collect --out "$H.board.json" >/dev/null
 check "停滞: 読めない repo のセッションは判定しない" python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); assert s["errors"] and not s["stalled"]["items"]' "$H.board.json"
+# 開発のラベルが無く agent-working か agent-ready だけの issue も、開発の待っている仕事に数える
+python3 -B - "$KIT" "$H" <<'PY'
+import datetime, importlib.util, json, pathlib, sys
+kit, home = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("collect", str(kit / "claude/brain-kit/dashboard/collect.py"))
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+cfg = json.loads((home / "brain/.brain-kit/config.json").read_text())
+now = datetime.datetime.now(datetime.timezone.utc)
+for label in ("agent-working", "agent-ready"):
+    issue = {"number": 70, "title": "Item 70", "url": "https://github.com/example/app/issues/70",
+             "updatedAt": now.isoformat().replace("+00:00", "Z"), "labels": [{"name": label}]}
+    work = {"example/app": {"issues": [issue], "prs": []}}
+    s = c.find_stalled(cfg, str(home / "brain"), work, 24, now, str(home / "no-sessions"))
+    sessions = [i for i in s["items"] if i["kind"] == "session"]
+    assert [(i["id"], i["work"]) for i in sessions] == [("ren", 1)], (label, sessions)
+PY
+check "停滞: agent-working・agent-ready だけの issue でも開発のセッションを止まった扱いにする" test $? -eq 0
 
+rm -rf "$KIT/claude/brain-kit/dashboard/__pycache__"
 before="$(snap "$H")"
 PATH="$TMP/fakegh:$PATH" new "$H" --doctor >"$H.doctor" 2>&1
 check "停滞: doctor が 0" test $? -eq 0
+check "停滞: doctor は kit の側に .pyc を作らない" test ! -e "$KIT/claude/brain-kit/dashboard/__pycache__"
 check "停滞: doctor の節" grep -q '\[止まっている仕事\]' "$H.doctor"
 check "停滞: doctor の issue" grep -q '作業中の issue.*app#12' "$H.doctor"
 check "停滞: doctor の PR" grep -q 'レビュー済みで未リリースの PR.*app#41' "$H.doctor"
