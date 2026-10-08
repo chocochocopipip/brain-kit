@@ -286,6 +286,32 @@ check "English update notice" grep -q 'brain-kit update notice:' "$HE.notice"
 check "English notice preview command" grep -q 'npx brainkit-agents@latest --update --dry-run' "$HE.notice"
 check "English notice first reply instruction" grep -q 'first reply to the owner' "$HE.notice"
 check "English notice has no Japanese" no_japanese "$HE.notice"
+# SessionStart も brain の記録が先、次に機械側、読めなければ日本語
+while read -r c_cfg c_man c_want <&3; do
+  hm="$TMP/lang-notice-$c_cfg-$c_man"
+  mkdir -p "$hm/brain/.brain-kit" "$hm/.claude/brain-kit"
+  case "$c_cfg" in none) ;; broken) printf '{' >"$hm/brain/.brain-kit/config.json" ;; *) printf '{"lang": "%s"}\n' "$c_cfg" >"$hm/brain/.brain-kit/config.json" ;; esac
+  python3 - "$hm" "$c_man" <<'PY'
+import json, pathlib, sys, time
+h = pathlib.Path(sys.argv[1]) / '.claude/brain-kit'
+m = {'version': 11, 'package_version': '11.0.0'}
+if sys.argv[2] != 'none':
+    m['lang'] = sys.argv[2]
+(h / 'manifest.json').write_text(json.dumps(m))
+(h / 'update-check.json').write_text(json.dumps({'checked_at': time.time(), 'latest': '999.0.0'}))
+PY
+  HOME="$hm" BRAIN_KIT_UPDATE_URL=file:///nonexistent python3 "$KIT/claude/hooks/brain-kit-update-check.py" </dev/null >"$hm.notice"
+  if [ "$c_want" = en ]; then
+    check "SessionStart 言語（config $c_cfg・manifest $c_man）は English" grep -q 'brain-kit update notice:' "$hm.notice"
+  else
+    check "SessionStart 言語（config $c_cfg・manifest $c_man）は日本語" grep -q 'brain-kit の更新のお知らせ' "$hm.notice"
+  fi
+done 3<<'CASES'
+en ja en
+ja en ja
+broken en en
+none none ja
+CASES
 
 if [ -n "$NODE" ]; then
   mkdir -p "$TMP/lang-hook-bin"

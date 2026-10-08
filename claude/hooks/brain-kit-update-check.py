@@ -90,6 +90,16 @@ def refresh(state):
                 write_cache(path, {"checked_at": cache["checked_at"], "latest": latest})
 
 
+def owner_lang(manifest):
+    # brain の記録が先、次に機械側の記録、どちらも読めなければ日本語（言語を選べる前の動き）
+    brain = os.environ.get("BRAIN_DIR") or os.path.expanduser("~/brain")
+    for record in (read_json(os.path.join(brain, ".brain-kit", "config.json")), manifest):
+        lang = record.get("lang") if isinstance(record, dict) else None
+        if lang in ("ja", "en"):
+            return lang
+    return "ja"
+
+
 def main():
     state = os.path.expanduser("~/.claude/brain-kit")
     if os.environ.get("BRAIN_KIT_NO_UPDATE_CHECK") == "1" or os.path.exists(os.path.join(state, "no-update-check")):
@@ -124,7 +134,7 @@ def main():
     if semver(latest) is not None and semver(latest) > current:
         # SessionStart の stdout は Claude の文脈に入る（持ち主の画面には直接出ない。systemMessage は
         # SessionStart では捨てられる）。相棒が最初の返事で 1 行だけ伝える
-        if manifest.get("lang") == "en":
+        if owner_lang(manifest) == "en":
             print("brain-kit update notice: brain-kit %s is available (installed: %s). No automatic update. "
                   "Preview: npx brainkit-agents@latest --update --dry-run "
                   "(Repeat this one line verbatim at the start of your first reply to the owner. Do not update.)"
