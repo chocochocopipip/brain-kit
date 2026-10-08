@@ -78,6 +78,8 @@ What to ask:
 
 ## (f) Release → `release/手順.md`
 
+The optional permission list is `~/.claude/brain-kit/permissions/<リリースid>.json`. The owner can edit it to fit their own tools.
+
 Ask per repository (one at a time):
 - The production entry point (how to read, how to write). **Never write real keys or URLs**
 - The CI gate (named checks), how to apply migrations, how to confirm the deployment

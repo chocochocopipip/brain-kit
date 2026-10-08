@@ -112,7 +112,7 @@ git clone https://github.com/chocochocopipip/brain-kit && cd brain-kit
 ./install.sh
 ```
 
-聞かれるのは、どこで動かすか・Codex・**4 人の名前**（相棒・開発・レビュー・リリース）・あなたの呼び名・プロジェクト・リポジトリ（空 Enter で既定）。
+聞かれるのは、どこで動かすか・Codex・**4 人の名前**（相棒・開発・レビュー・リリース）・あなたの呼び名・プロジェクト・リポジトリ・リリース担当だけの許可の一覧（既定は入れない）（空 Enter で既定）。
 引数で渡せば聞かれない。`--yes` で全部既定（名前の既定は役の名前そのもの：相棒・開発・レビュー・リリース）。
 **名前は作るときに全部決める。**日本語でよい。英字でない名前は、skill 名・ブランチ・ラベル・起動スクリプトに使う英字 id を別に聞く（`--partner-id` などでも渡せる）。
 この README の `<相棒名>` のような `<>` は**置き換える印**で、入力時に `<>` は付けない。具体例:
@@ -152,6 +152,15 @@ npx github:chocochocopipip/brain-kit --partner Aoi --dev Ren --review Mio --rele
    前提確認 → git/curl/jq/python3/gh/node → Claude Code CLI → Tailscale（`sudo tailscale up` は手で）→
    Orca の `.deb` と不足ライブラリと Xvfb → systemd user service で `orca-ide serve` を常駐（WSL は `/etc/wsl.conf` の `[boot] systemd=true` を案内）→
    接続先（Tailscale IP / MagicDNS / ポート）を印字。スマホや別 PC のペアリングは `./setup-base.sh --pair mobile|runtime`。詳細と手動手順は `ORCA.md`
+
+リリース担当だけに本番の SQL・PR のマージ・環境変数の変更を許す雛形を入れるには、`./install.sh --release-permissions`。
+対話では名前・プロジェクト・リポジトリのあとに聞く（既定 No）。非対話や `--yes` では明示しない限り入れない。`--no-release-permissions` で明示的に断れる。両方は同時に指定できない。
+あとから `./install.sh --update --release-permissions` で追加、`./install.sh --update --no-release-permissions` で外す。通常の更新は選択を保ち、聞き直さない。
+
+一覧は `~/.claude/brain-kit/permissions/<リリースid>.json` に置き、`start-<リリースid>` だけが、brain の `.brain-kit/config.json` で選んでいて、kit の記録（`~/.claude/brain-kit/manifest.json`）にも在り、`~/.claude/skills/<リリースid>/SKILL.md` がリリースの skill の印（`brain-kit:role=release` のコメント）を持つときに限り `claude --settings` で読む（外したあと・`--uninstall` のあと・`--rollback` のあとに一覧が残っていても渡さない）。通常のセッションで `/<リリースid>` を呼んでも読み込まれない。
+`~/.claude/settings.json` は全人格に共通なので置かない。リリースの worktree の `.claude/settings.local.json` も、`git add -A` と main へのマージで相棒に届く可能性があるので使わない。
+雛形の `gh pr merge`・`psql`・`gh variable set/delete` を持ち主の配信先・DB・MCP の道具に合わせて編集し、不要なものを消す。指示のコメントとラベルの条件は変わらない。
+更新はほかの kit ファイルと同じ 3-way で編集を保つ。外すときは、編集済みなら中身を隣の `<リリースid>.json.off` に移して読まれない場所にする（起動スクリプトが衝突で古いまま残っても効かない。`--rollback` で戻る）。`--doctor` で状態と他人格・共通設定への混入を確認できる。
 
 ### まとめて起動する
 
@@ -258,6 +267,7 @@ clone してあるなら `git pull && ./install.sh --update`。
 | 決めること | どこに書くか |
 |---|---|
 | **4 人の名前** | `--partner` `--dev` `--review` `--release`（対話でも聞く）。英字でない名前は `--<役>-id` の英字 id も。相棒の名前は `<相棒名>/` ディレクトリに、id は skill 名・worktree・ブランチ・ラベル・起動スクリプトになる。**変えるのは作るときだけ**（更新では変えない） |
+| リリースだけの許可（任意） | `~/.claude/brain-kit/permissions/<リリースid>.json`。リリースの起動スクリプトだけが読む。持ち主が編集でき、更新で保つ |
 | **相棒の憲法** | `~/brain/<相棒名>/00_核.md`。存在／恒久条項／時間の公理／運用。skill はこれを読んでから始まる。**skill には写さない** |
 | 相棒の声と関係 | `~/brain/<相棒名>/02_関係.md`（一人称・敬語・距離感）、`01_辞書.md`（二人の間だけの語） |
 | レビューの規準 | `~/brain/review/規準.md`（版つき）。雛形は一般的な項目だけ。見逃しが出たら足して版を上げる |

@@ -116,6 +116,7 @@ VERSION = read_version()
 VERIFIED_CLAUDE_CODE = "2.1.294"
 
 ROLES = ["partner", "dev", "review", "release"]
+RELEASE_MARK = "<!-- brain-kit:role=release"   # リリースの skill の印。起動スクリプトも、これが在るときだけ許可の一覧を渡す
 ROLE_JA = {"partner": "相棒", "dev": "開発", "review": "レビュー", "release": "リリース"}
 DEFAULT_ID = {"partner": "partner", "dev": "dev", "review": "review", "release": "release"}
 NAME_MARK = {"partner": "<相棒名>", "dev": "<開発担当名>", "review": "<レビュー担当名>", "release": "<リリース担当名>"}
@@ -323,6 +324,8 @@ def load_kitfiles(cfg):
         parts = line.split("\t")
         src, dst = parts[0], parts[1]
         flags = [f for f in (parts[2] if len(parts) > 2 else "").split(",") if f]
+        if any(not cfg.get(f.split(":", 1)[1]) for f in flags if f.startswith("opt:")):
+            continue
         # まだ名前の決まっていない役のファイルは飛ばす（v10 より前の設定を読むときなど）
         roles = re.findall(r"\{(\w+)\.(?:id|name)\}", dst) + [f.split(":")[1] for f in flags if f.startswith("skill:")]
         if src.startswith("gen:start:"):
@@ -438,6 +441,24 @@ def gen_start(role, cfg):
         lines.append('git merge -q --no-edit main >/dev/null 2>&1 || git merge --abort >/dev/null 2>&1')
     # worktree が無く brain で始まるときも、要約のあとのフックが自分の人格の核を読むように役を渡す
     lines.append("export BRAIN_KIT_PERSONA=%s" % role)
+    if role == "release" and cfg.get("release_permissions"):
+        lines.extend([
+            M("# 持ち主が選んだ許可の一覧（本番の SQL・マージ・環境変数）。この人格だけが読む。", lang),
+            M("# brain の設定で選んでいて、kit の記録（manifest）がこの brain のこのリリース担当を指し、", lang),
+            M("# skill がリリースの印を持つときだけ渡す", lang),
+            M("# （外したあと・--uninstall のあと・戻したあとに一覧が残っていても読まない）", lang),
+            'perm="$HOME/.claude/brain-kit/permissions/%s.json"' % p["id"],
+            'conf=%s' % shlex.quote(config_path(cfg["brain"])),
+            "if [ -f \"$perm\" ] && python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); "
+            "sys.exit(0 if c.get(\"release_permissions\") is True and c[\"personas\"][\"release\"][\"id\"] == sys.argv[4] "
+            "and m.get(\"release_permissions\") == {\"brain\": sys.argv[5], \"id\": sys.argv[4]} "
+            "and sys.argv[3] in m.get(\"files\", {}) and sys.argv[7] in open(sys.argv[6], encoding=\"utf-8\").read() else 1)' "
+            "\"$conf\" \"$HOME/.claude/brain-kit/manifest.json\" %s %s %s \"$HOME/.claude/skills/%s/SKILL.md\" %s 2>/dev/null; then"
+            % (shlex.quote(".claude/brain-kit/permissions/%s.json" % p["id"]), shlex.quote(p["id"]), shlex.quote(cfg["brain"]),
+               p["id"], shlex.quote(RELEASE_MARK)),
+            '  set -- --settings "$perm" "$@"',
+            "fi",
+        ])
     lines.append('exec claude "$@" "/%s"' % p["id"])
     return "\n".join(lines) + "\n"
 
@@ -1396,6 +1417,22 @@ def update_manifests(items, cfg, manifests):
             ent["declined"] = sha(it.new)
             ent.setdefault("sha", "")
             files[key] = ent
+    # リリースの許可の一覧を、どの brain のどのリリース担当が選んだかを機械側に記録する。
+    # 起動スクリプトはこれと自分の brain・id が一致するときだけ一覧を渡す（別の brain で同じ id を使っても渡さない）
+    # ~/.claude/skills/<id> にあるのがリリースの skill（印つき。持ち主が直したものを含む）でなければ記録しない。
+    # 別の人格の skill を持ち主が残した（衝突・今のまま・--resolve --keep）ときに、その人格へ一覧を渡さないため
+    if cfg.get("release_permissions") and "release" in cfg["personas"]:
+        rid = persona(cfg, "release")["id"]
+        skill = os.path.join(CLAUDE, "skills", rid, "SKILL.md")
+        ok = RELEASE_MARK in (read_text(skill) or "")
+        if ok:
+            manifests["claude"]["release_permissions"] = {"brain": cfg["brain"], "id": rid}
+        else:
+            manifests["claude"].pop("release_permissions", None)
+            print(M("  warn: %s がリリースの skill ではないまま残っている（衝突か今のまま）。許可の一覧は渡さない。"
+                    "解消してから ./install.sh --update") % tilde(skill))
+    else:
+        manifests["claude"].pop("release_permissions", None)
     for where in ("brain", "claude"):
         manifests[where]["version"] = VERSION
     manifests["claude"]["lang"] = content_lang(cfg)
@@ -1519,13 +1556,20 @@ def cmd_install(args):
     owner = args.user or ask(M("  あなたの呼び名（相棒があなたをどう呼ぶか）"), M("持ち主"), args)
     projects = split_csv(args.projects if args.projects is not None else ask(M("  プロジェクト名（カンマ区切り。無ければ空）"), "", args))
     repos = split_csv(args.repos if args.repos is not None else ask(M("  GitHub リポジトリ owner/repo（カンマ区切り。無ければ空）"), "", args))
+    release_permissions = args.release_permissions
+    if release_permissions is None:
+        release_permissions = ask(
+            M("  リリース担当（%s）にだけ、本番の SQL・マージ・環境変数の変更の許可の一覧を入れる？ ほかの人格には入れない [y/N]")
+            % personas["release"]["name"], "", args).lower().startswith("y")
     # main() で決めた言語（--lang、無ければこの機の記録、無ければ日本語）で作って記録する
     cfg = {"version": VERSION, "lang": args.lang or _LANG, "brain": brain, "owner": owner, "personas": personas, "repos": repos,
-           "installed_at": TODAY, "updated_at": TODAY, "history": [{"date": TODAY, "to": VERSION, "how": "install"}]}
+           "installed_at": TODAY, "updated_at": TODAY, "history": [{"date": TODAY, "to": VERSION, "how": "install"}],
+           "release_permissions": release_permissions}
     print(M("言語: %s（%s）") % (language_name(cfg["lang"]), cfg["lang"]))
     for r in ROLES:
         p = personas[r]
         print(M("  %s: %s（id %s）") % (M(ROLE_JA[r]), p["name"], p["id"]))
+    print_release_permissions(cfg)
     print(M("  呼び名: %s  projects: %s  repos: %s  brain: %s") % (owner, ",".join(projects) or M("なし"), ",".join(repos) or M("なし"), tilde(brain)))
 
     backup = Backup("install", {"brain": brain, "from": None, "to": VERSION})
@@ -1614,6 +1658,17 @@ def make_cards(cfg, repos, backup):
         print(M("  dev/状況/%s.md（%s）") % (short, r))
 
 
+def release_permissions_path(cfg):
+    return os.path.join(KIT_STATE, "permissions", persona(cfg, "release")["id"] + ".json")
+
+
+def print_release_permissions(cfg):
+    if cfg.get("release_permissions"):
+        print(M("  リリースの許可の一覧: 入れた（start-%s だけが読む）") % persona(cfg, "release")["id"])
+    else:
+        print(M("  リリースの許可の一覧: 入れていない（あとで ./install.sh --update --release-permissions）"))
+
+
 def finish_message(cfg, bdir, v_from):
     p = {r: persona(cfg, r) for r in ROLES if r in cfg["personas"]}
     b = tilde(cfg["brain"])
@@ -1625,6 +1680,7 @@ def finish_message(cfg, bdir, v_from):
             print(M("  %-8s: %s（/%s、領域 %s/、起動 ~/.claude/brain-kit/bin/start-%s）")
                   % (M(ROLE_JA[r]), p[r]["name"], p[r]["id"], area_of(cfg, r), p[r]["id"]))
     print(M("  ~/.claude/brain-kit/bin/start-all（4 人をまとめて起動。1 回だけ起動し、一覧で確かめる）"))
+    print_release_permissions(cfg)
     if bdir:
         print(M("  退避      : %s（--rollback で戻せる）") % tilde(bdir))
     print()
@@ -1702,6 +1758,21 @@ def cmd_update(args):
             cfg["personas"][r] = choose_persona(r, args, used, cman)
             print(M("  %s: %s（/%s）") % (M(ROLE_JA[r]), cfg["personas"][r]["name"], cfg["personas"][r]["id"]))
 
+    previous_permissions = bool(cfg.get("release_permissions", False))
+    # 選んでいない入れ方の設定には印を足さない（何も変わらない更新で config を書き換えない）
+    if args.release_permissions is not None or "release_permissions" in cfg:
+        cfg["release_permissions"] = previous_permissions if args.release_permissions is None else args.release_permissions
+    if cfg.get("release_permissions") and "release" not in cfg["personas"]:
+        die(M("リリースの許可の一覧にはリリース担当が必要。先に人格を追加する"), 1)
+    permissions_changed = previous_permissions != bool(cfg.get("release_permissions"))
+    if permissions_changed:
+        print(M("  リリースの許可の一覧: %s → %s%s") % (
+            M("入れた") if previous_permissions else M("入れていない"),
+            M("入れた") if cfg.get("release_permissions") else M("入れていない"), M("（予定）") if dry else ""))
+    if dry and args.release_permissions is False and "release" in cfg["personas"] and \
+            os.path.isfile(release_permissions_path(cfg)):
+        print(M("  %s は外す（編集済みなら隣の .off に移し、読まれないようにする）") % tilde(release_permissions_path(cfg)))
+
     manifests = load_manifests(cfg["brain"])
     fps = load_fingerprints() if legacy else {}
     items = build_plan(cfg, manifests, legacy, fps)
@@ -1729,6 +1800,17 @@ def cmd_update(args):
 
     backup = Backup("update", {"brain": cfg["brain"], "from": v_from, "to": VERSION})
     written, kept = apply_items(items, cfg, backup, args, "update")
+    if args.release_permissions is False and "release" in cfg["personas"]:
+        # 外したら、編集済みの一覧も読まれる場所から必ずどかす（起動スクリプトが衝突で古いまま残っても読まれない）。
+        # 中身は隣の .off に残し、退避に記録するので --rollback で戻る
+        perm = release_permissions_path(cfg)
+        if os.path.isfile(perm):
+            text = read_text(perm)
+            put(perm + ".off", text, backup)
+            backup.save(perm)
+            os.remove(perm)
+            print(M("  %s は編集済みなので %s に移した（もう読まれない）。要らなければ手で消す。")
+                  % (tilde(perm), os.path.basename(perm + ".off")))
     if sett["changed"]:
         put(sett["path"], sett["new"], backup)
     manifests["claude"]["settings"] = sett["record"]
@@ -1823,6 +1905,7 @@ def print_new_roles(cfg, roles):
         elif r == "release":
             print(M("  リリース %s: 相棒が確認した PR に `%s` ラベルと指示のコメントを付けたときだけ、マージと本番の操作をする。"
                   " 手順は %s/release/手順.md。起動は ~/.claude/brain-kit/bin/start-%s") % (p["name"], label_of(cfg, r), b, p["id"]))
+    print_release_permissions(cfg)
     print(M("  工程表（brain-kit Dashboard）: 相棒の skill の「工程表」節。~/.claude/brain-kit/dashboard/"))
     print(M("  続けて /setup で、足した人格の節（規準・手順・任せる範囲）を埋める"))
 
@@ -2597,6 +2680,26 @@ def cmd_doctor(args):
             detail = M("skill /%s %s・領域 %s/ %s%s") % (p["id"], "○" if sk else "×", area_of(cfg, r), "○" if ar else "×",
                                                     "" if r == "partner" else M("・worktree %s %s") % (tilde(wt), "○" if wt_ok else "×"))
             row("  %s %s" % (M(ROLE_JA[r]), p["name"]), sk and ar and wt_ok, detail, None if sk and ar and wt_ok else M("要対応"))
+        release = cfg["personas"].get("release")
+        if cfg.get("release_permissions") and release:
+            perm = os.path.join(KIT_STATE, "permissions", release["id"] + ".json")
+            exists = os.path.isfile(perm)
+            row(M("  リリースの許可の一覧"), exists,
+                M("%s（start-%s だけが読む）") % (tilde(perm), release["id"]), M("入れた") if exists else M("無い"))
+            if not exists:
+                todo.append(M("./install.sh --update（リリースの許可の一覧を戻す）"))
+        else:
+            row(M("  リリースの許可の一覧"), True, M("任意（./install.sh --update --release-permissions）"), M("入れていない"))
+            if release and os.path.isfile(release_permissions_path(cfg)):
+                row("  " + tilde(release_permissions_path(cfg)), False,
+                    M("選んでいないのに在る（起動スクリプトは設定を見て読まない）。要らなければ手で消す"), M("要確認"))
+        starts = os.path.join(KIT_STATE, "bin")
+        if os.path.isdir(starts):
+            for name in sorted(os.listdir(starts)):
+                if name.startswith("start-") and (not release or name != "start-" + release["id"]):
+                    path = os.path.join(starts, name)
+                    if os.path.isfile(path) and "--settings" in (read_text(path) or ""):
+                        row("  " + tilde(path), False, M("リリース以外が --settings を読む"), M("要確認"))
         pcore = os.path.join(brain, persona(cfg, "partner")["name"], "00_核.md")
         if os.path.exists(pcore) and is_empty_note(pcore):
             row(M("  相棒の憲法"), False, M("00_核.md が空。/setup で埋める"), M("要対応"))
@@ -2628,6 +2731,13 @@ def cmd_doctor(args):
         own_missing = [i for i in items if i.kind == "owner" and i.state == "add"]
         if own_missing:
             row(M("  持ち主の領域の骨格"), False, M("無いもの %d 件（--update で足す）") % len(own_missing), M("要対応"))
+
+    shared = load_json(os.path.join(CLAUDE, "settings.json"), {}) or {}
+    permissions = shared.get("permissions", {})
+    allow = permissions.get("allow", []) if isinstance(permissions, dict) else []
+    template = load_json(os.path.join(KIT, "claude", "brain-kit", "permissions", "release.json"))
+    if isinstance(allow, list) and any(rule in allow for rule in template["permissions"]["allow"]):
+        row("  ~/.claude/settings.json", False, M("リリースの許可が全人格で共有されている"), M("要確認"))
 
     rows.append(("[brain]", "", tilde(brain)))
     if os.path.isdir(brain):
@@ -2843,6 +2953,11 @@ def main(argv):
     ap.add_argument("--repos", default=None)
     ap.add_argument("--brain-merge", action="store_true")
     ap.add_argument("--codex", action="store_true")
+    permissions = ap.add_mutually_exclusive_group()
+    permissions.add_argument("--release-permissions", dest="release_permissions", action="store_true", default=None,
+                             help="リリース担当だけに許可の一覧を入れる")
+    permissions.add_argument("--no-release-permissions", dest="release_permissions", action="store_false",
+                             help="リリース担当の許可の一覧を外す")
     ap.add_argument("--no-worktrees", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--diff", action="store_true")

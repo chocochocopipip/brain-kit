@@ -78,6 +78,8 @@ frontmatter の `project:` はファイル名と一致させる。
 
 ## (f) リリース → `release/手順.md`
 
+任意の許可の一覧は `~/.claude/brain-kit/permissions/<リリースid>.json`。持ち主が自分の道具に合わせて編集できる。
+
 リポジトリごとに聞く（1 つずつ）：
 - 本番の口（どう読むか・どう書くか）。**鍵・URL の実値は書かない**
 - CI の gate（名前つきの check）、migration の当て方、配信の確かめ方

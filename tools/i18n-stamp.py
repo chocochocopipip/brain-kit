@@ -94,6 +94,9 @@ def catalog():
     for node in ast.walk(tree):
         if message_call(node):
             inside.update(id(child) for child in ast.walk(node))
+        # kit.py の argparse の help（使い方は install.sh が持ち主の言語で出す）
+        if isinstance(node, ast.keyword) and node.arg == "help":
+            inside.update(id(child) for child in ast.walk(node.value))
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and node.body:
             first = node.body[0]
             if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):

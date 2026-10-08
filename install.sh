@@ -28,6 +28,7 @@
 #   ./install.sh --doctor             何も変えず、版・人格・古いもの・手で直したもの・CLI・Orca・gh を表で出す
 #
 #   --lang ja|en : 持ち主の言語。新規は最初に聞く。--update --lang で変更できる。
+#   --release-permissions / --no-release-permissions : リリース担当だけに許可の一覧を入れる／外す（既定は入れない。更新でも使える）
 #   --codex : ChatGPT／Codex の契約がある人向け。Codex CLI が無ければ npm i -g @openai/codex（確認してから）、
 #             codex login は案内のみ、settings.json に Codex plugin の marketplace と plugin キーを足す
 #   --brain-merge : ~/brain が既にあるとき（brain-kit ではない自前の vault）、無いものだけを足す。
@@ -89,7 +90,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || value_required "$1"
       PYARGS+=("$1" "$2"); shift 2 ;;
     --dry-run)  PYARGS+=(--dry-run); PRACTICE_ARGS+=(--dry-run); shift ;;
-    --brain-merge|--no-worktrees|--diff|--keep)
+    --release-permissions|--no-release-permissions|--brain-merge|--no-worktrees|--diff|--keep)
       PYARGS+=("$1"); shift ;;
     -h|--help) HELP=1; shift ;;
     -*) msg "使えない引数: $1" "Unknown argument: $1" >&2; exit 2 ;;
@@ -116,13 +117,14 @@ Usage: ./install.sh [--lang ja|en] [--mode local|base] [--yes]
   --rollback [--dry-run] | --doctor | --version
   --practice | --practice-status | --practice-cleanup [--dry-run] [--yes]
   --practice-dir DIR (default ~/brain-kit-practice; first-day practice, local only)
+  --release-permissions | --no-release-permissions (permission list for the release persona only; off by default)
 Language is asked first on interactive installs. Without --lang, non-interactive installs
 use the language recorded on this machine, else Japanese. Existing installs keep their record.
 Use --update --dry-run --lang en to preview a language change.
 Owner notes are not translated. File and folder names stay unchanged.
 HELP
   else
-    sed -n '2,40p' "$0"
+    sed -n '2,41p' "$0"
   fi
   exit 0
 fi
