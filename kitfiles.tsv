@@ -15,6 +15,7 @@ claude/hooks/session-end-brain.sh	~/.claude/hooks/session-end-brain.sh	exec
 claude/hooks/brain-digest.js	~/.claude/hooks/brain-digest.js	exec
 claude/hooks/brain-kit-update-check.py	~/.claude/hooks/brain-kit-update-check.py	exec
 gen:start-all	~/.claude/brain-kit/bin/start-all	exec
+claude/hooks/brain-kit-core-reread.py	~/.claude/hooks/brain-kit-core-reread.py	render,exec
 gen:start:partner	~/.claude/brain-kit/bin/start-{partner.id}	exec
 gen:start:dev	~/.claude/brain-kit/bin/start-{dev.id}	exec
 gen:start:review	~/.claude/brain-kit/bin/start-{review.id}	exec

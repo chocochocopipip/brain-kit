@@ -2453,6 +2453,16 @@ def cmd_doctor(args):
     row("  更新のお知らせ", True, "npm 公開版: %s（前回の確認）" % latest if latest else "",
         "止めてある" if notice_off else "有効" if notice_hook else "フック無し")
 
+    reread = "brain-kit-core-reread.py"
+    reread_hook = os.path.isfile(os.path.join(CLAUDE, "hooks", reread)) and any(
+        reread in (h.get("command") or "")
+        for g in (st or {}).get("hooks", {}).get("SessionStart", []) if g.get("matcher") == "compact"
+        for h in g.get("hooks", []))
+    reread_off = (os.environ.get("BRAIN_KIT_NO_CORE_REREAD") == "1" or
+                  os.path.exists(os.path.join(KIT_STATE, "no-core-reread")))
+    row("  要約のあとの核の読み直し", True, "",
+        "止めてある" if reread_off else "有効" if reread_hook else "フック無し")
+
     rows.append(("[CLI]", "", ""))
 
     def cli(name, vercmd=None, optional=False):

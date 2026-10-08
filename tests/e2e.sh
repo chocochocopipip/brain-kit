@@ -2388,6 +2388,10 @@ groups = s["hooks"]["SessionStart"]
 group = next(g for g in groups if g["hooks"][0]["command"] == command)
 assert group == {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
 groups.remove(group)
+# この版では核の読み直しも追加される。追加分以外は持ち主の設定と完全に一致する。
+core_command = 'python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"'
+groups.remove({"matcher": "compact", "hooks": [
+    {"type": "command", "command": core_command, "timeout": 10}]})
 assert s == json.loads(pathlib.Path(str(h) + ".settings-before").read_text())
 m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
 assert m["package_version"] == "11.0.0"
@@ -3303,6 +3307,287 @@ for mutation in (False, True):
         assert git(root / "remote.git", "rev-parse", "main") == before
 PY
 check "練習: 指示欠落・取り消し・NG・OK 後の head 変更・書き換えたスクリプトで停止（各ガードの mutation も検証）" test $? -eq 0
+
+# ------------------------------------------------------------------ 要約のあとの核の読み直し
+section "要約のあとの核の読み直し（4 人格・入力・停止）"
+H="$TMP/core-reread"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes </dev/null >"$H.log" 2>&1
+check "核: install が 0" test $? -eq 0
+check "核: スクリプトは実行可能" test -x "$H/.claude/hooks/brain-kit-core-reread.py"
+python3 - "$H" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys, time
+h = pathlib.Path(sys.argv[1])
+brain = h / "brain"
+hook = h / ".claude/hooks/brain-kit-core-reread.py"
+text = hook.read_text(encoding="utf-8")
+# HOME に // が混ざる環境（macOS の TMPDIR）では ~ の形にならず、絶対パスで埋まる
+assert "<brain>" not in text and ("~/brain" in text or os.path.abspath(str(brain)) in text)
+command = 'python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"'
+group = {"matcher": "compact", "hooks": [{"type": "command", "command": command, "timeout": 10}]}
+s = json.loads((h / ".claude/settings.json").read_text())
+assert [g for g in s["hooks"]["SessionStart"] if any(
+    x.get("command") == command for x in g["hooks"])] == [group]
+m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
+assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
+    json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+assert m["files"][".claude/hooks/brain-kit-core-reread.py"]["sha"] == hashlib.sha256(hook.read_bytes()).hexdigest()
+roles = [
+    ("相棒", "Aoi", "brain", ["Aoi/00_核.md", "Aoi/02_関係.md"]),
+    ("開発", "Ren", "brain-ren", ["dev/00_核.md"]),
+    ("レビュー", "Mio", "brain-mio", ["review/00_核.md", "review/規準.md"]),
+    ("リリース", "Sora", "brain-sora", ["release/00_核.md", "release/手順.md"]),
+]
+contents = {}
+for _, _, directory, paths in roles:
+    assert (h / directory / ".git").exists()
+    for path in paths:
+        contents[path] = "main にだけある核: " + path + "\n"
+        (brain / path).write_text(contents[path], encoding="utf-8")
+subprocess.run(["git", "-C", str(brain), "add", "--"] + list(contents), check=True)
+subprocess.run(["git", "-C", str(brain), "commit", "-qm", "核の読み直しの見本"], check=True)
+env = dict(os.environ, HOME=str(h))
+env.pop("BRAIN_KIT_NO_CORE_REREAD", None)
+
+def run(raw, cwd=brain, extra=None):
+    result = subprocess.run([sys.executable, str(hook)], input=raw, cwd=str(cwd),
+                            env=dict(env, **(extra or {})), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=1)
+    assert result.returncode == 0 and result.stderr == b"", result
+    return result.stdout.decode("utf-8")
+
+def compact(cwd):
+    # 実際の cwd は HOME にして、入力 JSON の cwd が優先されることも確かめる。
+    return run(json.dumps({"source": "compact", "cwd": str(cwd)}).encode(), cwd=h)
+
+def expected(role, name, paths):
+    return ("文脈の要約のあと、%s %s の核を読み直す（brain-kit のフック）。\n" % (role, name)
+            + "".join("--- %s ---\n%s" % (p, contents[p]) for p in paths))
+
+for role, name, directory, paths in roles:
+    want = expected(role, name, paths)
+    assert compact(h / directory) == want, directory
+    sub = h / directory / "subdir"
+    sub.mkdir()
+    assert compact(sub) == want, str(sub)
+    # symlink の別名からも、実体で人格を判定する。
+    alias = h / (directory + "-link")
+    alias.symlink_to(h / directory, target_is_directory=True)
+    assert compact(alias / "subdir") == want
+    if directory != "brain":
+        assert contents[paths[0]] not in (h / directory / paths[0]).read_text(encoding="utf-8")
+for elsewhere in (h, pathlib.Path("/"), h / "brain-renx", h / "brainx"):
+    if elsewhere.parent == h:
+        elsewhere.mkdir(exist_ok=True)
+    assert compact(elsewhere) == "", str(elsewhere)
+# worktree の実体が brain 内にある場合は、長い一致（開発）を優先する。
+dev = h / "brain-ren"
+nested = brain / "nested-dev"
+dev.rename(nested)
+try:
+    dev.symlink_to(nested, target_is_directory=True)
+    assert compact(nested) == expected("開発", "Ren", roles[1][3])
+finally:
+    dev.unlink()
+    nested.rename(dev)
+for source in ("startup", "resume", "clear", None, 0):
+    assert run(json.dumps({"source": source, "cwd": str(brain)}).encode()) == ""
+want = expected(*roles[0][:2], roles[0][3])
+for raw in (b"", b"invalid json", b"[]", b"null", b"{}", b'{"source":"compact"}'):
+    assert run(raw) == want
+    assert run(raw, cwd=h) == ""
+# 書き手が pipe を閉じない場合も 1 秒以内。届いている完全な JSON は読み取る。
+for raw, cwd, output in ((b"", brain, want), (b"invalid", brain, want),
+                         (json.dumps({"source": "compact", "cwd": str(brain)}).encode(), h, want)):
+    started = time.monotonic()
+    proc = subprocess.Popen([sys.executable, str(hook)], cwd=str(cwd), env=env,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        if raw:
+            proc.stdin.write(raw)
+            proc.stdin.flush()
+        proc.wait(timeout=.9)
+        assert time.monotonic() - started < 1
+        assert proc.returncode == 0 and proc.stderr.read() == b""
+        assert proc.stdout.read().decode("utf-8") == output
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
+assert run(b"{}", extra={"BRAIN_KIT_NO_CORE_REREAD": "1"}) == ""
+stop = h / ".claude/brain-kit/no-core-reread"
+stop.touch()
+assert compact(brain) == ""
+stop.unlink()
+# 片方が無くても、残る方を出す。全部無ければヘッダーも出さない。
+paths = roles[0][3]
+(brain / paths[0]).unlink()
+assert compact(brain) == expected("相棒", "Aoi", paths[1:])
+(brain / paths[1]).unlink()
+assert compact(brain) == ""
+# FIFO・ディレクトリは読まず、無い場合と同じく飛ばす。
+os.mkfifo(str(brain / paths[0]))
+assert compact(brain) == ""
+(brain / paths[0]).unlink()
+(brain / paths[0]).mkdir()
+assert compact(brain) == ""
+(brain / paths[0]).rmdir()
+# 100 KiB の本文 2 つ。UTF-8 の境界で切り、各 32 KiB・合計 64 KiB 以内。
+for p in paths:
+    (brain / p).write_bytes(("核" * (100 * 1024 // 3 + 1)).encode("utf-8"))
+out = compact(brain)
+overhead = "文脈の要約のあと、相棒 Aoi の核を読み直す（brain-kit のフック）。\n"
+for p in paths:
+    marker = "（以下略: %s）\n" % p
+    header = "--- %s ---\n" % p
+    assert marker in out
+    body = out.split(header, 1)[1].split(marker, 1)[0].rstrip("\n")
+    assert 32 * 1024 - 3 <= len(body.encode("utf-8")) <= 32 * 1024
+    overhead += header + "\n" + marker
+assert len(out.encode("utf-8")) <= 64 * 1024 + len(overhead.encode("utf-8"))
+# ちょうど上限なら省略しない。
+for p in paths:
+    (brain / p).write_bytes(b"a" * (32 * 1024))
+assert "以下略" not in compact(brain)
+# 読み手が stdout を消費せず pipe が埋まっても、フックは待ち続けない（3 秒で打ち切る）。
+proc = subprocess.Popen([sys.executable, str(hook)], cwd=str(brain), env=env,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    proc.wait(timeout=4)
+    assert proc.returncode == 0 and proc.stderr.read() == b""
+finally:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    proc.stdout.close()
+    proc.stderr.close()
+# config が読めない・壊れていても静かに成功する。
+cfg = brain / ".brain-kit/config.json"
+saved = cfg.read_bytes()
+for value in (b"invalid", b"[]", b"{}"):
+    cfg.write_bytes(value)
+    assert compact(brain) == ""
+cfg.unlink()
+assert compact(brain) == ""
+cfg.write_bytes(saved)
+# 出力先の切断でも stderr に何も出さず 0 で終わる。
+read_fd, write_fd = os.pipe()
+os.close(read_fd)
+try:
+    result = subprocess.run([sys.executable, str(hook)], input=b"{}", cwd=str(brain), env=env,
+                            stdout=write_fd, stderr=subprocess.PIPE, timeout=1)
+    assert result.returncode == 0 and result.stderr == b""
+finally:
+    os.close(write_fd)
+PY
+check "核: 所有記録・4 人格・main の本文・パス境界・stdin・欠損・容量・停止・失敗" test $? -eq 0
+new "$H" --doctor >"$H.doctor" 2>&1
+check "核: doctor は有効" grep -q '要約のあとの核の読み直し.*有効' "$H.doctor"
+touch "$H/.claude/brain-kit/no-core-reread"
+new "$H" --doctor >"$H.doctor-off" 2>&1
+check "核: doctor はファイルで止めてある" grep -q '要約のあとの核の読み直し.*止めてある' "$H.doctor-off"
+rm "$H/.claude/brain-kit/no-core-reread"
+BRAIN_KIT_NO_CORE_REREAD=1 new "$H" --doctor >"$H.doctor-env" 2>&1
+check "核: doctor は環境変数で止めてある" grep -q '要約のあとの核の読み直し.*止めてある' "$H.doctor-env"
+# 設定だけ・スクリプトだけでは有効にならない。
+mv "$H/.claude/hooks/brain-kit-core-reread.py" "$H.hook"
+new "$H" --doctor >"$H.doctor-no-script" 2>&1
+check "核: doctor はスクリプトが無ければフック無し" grep -q '要約のあとの核の読み直し.*フック無し' "$H.doctor-no-script"
+mv "$H.hook" "$H/.claude/hooks/brain-kit-core-reread.py"
+cp "$H/.claude/settings.json" "$H.settings"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
+for g in s["hooks"]["SessionStart"]:
+    if g.get("matcher") == "compact":
+        g["matcher"] = "startup"
+p.write_text(json.dumps(s))
+PY
+new "$H" --doctor >"$H.doctor-no-compact" 2>&1
+check "核: doctor は compact の設定が無ければフック無し" grep -q '要約のあとの核の読み直し.*フック無し' "$H.doctor-no-compact"
+mv "$H.settings" "$H/.claude/settings.json"
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "核: uninstall が 0" test $? -eq 0
+check "核: 未変更のスクリプトを外す" test ! -e "$H/.claude/hooks/brain-kit-core-reread.py"
+check "核: 未変更の項目を外す" sh -c "! grep -q brain-kit-core-reread.py '$H/.claude/settings.json'"
+new "$H" --doctor >"$H.doctor-none" 2>&1
+check "核: uninstall のあとはフック無し" grep -q '要約のあとの核の読み直し.*フック無し' "$H.doctor-none"
+
+section "核の読み直し（日本語の名前）"
+H="$TMP/core-reread-ja"
+mkdir -p "$H"
+new "$H" --partner 光 --dev 彫 --review 澄 --release 渡 --user Ken --yes </dev/null >"$H.log" 2>&1
+check "核: 日本語の install が 0" test $? -eq 0
+HOME="$H" python3 - "$H" <<'PY'
+import json, pathlib, subprocess, sys
+h = pathlib.Path(sys.argv[1])
+cfg = json.loads((h / "brain/.brain-kit/config.json").read_text())
+assert {r: p["id"] for r, p in cfg["personas"].items()} == {r: r for r in ("partner", "dev", "review", "release")}
+for name in ("00_核.md", "02_関係.md"):
+    (h / "brain/光" / name).write_text("光の記憶: " + name, encoding="utf-8")
+result = subprocess.run([sys.executable, str(h / ".claude/hooks/brain-kit-core-reread.py")],
+                        input=json.dumps({"source": "compact", "cwd": str(h / "brain")}).encode(),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
+assert result.returncode == 0 and result.stderr == b""
+out = result.stdout.decode("utf-8")
+assert out.startswith("文脈の要約のあと、相棒 光 の核を読み直す（brain-kit のフック）。\n")
+for name in ("00_核.md", "02_関係.md"):
+    assert "--- 光/" + name + " ---\n光の記憶: " + name in out
+PY
+check "核: 日本語の名前のディレクトリを読む（既定 id）" test $? -eq 0
+
+section "核の読み直し（前の kit から追加・所有設定の保持）"
+H="$TMP/core-reread-old"
+# 実装前の origin/main。先へ進んでも同じ旧版からの更新を検証する。
+old_install 62952c7 "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --yes
+check "核: 前の kit にはスクリプトが無い" test ! -e "$H/.claude/hooks/brain-kit-core-reread.py"
+cp "$H/.claude/settings.json" "$H.settings-before"
+new "$H" --update >"$H.up" 2>&1
+check "核: 前の kit から update が 0" test $? -eq 0
+check "核: update で実行可能なスクリプトを追加" test -x "$H/.claude/hooks/brain-kit-core-reread.py"
+python3 - "$H" <<'PY'
+import hashlib, json, pathlib, sys
+h = pathlib.Path(sys.argv[1])
+p = h / ".claude/settings.json"
+s = json.loads(p.read_text())
+command = 'python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"'
+group = {"matcher": "compact", "hooks": [{"type": "command", "command": command, "timeout": 10}]}
+assert s["hooks"]["SessionStart"].count(group) == 1
+s["hooks"]["SessionStart"].remove(group)
+assert s == json.loads(pathlib.Path(str(h) + ".settings-before").read_text())
+m = json.loads((h / ".claude/brain-kit/manifest.json").read_text())
+assert m["settings"]["hooks.SessionStart"][command] == hashlib.sha256(
+    json.dumps(group, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+assert "<brain>" not in (h / ".claude/hooks/brain-kit-core-reread.py").read_text()
+PY
+check "核: update で compact 項目と所有記録を追加し既存設定を保持" test $? -eq 0
+before="$(snap "$H")"
+new "$H" --update >"$H.up2" 2>&1
+check "核: 2 回目の update が 0" test $? -eq 0
+check "核: 2 回目の update は何も変えない" test "$before" = "$(snap "$H")"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
+for group in s["hooks"]["SessionStart"]:
+    if any("brain-kit-core-reread.py" in h["command"] for h in group["hooks"]):
+        group["matcher"] = "compact|resume"
+p.write_text(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY
+new "$H" --uninstall --yes >"$H.un" 2>&1
+check "核: matcher 編集後の uninstall が 0" test $? -eq 0
+check "核: 編集した項目が使うスクリプトを残す" test -x "$H/.claude/hooks/brain-kit-core-reread.py"
+check "核: 残す理由を表示" grep -q '残すフックが使うため' "$H.un"
+python3 - "$H/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+command = 'python3 "$HOME/.claude/hooks/brain-kit-core-reread.py"'
+assert s["hooks"]["SessionStart"] == [{"matcher": "compact|resume", "hooks": [
+    {"type": "command", "command": command, "timeout": 10}]}]
+PY
+check "核: 編集した matcher も項目ごとそのまま残す" test $? -eq 0
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
