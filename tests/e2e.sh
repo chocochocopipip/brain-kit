@@ -1802,6 +1802,8 @@ ln -s ../brain-kit/automations/precheck.sh "$H/.claude/hooks/current.sh"
 printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-aoi" --help\n' >"$H/.claude/hooks/my hook.sh"
 # shellcheck disable=SC2016
 printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-ren" --help\n' >"$H/.claude/hooks/other hook.sh"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n"$HOME/.claude/brain-kit/bin/start-sora" --help\n' >"$H/.claude/hooks/third hook.sh"
 printf "require('child_process').execFileSync('/usr/bin/env', ['python3', '%s/.claude/brain-kit/dashboard/shot.py']);\n" "$H" >"$H/.claude/hooks/helper.js"
 python3 - "$H/.claude/settings.json" <<'PY2'
 import json, sys
@@ -1815,6 +1817,7 @@ s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "nod
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "\"$HOME/.claude/hooks/current.sh\""}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh \"$HOME/.claude/hooks/my hook.sh\""}]})
 s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/other\\ hook.sh"}]})
+s["hooks"]["Notification"].append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/third\\ hook.sh; echo done"}]})
 open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
 PY2
 new "$H" --uninstall --yes >"$H.un" 2>&1
@@ -1829,6 +1832,7 @@ check ".claude の中の symlink（current.sh → precheck.sh）越しに呼ぶ 
 check "symlink はそのまま" test -L "$H/.claude/hooks/current.sh"
 check "引用符の中の空白を含むパスの持ち主のスクリプトが呼ぶ start-aoi も残る" test -f "$H/.claude/brain-kit/bin/start-aoi"
 check "\\ で逃がした空白を含むパスの持ち主のスクリプトが呼ぶ start-ren も残る" test -f "$H/.claude/brain-kit/bin/start-ren"
+check "\\ で逃がした空白のパスのあとに ; が続いても、そのスクリプトが呼ぶ start-sora を残す" test -f "$H/.claude/brain-kit/bin/start-sora"
 check "どれも呼ばない start-mio は消す" test ! -e "$H/.claude/brain-kit/bin/start-mio"
 check "どれも呼ばない kit の skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
 # 確認を待つ間に、残す持ち主のスクリプトが kit のファイルを呼ぶように書き換えた → 何も変えずに止まる

@@ -1913,6 +1913,10 @@ def cmd_uninstall(args):
         for line in text.splitlines():
             try:
                 args += shlex.split(line, comments=True)
+                # ; | & ( ) < > をパスから切り離す（my\ hook.sh; echo のような形）
+                lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+                lex.whitespace_split = True
+                args += list(lex)
             except ValueError:
                 pass
         for arg in args:
