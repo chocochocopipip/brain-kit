@@ -181,6 +181,9 @@ v10 で公開済みの工程表は、`.brain-kit/dashboard-url` の同じ URL �
 python3 ~/.claude/brain-kit/dashboard/collect.py --out /tmp/board.json   # GitHub から集める（gh）
 ```
 
+collect.py の出力に「止まっている…」の行があれば、持ち主に **1 行だけ** そのまま伝える（同じ内容を同じ日に繰り返さない）。
+N 時間の指定は `--stall-hours` → 環境変数 `BRAIN_KIT_STALL_HOURS` → `.brain-kit/config.json` の `stall_hours` → 既定 24 の順。無効な値や 0 以下は飛ばす。
+
 - `ArtifactData` の `get`（collection `board`、doc_id `current`）で今の `version` を取り、
   `set`（同じ場所、`file_path` に上の json、`if_version` にその version）で置き換える。初回は `if_version` なし
 - **持ち主の番**（`board/owner`）：`{"items": [{"text": "…", "ref": "owner/repo#N"}], "updated_at": "…"}`。

@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
     --codex)    CODEX=yes; PYARGS+=(--codex); shift ;;
     --no-codex) CODEX=no; shift ;;
     --yes|-y)   YES=1; PYARGS+=(--yes); shift ;;
-    --partner|--dev|--review|--release|--partner-id|--dev-id|--review-id|--release-id|--user|--projects|--repos|--brain|--edited|--from)
+    --partner|--dev|--review|--release|--partner-id|--dev-id|--review-id|--release-id|--user|--projects|--repos|--brain|--edited|--from|--stall-hours)
       [ $# -ge 2 ] || { echo "error: $1 に値が要る" >&2; exit 2; }
       PYARGS+=("$1" "$2"); shift 2 ;;
     --brain-merge|--no-worktrees|--dry-run|--diff|--keep)

@@ -2466,6 +2466,214 @@ check "雛形: 手で直した採点表の雛形は上書きしない" test "$tm
 check "雛形: 手で直した採点表の雛形は .new に" grep -q '次の版の行。' "$H/brain/review/評価/_テンプレート.md.new"
 check "雛形: 直していない使い方は上がる" grep -q '次の版の行。' "$H/brain/review/読み直し/README.md"
 
+section "止まっている仕事（工程表と --doctor）"
+H="$TMP/stalled"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --repos "example/app" --projects "app" --no-worktrees --yes </dev/null >"$H.install" 2>&1
+check "停滞: 新規導入が 0" test $? -eq 0
+mkdir -p "$TMP/fakegh"
+printf '#!/bin/sh\nexec python3 "%s/fakegh/gh.py" "$@"\n' "$TMP" >"$TMP/fakegh/gh"
+chmod +x "$TMP/fakegh/gh"
+cat >"$TMP/fakegh/gh.py" <<'PY'
+import datetime, json, os, sys
+args = sys.argv[1:]
+mode = os.environ.get("FAKE_GH_MODE")
+if args == ["--version"]:
+    print("gh version 2.0")
+    sys.exit(0)
+if args == ["auth", "status"]:
+    sys.exit(1 if mode == "noauth" else 0)
+if args[:2] == ["label", "list"]:
+    print("from-chat\nneeds-triage\nagent-ready\nagent-working\nquestion\nren\nmio\nsora")
+    sys.exit(0)
+assert args[:2] in (["issue", "list"], ["pr", "list"]), args
+if mode == "offline":
+    print("読めない", file=sys.stderr)
+    sys.exit(1)
+if args[args.index("--state") + 1] == "merged":
+    print("[]")
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+def item(n, labels, hours, draft=False, decision=""):
+    return {"number": n, "title": "Item %d" % n,
+            "url": "https://github.com/example/app/%s/%d" % ("issues" if n < 40 else "pull", n),
+            "labels": [{"name": label} for label in labels],
+            "updatedAt": (now - datetime.timedelta(hours=hours)).isoformat().replace("+00:00", "Z"),
+            "isDraft": draft, "reviewDecision": decision}
+if args[0] == "issue":
+    result = [item(12, ["ren"], 30), item(13, ["agent-working"], 1),
+              item(14, [], 100), item(15, ["question"], 100)]
+else:
+    assert "reviewDecision" in args[args.index("--json") + 1]
+    result = [item(40, ["sora"], 30), item(41, [], 50, decision="APPROVED"),
+              item(42, ["mio"], 50), item(43, ["sora"], 50, draft=True, decision="APPROVED")]
+print(json.dumps(result))
+PY
+python3 - "$H" <<'PY'
+import os, pathlib, re, sys, time
+home = pathlib.Path(sys.argv[1])
+for pid, hours in (("ren", 40), ("sora", 0)):
+    enc = re.sub(r"[^A-Za-z0-9]", "-", str(home / ("brain-" + pid)))
+    p = home / ".claude/projects" / enc / "s.jsonl"
+    p.parent.mkdir(parents=True)
+    p.write_text("")
+    at = time.time() - hours * 3600
+    os.utime(str(p), (at, at))
+PY
+stall_collect() { PATH="$TMP/fakegh:$PATH" HOME="$H" python3 "$H/.claude/brain-kit/dashboard/collect.py" --brain "$H/brain" "$@"; }
+stall_collect --out "$H.board.json" >"$H.collect" 2>&1
+check "停滞: 集計が 0" test $? -eq 0
+python3 - "$H.board.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["stalled"]
+assert s["hours"] == 24
+assert {(i["kind"], i["number"]) for i in s["items"] if i["kind"] != "session"} == {("issue", 12), ("pr", 40), ("pr", 41)}
+assert {i["id"] for i in s["items"] if i["kind"] == "session"} == {"ren", "mio"}
+assert "app#12" in s["line"]
+PY
+check "停滞: issue・PR・セッションを区別し下書きを除く" test $? -eq 0
+check "停滞: ファイル出力時も 1 行伝える" grep -q '止まっている' "$H.collect"
+BRAIN_KIT_STALL_HOURS=60 stall_collect --out - >"$H.board.json" 2>"$H.collect"
+python3 - "$H.board.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["stalled"]
+assert s["hours"] == 60
+assert [(i["kind"], i.get("id")) for i in s["items"]] == [("session", "mio")]
+PY
+check "停滞: 環境変数 60 と標準出力の JSON" test $? -eq 0
+check "停滞: 標準出力時は 1 行を標準エラーへ" grep -q '止まっている' "$H.collect"
+BRAIN_KIT_STALL_HOURS=60 stall_collect --stall-hours 0.5 --out "$H.board.json" >/dev/null
+python3 - "$H.board.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["stalled"]
+assert s["hours"] == 0.5
+assert {i["number"] for i in s["items"] if i["kind"] == "issue"} == {12, 13}
+PY
+check "停滞: 引数が環境変数より優先" test $? -eq 0
+cp "$H/brain/.brain-kit/config.json" "$H.config"
+python3 - "$H/brain/.brain-kit/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p)); c["stall_hours"] = 45
+with open(p, "w") as f:
+    json.dump(c, f)
+PY
+stall_collect --out "$H.board.json" >/dev/null
+python3 - "$H.board.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))["stalled"]
+assert s["hours"] == 45
+assert [(i["kind"], i.get("number"), i.get("id")) for i in s["items"]] == [("pr", 41, None), ("session", None, "mio")]
+PY
+check "停滞: 設定 45 では PR 41 と記録なしだけ" test $? -eq 0
+BRAIN_KIT_STALL_HOURS=60 stall_collect --out "$H.board.json" >/dev/null
+check "停滞: 環境変数が設定より優先" python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["stalled"]["hours"] == 60' "$H.board.json"
+cp "$H.config" "$H/brain/.brain-kit/config.json"
+python3 -B - "$KIT" "$H" <<'PY'
+import datetime, importlib.util, json, os, pathlib, re, subprocess, sys
+kit, home = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("collect", str(kit / "claude/brain-kit/dashboard/collect.py"))
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+for invalid in (None, "", "bad", 0, -1, "nan", "inf"):
+    assert c.stall_hours({"stall_hours": 45}, invalid, {"BRAIN_KIT_STALL_HOURS": "60"}) == 60
+    assert c.stall_hours({"stall_hours": 45}, invalid, {"BRAIN_KIT_STALL_HOURS": "bad"}) == 45
+    assert c.stall_hours({"stall_hours": invalid}, invalid, {}) == 24
+cfg = json.loads((home / "brain/.brain-kit/config.json").read_text())
+cfg["brain"] = str(home / "different")
+now = datetime.datetime.now(datetime.timezone.utc)
+def issue(n, at):
+    return {"number": n, "title": "Item %d" % n, "url": "https://github.com/example/app/issues/%d" % n,
+            "updatedAt": at, "labels": [{"name": "ren"}]}
+work = {"example/app": {"issues": [issue(1, "bad"), issue(2, None),
+    issue(3, (now - datetime.timedelta(hours=24)).isoformat()),
+    issue(4, (now + datetime.timedelta(hours=1)).isoformat())], "prs": []}}
+assert not [i for i in c.find_stalled(cfg, str(home / "brain"), work, 24, now)["items"] if i["kind"] == "issue"]
+assert c.find_stalled(cfg, str(home / "brain"), {}, 24, now)["items"] == []
+old = (now - datetime.timedelta(hours=30)).isoformat().replace("+00:00", "Z")
+work["example/app"]["issues"] = [issue(n, old) for n in range(1, 8)]
+s = c.find_stalled(cfg, str(home / "brain"), work, 24, now)
+assert "app#5…ほか 2 件" in s["line"] and "app#6" not in s["line"]
+assert {i["id"] for i in s["items"] if i["kind"] == "session"} == {"ren"}
+claude_dir = home / "session-check"
+enc = re.sub(r"[^A-Za-z0-9]", "-", str(home / "brain-ren"))
+directory = claude_dir / "projects" / enc
+directory.mkdir(parents=True)
+for name, hours in (("old.jsonl", 80), ("last.jsonl", 30), ("other.txt", 0), ("nested/new.jsonl", 0)):
+    p = directory / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("")
+    stamp = now.timestamp() - hours * 3600
+    os.utime(str(p), (stamp, stamp))
+at = c.last_session(str(home / "brain"), "ren", "dev", str(claude_dir))
+assert abs((now - at).total_seconds() - 30 * 3600) < 1
+calls = []
+def gh(args, timeout):
+    calls.append((args, timeout))
+    return []
+c.gh = gh
+assert c.fetch("example/app", timeout=20) == {"issues": [], "prs": []}
+assert len(calls) == 2 and all(t == 20 for _, t in calls)
+assert "reviewDecision" in calls[1][0][-1]
+assert "merged" in c.fetch("example/app", since="2026-01-01")
+def timeout_run(*args, **kwargs):
+    raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+c.subprocess.run = timeout_run
+try:
+    # 実際の gh 関数でも時間切れが呼び出し側へ渡る。
+    spec.loader.exec_module(c)
+    c.fetch("example/app", timeout=20)
+    raise AssertionError("時間切れにならない")
+except subprocess.TimeoutExpired:
+    pass
+PY
+check "停滞: 無効値・境界時刻・省略・brain の指定・直下の最新記録・時間切れ" test $? -eq 0
+FAKE_GH_MODE=offline stall_collect --out "$H.board.json" >/dev/null
+check "停滞: 読めない repo のセッションは判定しない" python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); assert s["errors"] and not s["stalled"]["items"]' "$H.board.json"
+# 開発のラベルが無く agent-working か agent-ready だけの issue も、開発の待っている仕事に数える
+python3 -B - "$KIT" "$H" <<'PY'
+import datetime, importlib.util, json, pathlib, sys
+kit, home = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("collect", str(kit / "claude/brain-kit/dashboard/collect.py"))
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+cfg = json.loads((home / "brain/.brain-kit/config.json").read_text())
+now = datetime.datetime.now(datetime.timezone.utc)
+for label in ("agent-working", "agent-ready"):
+    issue = {"number": 70, "title": "Item 70", "url": "https://github.com/example/app/issues/70",
+             "updatedAt": now.isoformat().replace("+00:00", "Z"), "labels": [{"name": label}]}
+    work = {"example/app": {"issues": [issue], "prs": []}}
+    s = c.find_stalled(cfg, str(home / "brain"), work, 24, now, str(home / "no-sessions"))
+    sessions = [i for i in s["items"] if i["kind"] == "session"]
+    assert [(i["id"], i["work"]) for i in sessions] == [("ren", 1)], (label, sessions)
+PY
+check "停滞: agent-working・agent-ready だけの issue でも開発のセッションを止まった扱いにする" test $? -eq 0
+
+rm -rf "$KIT/claude/brain-kit/dashboard/__pycache__"
+before="$(snap "$H")"
+PATH="$TMP/fakegh:$PATH" new "$H" --doctor >"$H.doctor" 2>&1
+check "停滞: doctor が 0" test $? -eq 0
+check "停滞: doctor は kit の側に .pyc を作らない" test ! -e "$KIT/claude/brain-kit/dashboard/__pycache__"
+check "停滞: doctor の節" grep -q '\[止まっている仕事\]' "$H.doctor"
+check "停滞: doctor の issue" grep -q '作業中の issue.*app#12' "$H.doctor"
+check "停滞: doctor の PR" grep -q 'レビュー済みで未リリースの PR.*app#41' "$H.doctor"
+check "停滞: doctor の開発" grep -q 'セッション Ren.*止まっている' "$H.doctor"
+check "停滞: doctor のレビュー" grep -q 'セッション Mio.*記録なし' "$H.doctor"
+check "停滞: doctor の次にやること" grep -q '止まっている仕事を確かめる' "$H.doctor"
+PATH="$TMP/fakegh:$PATH" new "$H" --doctor --stall-hours 60 >"$H.doctor60" 2>&1
+check "停滞: doctor に引数を渡せる" test $? -eq 0
+check "停滞: doctor の閾値 60" grep -q '60 時間以上動きなし' "$H.doctor60"
+check "停滞: doctor の閾値で開発も OK" grep -q 'セッション Ren.*OK' "$H.doctor60"
+new "$H" --doctor >"$H.nogh" 2>&1
+check "停滞: gh が無くても 0" test $? -eq 0
+check "停滞: gh 無しの注記" grep -q 'GitHub.*飛ばした.*gh が無い' "$H.nogh"
+check "停滞: gh 無しのセッションは参考" grep -q 'セッション Ren.*参考' "$H.nogh"
+FAKE_GH_MODE=offline PATH="$TMP/fakegh:$PATH" new "$H" --doctor >"$H.offline" 2>&1
+check "停滞: 通信できなくても 0" test $? -eq 0
+check "停滞: 通信失敗の注記" grep -q '飛ばした.*読めない' "$H.offline"
+FAKE_GH_MODE=noauth PATH="$TMP/fakegh:$PATH" new "$H" --doctor >"$H.noauth" 2>&1
+check "停滞: 未認証でも 0" test $? -eq 0
+check "停滞: 未認証の注記" grep -q '飛ばした.*未認証' "$H.noauth"
+check "停滞: doctor はファイルを変えない" test "$before" = "$(snap "$H")"
+check "停滞: 工程表の一覧" grep -q 'id="stalled"' "$KIT/claude/brain-kit/dashboard/index.html"
+check "停滞: 工程表は新しい集計を読む" grep -q 'b\.stalled' "$KIT/claude/brain-kit/dashboard/index.html"
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
