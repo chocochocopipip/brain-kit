@@ -2284,8 +2284,8 @@ def cmd_rollback(args):
                 try:
                     if not stat.S_ISDIR(os.lstat(os.path.join(CLAUDE, d)).st_mode):
                         why = "退避がディレクトリでない（symlink・ファイル）"
-                    else:
-                        os.lstat(path)
+                    elif not stat.S_ISREG(os.lstat(path).st_mode):
+                        why = "meta.json が普通のファイルでない"
                 except OSError as e:
                     if e.errno == errno.ENOENT and not why and os.path.isdir(os.path.join(CLAUDE, d)):
                         continue   # meta は書き換えの前に書くので、meta の無い退避は何も書き換えていない

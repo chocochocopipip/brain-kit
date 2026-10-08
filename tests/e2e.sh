@@ -1138,7 +1138,7 @@ check "退避: 通し番号が壊れていれば何も戻さずに止まる" tes
 # 戻していない退避の meta.json が読めない・壊れている（新しい版・古い版とも）なら、ほかの退避から戻さずに止まる。
 # meta.json の無い退避（書き換える前に止まった）は数えない
 HOME="$TMP/order-badmeta" python3 - "$KIT" <<'PY' >"$TMP/order-badmeta.log" 2>&1
-import argparse, os, runpy, sys
+import argparse, os, runpy, signal, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
 g = ns["cmd_rollback"].__globals__
 p = os.path.join(g["CLAUDE"], "order-badmeta.md")
@@ -1175,18 +1175,31 @@ for target in (dirs[2], dirs[0]):
         open(target + "/meta.json", "wb").write(good[target])
         assert g["read_text"](p) == "kit2"
         assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
-# 退避の名前のファイル・行き先の無い symlink・ディレクトリへの symlink は、何が書かれたか確かめられないので止まる
+# 退避の名前のファイル・行き先の無い symlink・ディレクトリへの symlink・FIFO や symlink の meta.json は、確かめられないので止まる
 odd = os.path.join(g["CLAUDE"], "backup-brain-kit-29990101-000000")
-for make in (lambda: open(odd, "w").close(), lambda: os.symlink(odd + "-missing", odd), lambda: os.symlink(dirs[2], odd)):
+def fifo_meta():
+    os.makedirs(odd)
+    os.mkfifo(odd + "/meta.json")   # 読むと止まる。開く前に止まる
+def meta_link():
+    os.makedirs(odd)
+    os.symlink(dirs[2] + "/meta.json", odd + "/meta.json")
+signal.alarm(20)
+for make in (lambda: open(odd, "w").close(), lambda: os.symlink(odd + "-missing", odd), lambda: os.symlink(dirs[2], odd),
+             fifo_meta, meta_link):
     make()
     try:
         g["cmd_rollback"](argparse.Namespace(dry_run=False))
         raise AssertionError("rollback が止まらなかった: %s" % os.path.lexists(odd))
     except SystemExit as e:
         assert e.code == 1, e.code
-    os.remove(odd)
+    if os.path.isdir(odd) and not os.path.islink(odd):
+        os.remove(odd + "/meta.json")
+        os.rmdir(odd)
+    else:
+        os.remove(odd)
     assert g["read_text"](p) == "kit2"
     assert [open(d + "/meta.json", "rb").read() for d in dirs] == [good[d] for d in dirs]
+signal.alarm(0)
 os.makedirs(os.path.join(g["CLAUDE"], "backup-brain-kit-20000101-000000", "files"))   # meta の無い退避
 g["cmd_rollback"](argparse.Namespace(dry_run=False))
 assert g["read_text"](p) == "kit1"
