@@ -3068,6 +3068,24 @@ repo.mkdir()
 subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 run("--practice", "--practice-dir", str(repo / "nested/practice"))
 assert not (repo / "nested").exists()
+# 親が在っても（親の無い場所の柵に頼らず）、既存の git 作業ツリーの中には作らない
+(repo / "nested").mkdir()
+for target in (repo / "nested/practice", repo / "practice"):
+    assert "本物の git 作業ツリーの中" in run("--practice", "--practice-dir", str(target)), target
+assert not list((repo / "nested").iterdir()) and not (repo / "practice").exists()
+assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"], env=env,
+                      stdout=subprocess.PIPE, text=True).stdout == ""
+# 印が symlink なら（指す先が正しい印でも）練習とみなさない。消さない・書かない
+real_marker = h / "real-marker.json"
+real_marker.write_text('{"kind": "brain-kit-practice"}')
+fake = h / "marker-link"
+fake.mkdir()
+(fake / "keep").write_text("印が symlink の場所。練習で消さない。")
+(fake / ".brain-kit-practice").symlink_to(real_marker)
+assert "印が無い" in run("--practice-cleanup", "--practice-dir", str(fake), "--yes")
+run("--practice", "--practice-dir", str(fake))
+assert sorted(x.name for x in fake.iterdir()) == [".brain-kit-practice", "keep"]
+assert (fake / ".brain-kit-practice").is_symlink() and real_marker.read_text() == '{"kind": "brain-kit-practice"}'
 link = h / "linked-practice"
 link.symlink_to(h / "brain-kit-practice", target_is_directory=True)
 run("--practice-cleanup", "--practice-dir", str(link), "--yes")
