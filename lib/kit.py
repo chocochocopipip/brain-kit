@@ -17,6 +17,7 @@ from __future__ import print_function
 import argparse
 import datetime
 import difflib
+import errno
 import hashlib
 import io
 import importlib.util
@@ -2266,6 +2267,9 @@ def cmd_rollback(args):
             if d.startswith("backup-brain-kit-"):
                 m = load_json(os.path.join(CLAUDE, d, "meta.json"))
                 if m and not m.get("rolled_back"):
+                    if "seq" in m and not backup_seq(m):
+                        die("退避の記録が壊れている（seq が正の整数でない）: %s/meta.json。どれから戻すか決められないので何も変えない"
+                            % tilde(os.path.join(CLAUDE, d)), 1)
                     cands.append((backup_order(m, d), d, m))
     if not cands:
         die("戻せる更新が無い（~/.claude/backup-brain-kit-*/meta.json が無いか、戻し済み）", 1)
@@ -2601,6 +2605,26 @@ def cmd_doctor(args):
 
 
 # ------------------------------------------------------------------ 入口
+def lock_home():
+    """書き換える処理（install・update・resolve・uninstall・rollback）を、同じ HOME で 1 つずつにする。
+    重なると退避の通し番号と退避する中身が食い違い、--rollback が持ち主のファイルを途中の状態で残しうる。
+    ファイルは作らない（HOME のディレクトリそのものに flock する）。ロックは終了で外れる。"""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    fd = os.open(HOME, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(fd)
+        if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            die("別の brain-kit（install・--update・--resolve・--uninstall・--rollback）がこの HOME で動いている。終わってからもう一度", 1)
+        print("warn: brain-kit の同時実行の確認ができなかった（%s）。ほかに動かしていないことを確かめて続ける" % e, file=sys.stderr)
+        return None
+    return fd
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
     ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
@@ -2623,6 +2647,8 @@ def main(argv):
     ap.add_argument("--edited", choices=["new", "keep"], default=None)
     ap.add_argument("--yes", "-y", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd in ("install", "update", "resolve", "uninstall", "rollback"):
+        lock_home()   # fd はプロセスが終わるまで開いたまま（終了でロックが外れる）
     if args.cmd == "install":
         cmd_install(args)
     elif args.cmd == "update":

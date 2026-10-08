@@ -1106,6 +1106,65 @@ for i in range(len(entries) - 1, -1, -1):
     assert g["read_text"](p) == (str(i - 1) if i else None), (i, g["read_text"](p))
 PY
 check "退避: 時計が戻っても作った順の逆に戻す（同じ秒・前の秒・古い記録）" test $? -eq 0
+# 通し番号が壊れている退避があれば、どれから戻すか決めずに止まる（番号の無い古い記録とは扱わない）
+HOME="$TMP/order-badseq" python3 - "$KIT" <<'PY' >"$TMP/order-badseq.log" 2>&1
+import argparse, os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-badseq.md")
+g["write_text"](p, "owner")
+dirs = []
+for i in range(2):
+    backup = g["Backup"]("resolve", {"brain": None, "from": 10, "to": 10, "target": p})
+    g["put"](p, "kit%d" % i, backup)
+    dirs.append(backup.close())
+for bad in ("2", 0, None, True):
+    meta = g["load_json"](dirs[1] + "/meta.json")
+    meta["seq"] = bad
+    g["write_text"](dirs[1] + "/meta.json", g["dump_json"](meta))
+    try:
+        g["cmd_rollback"](argparse.Namespace(dry_run=False))
+        raise AssertionError("rollback が止まらなかった: %r" % (bad,))
+    except SystemExit as e:
+        assert e.code == 1, e.code
+    assert g["read_text"](p) == "kit1"
+    assert not any(g["load_json"](d + "/meta.json")["rolled_back"] for d in dirs)
+PY
+check "退避: 通し番号が壊れていれば何も戻さずに止まる" test $? -eq 0
+# 書き換える処理は同じ HOME で 1 つずつ。動いている間の --rollback は何も変えずに止まり、終われば戻せる
+H="$TMP/order-lock"
+HOME="$H" python3 - "$KIT" <<'PY' >"$TMP/order-lock.log" 2>&1
+import os, runpy, sys
+ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
+g = ns["cmd_rollback"].__globals__
+p = os.path.join(g["CLAUDE"], "order-lock.md")
+g["write_text"](p, "owner")
+backup = g["Backup"]("update", {"brain": None, "from": 10, "to": 10})
+g["put"](p, "kit", backup)
+backup.close()
+PY
+python3 - "$H" "$TMP/order-lock.ready" "$TMP/order-lock.stop" <<'PY' >>"$TMP/order-lock.log" 2>&1 &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+end = time.time() + 60
+while not os.path.exists(sys.argv[3]) and time.time() < end:
+    time.sleep(0.05)
+PY
+holder=$!
+i=0
+while [ ! -e "$TMP/order-lock.ready" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+before="$(snap "$H")"
+HOME="$H" python3 "$KIT/lib/kit.py" rollback >"$H.locked" 2>&1
+rc=$?
+check "同時実行: 別の brain-kit が動いている間の --rollback は 1 で止まる" test "$rc" -eq 1
+check "同時実行: 止まった理由を出す" grep -q '別の brain-kit' "$H.locked"
+check "同時実行: 止まった --rollback は何も変えない" test "$before" = "$(snap "$H")"
+touch "$TMP/order-lock.stop"
+wait "$holder"
+HOME="$H" python3 "$KIT/lib/kit.py" rollback >"$H.unlocked" 2>&1
+check "同時実行: 終わったあとの --rollback は戻せる" test "$(cat "$H/.claude/order-lock.md")" = owner
 HOME="$TMP/collision-with" python3 - "$NEXT" <<'PY' >"$TMP/no-read.log" 2>&1
 import builtins, os, runpy, sys
 ns = runpy.run_path(sys.argv[1] + "/lib/kit.py")
