@@ -2295,8 +2295,9 @@ def cmd_rollback(args):
         later = [c[1] for c in cands if "seq" not in c[2] and
                  meta["legacy_before"].get(c[1]) != meta_sha(os.path.join(CLAUDE, c[1]))]
         if later:
-            die("番号の無い退避 %s が %s よりあとに作られている（古い版の kit で更新した？）。どれから戻すか決められないので何も変えない。"
-                "古い版の kit で --rollback するか、要らない退避を確かめて片付けてから" % (", ".join(later), d), 1)
+            die("番号の無い退避 %s が %s のあとに作られたか書き足されている（古い版の kit で更新した？）。"
+                "どれから戻すか決められないので何も変えない。時計に頼る順（古い版の kit の --rollback も）は誤りうるので、"
+                "各退避の files/ と meta.json を見て、どれが新しいかを確かめてから手で戻す" % (", ".join(later), d), 1)
     bdir = os.path.join(CLAUDE, d)
     target = "uninstall" if meta.get("kind") == "uninstall" else "v%s" % meta.get("to")
     say("戻す: %s（%s、v%s → %s）%s" % (tilde(bdir), meta.get("kind"), meta.get("from"), target,
