@@ -3458,6 +3458,12 @@ finally:
         (brain / "dev").unlink()
     real_dev.rename(brain / "dev")
 assert compact(h / "brain-ren") == expected("開発", "Ren", roles[1][3])
+# HEAD が外れている（rebase の途中など）worktree でも、正しい場所なら場所で役を決める（ブランチに頼らない）
+subprocess.run(["git", "-C", str(h / "brain-mio"), "checkout", "-q", "--detach"], check=True)
+try:
+    assert compact(h / "brain-mio") == expected(*roles[2][:2], roles[2][3]), "detached HEAD at the right location"
+finally:
+    subprocess.run(["git", "-C", str(h / "brain-mio"), "checkout", "-q", "mio"], check=True)
 # 起動スクリプトが brain で始めたとき（worktree が無い）：渡された役の核を出し、相棒の核は出さない。worktree の中では場所が勝つ
 def launched(cwd, persona):
     return run(json.dumps({"source": "compact", "cwd": str(cwd)}).encode(), cwd=h, extra={"BRAIN_KIT_PERSONA": persona})
