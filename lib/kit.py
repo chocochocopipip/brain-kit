@@ -19,6 +19,7 @@ import datetime
 import difflib
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import re
@@ -2442,8 +2443,10 @@ def cmd_doctor(args):
             todo.append("claude update（動作を確かめた版 %s より古い）" % VERIFIED_CLAUDE_CODE)
     cli("node", ["node", "--version"])
     cli("python3", ["python3", "--version"])
+    gh_ok = False
     if cli("gh", ["gh", "--version"]):
         ok = run(["gh", "auth", "status"], timeout=15)[0] == 0
+        gh_ok = ok
         row("  gh auth", ok, "認証済み" if ok else "未認証", "OK" if ok else "要対応")
         if not ok:
             todo.append("gh auth login（ラベル・PR・工程表の集計に要る）")
@@ -2465,6 +2468,64 @@ def cmd_doctor(args):
         rc, v = first(["orca", "automations", "list"], timeout=15)
         row("  orca automations", rc == 0, v[:40] if rc == 0 else "一覧を取れない（serve が止まっているか、--environment が要る）", None if rc == 0 else "要対応")
 
+    if cfg:
+        # 読み込みでも .pyc を作らない。診断はローカルにも書かない。
+        before_bytecode = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = True
+            spec = importlib.util.spec_from_file_location("brain_kit_collect", os.path.join(KIT, "claude", "brain-kit", "dashboard", "collect.py"))
+            collect = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(collect)
+        except Exception:  # noqa: BLE001  集計が無い古い kit でも診断を続ける
+            rows.append(("[止まっている仕事]", "", ""))
+            row("  集計", False, status="確かめられない")
+        else:
+            hours = collect.stall_hours(cfg, args.stall_hours)
+            rows.append(("[止まっている仕事]", "", "%s 時間以上動きなし" % format(hours, "g")))
+            repo_data = {}
+            if not cfg.get("repos"):
+                row("  GitHub", False, "repos が無い", "飛ばした")
+            elif not have("gh"):
+                row("  GitHub", False, "gh が無い（issue・PR は見ない）", "飛ばした")
+            elif not gh_ok:
+                row("  GitHub", False, "gh が未認証", "飛ばした")
+            else:
+                for repo in cfg["repos"]:
+                    try:
+                        repo_data[repo] = collect.fetch(repo, timeout=20)
+                    except Exception:  # noqa: BLE001  通信できないときもローカルは見る
+                        row("  GitHub " + repo, False, "読めない（ネットワークか権限）", "飛ばした")
+            stalled = collect.find_stalled(cfg, brain, repo_data, hours)
+            work_items = [it for it in stalled["items"] if it["kind"] != "session"]
+            for it in work_items:
+                row("  作業中の issue" if it["kind"] == "issue" else "  レビュー済みで未リリースの PR", False,
+                    "%s#%s %s（%d 時間）" % (it["repo"], it["number"], it["title"][:30], it["idle_hours"]), "止まっている")
+            if repo_data and not work_items:
+                row("  issue・PR", True, "なし")
+            sessions = {it["role"]: it for it in stalled["items"] if it["kind"] == "session"}
+            for role in ROLES:
+                if role not in cfg.get("personas", {}):
+                    continue
+                p = persona(cfg, role)
+                at = collect.last_session(brain, p["id"], role)
+                detail = "最後 " + at.astimezone().strftime("%Y-%m-%d %H:%M") if at else "記録なし"
+                status = "参考"
+                if role != "partner" and repo_data:
+                    work = collect.waiting_work(cfg, repo_data, role)
+                    status = "止まっている" if role in sessions else "OK"
+                    if role in sessions:
+                        it = sessions[role]
+                        if at:
+                            detail += "（%d 時間前）" % it["idle_hours"]
+                        detail += "・仕事 %d 件" % work
+                    elif not work:
+                        detail = "仕事なし"
+                row("  セッション " + p["name"], status == "OK", detail, status)
+            if stalled["line"]:
+                todo.append("止まっている仕事を確かめる（%s）" % stalled["line"])
+        finally:
+            sys.dont_write_bytecode = before_bytecode
+
     table = [("項目", "状態", "補足")] + rows
     c0 = max(w(r[0]) for r in table)
     c1 = max(w(r[1]) for r in table)
@@ -2483,6 +2544,7 @@ def cmd_doctor(args):
 def main(argv):
     ap = argparse.ArgumentParser(prog="kit.py")
     ap.add_argument("cmd", choices=["install", "update", "resolve", "uninstall", "rollback", "doctor", "detect"])
+    ap.add_argument("--stall-hours", type=float, default=None)
     ap.add_argument("--target")
     ap.add_argument("--from", dest="from_file")
     ap.add_argument("--keep", action="store_true")

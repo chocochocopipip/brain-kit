@@ -87,6 +87,12 @@ dialog img { display: block; max-width: none; margin-top: 12px; }
     <div class="decision-list" id="decisions"></div>
   </section>
 
+  <section class="box owner" id="stalled-box" aria-labelledby="stalled-h">
+    <h2 id="stalled-h">止まっている <span class="c" id="stalled-c"></span></h2>
+    <p class="meta" id="stalled-note"></p>
+    <ul id="stalled"></ul>
+  </section>
+
   <div class="cols">
     <section class="box owner" aria-labelledby="owner-h">
       <h2 id="owner-h">持ち主の番 <span class="c" id="owner-c"></span></h2>
@@ -227,6 +233,16 @@ dialog img { display: block; max-width: none; margin-top: 12px; }
   function render() {
     renderDecisions(); renderShots();
     var b = state.board || {}, items = Array.isArray(b.items) ? b.items : [];
+    var stalled = b.stalled, stalledItems = stalled && Array.isArray(stalled.items) ? stalled.items : [];
+    document.getElementById("stalled-c").textContent = stalledItems.length + " 件";
+    document.getElementById("stalled-note").textContent = stalled ? stalled.hours + " 時間以上動きのないもの" : (state.board ? "集計が古い版で、まだ無い" : "");
+    var roleNames = { dev: "開発", review: "レビュー", release: "リリース" };
+    fill(document.getElementById("stalled"), stalledItems.map(function (it) {
+      if (it.kind === "session") return itemLi(it.name, (roleNames[it.role] || it.role) + " のセッション", null,
+        [it.at ? "最後 " + fmt(it.at) : "記録なし", "仕事 " + it.work + " 件"]);
+      return itemLi(it.repo.split("/").pop() + "#" + it.number, it.title, it.url,
+        [it.kind === "issue" ? "作業中" : "レビュー済み", it.idle_hours + " 時間"]);
+    }), "止まっているものは無い");
     var counts = {};
     STAGES.forEach(function (s) { counts[s[0]] = 0; });
     items.forEach(function (it) { if (it && counts.hasOwnProperty(it.stage)) counts[it.stage]++; });

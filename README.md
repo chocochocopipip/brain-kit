@@ -131,6 +131,8 @@ Claude Code は 2.1.294 で動作確認。古い版は導入・更新で 1 行�
 
 入ったか確かめる: `./install.sh --doctor`（`npx brainkit-agents --doctor`・`npx github:chocochocopipip/brain-kit --doctor` でも同じ）。何も変えず、版（brain と `~/.claude`）・4 人の skill／領域／worktree・kit のファイル（最新／kit だけの更新待ち／足りない／持ち主の変更／衝突）・settings.json・CLI（claude / gh / node / codex / tailscale / orca-ide）・gh のラベル・Orca の automation・brain の git を表で出し、未実施のものだけ「次にやること」に並べる。
 
+`--doctor` の「止まっている仕事」は作業中の issue・レビュー済みで未リリースの PR・仕事がある人格のセッションを確かめる。gh が無い・通信できないときは飛ばして注記し、セッションの最後の活動だけ参考に出す。
+
 `--doctor` は Claude Code の版を OK／古い／要確認で示し、古い場合は `claude update` を案内する。
 kit の版だけを見る: `./install.sh --version`（`npx brainkit-agents --version` も同じ）。
 
@@ -231,6 +233,7 @@ Claude の Artifact（`db` の capability）で、中身は相棒が節目に書
 - 節目（PR が入った・起票した・判断が済んだ・朝）に、相棒が `collect.py`（`gh` で `--repos` のリポジトリを読むだけ）で集め、Artifact の `board/current` に置く。持ち主の番と今日の予定は相棒が書く
 - 見た目を変える PR はスクショを `shot.py` で 1 文書に縮め、db の `shots` に置く。「見た目の確認」で拡大して見られる
 - 判断ボタンは db の `decisions`。持ち主の選択（`answer`）を相棒が節目に読み、受け取り・完了を記録する。v10 の公開済み工程表は新しい db ルールで同じ URL に再公開する
+- **止まっている**：N 時間以上動かない作業中の issue・レビュー済みで未リリースの PR・仕事がある人格の古い／記録の無いセッションを表示。N は `--stall-hours`（集計・`--doctor`）→ `BRAIN_KIT_STALL_HOURS` → `.brain-kit/config.json` の `stall_hours` → 既定 24 の順（無効な値・0 以下は飛ばす）
 - 段はラベルで決まる（`collect.py` の先頭に表）。手順は相棒の skill の「工程表」節
 
 ### 見回りと重いテスト（任意）
