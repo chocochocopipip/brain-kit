@@ -1671,6 +1671,12 @@ def copy2(src, dst, *a, **k):
             f.write(data[: len(data) // 2])
         raise OSError("injected: copy failed")
     return real_copy2(src, dst, *a, **k)
+real_open_bytes = g["main"].__globals__["open_bytes"]   # run_path が返す g は写しなので、関数が見る方を差し替える
+def open_bytes(path):
+    # 1 MiB を超えるファイルを丸ごと読んだら落とす（大きなデータファイルを読み込まないことの確かめ）
+    if os.path.getsize(path) > 1024 * 1024:
+        raise MemoryError("read whole file over 1 MiB: %s" % path)
+    return real_open_bytes(path)
 real_journal = g["Backup"]._journal
 def journal(self):
     # 退避した直後の記録（消した・書いた印）を書けずに止まる（容量不足など）
@@ -1685,7 +1691,8 @@ def journal(self):
 patches = {"replace": [mock.patch.object(os, "replace", replace)],
            "race": [mock.patch.object(g["Backup"], "save", save)],
            "journal": [mock.patch.object(g["Backup"], "_journal", journal)],
-           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)]}[mode]
+           "rollback": [mock.patch.object(g["shutil"], "copy2", copy2)],
+           "bigread": [mock.patch.dict(g["main"].__globals__, {"open_bytes": open_bytes})]}[mode]
 for p in patches:
     p.start()
 try:
@@ -1872,6 +1879,20 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "変えていなければ SessionEnd の項目を外す" sh -c "! grep -q 'session-end-brain.sh' '$H/.claude/settings.json'"
 check "変えていなければ session-end-brain.sh も消す" test ! -e "$H/.claude/hooks/session-end-brain.sh"
 check "変えていなければ brain-digest.js も消す" test ! -e "$H/.claude/hooks/brain-digest.js"
+# 残すフックが名指しした 2 MiB のファイルを丸ごと読まない（1 MiB を超えて読んだら落ちるようにして走らせる）
+H="$TMP/uninstall-bigread"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"x" * (2 * 1024 * 1024))' "$H/.claude/big.dat"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "wc -c ~/.claude/big.dat"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+uninstall_fault "$H" bigread >"$H.big" 2>&1
+check "残すフックが名指しした大きなファイルを丸ごと読まずに uninstall が 0" test $? -eq 0
+check "大きなファイルは残る" test -f "$H/.claude/big.dat"
 
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
