@@ -10,6 +10,8 @@
 - `--release-permissions` でリリース担当だけが読む許可の雛形を任意で追加。既定は無効。共通設定や worktree に置かず、専用の起動スクリプトが `--settings` で読む
 - `--no-release-permissions` で解除（編集済みの一覧は `.off` に移し、起動スクリプトが古いまま残っても読まれない）。持ち主の編集・3-way 更新・削除・rollback は共通のファイル管理を使い、doctor で状態と他人格への混入を確認できる
 
+- 新しく作る brain を、git の `init.defaultBranch` によらず `main` で始めるように修正（#28）。これまでは既定の枝が `master` の環境で brain が `master` で作られ、起動スクリプトの `main` の取り込みが黙って何もしなかった。すでに `main` の無い brain は改名せず、`--doctor`・`--update`・install が改名のコマンドを出す
+
 - `start-all` で 4 人をまとめて起動。tmux・端末を検出し、各人格を 1 回だけ起動してプロセス一覧で確認。`--status` は確認だけ、`--print` は手動用の案内
 - 初回のフォルダ信頼確認は、開くタブ／ウィンドウと Enter を押す場所を案内。更新で起動スクリプトを追加し、doctor とアンインストールにも対応
 
