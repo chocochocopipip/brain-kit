@@ -1493,6 +1493,7 @@ def finish_message(cfg, bdir, v_from):
     print("  2. 相棒は /%s、開発は /%s、レビューは /%s、リリースは /%s"
           % tuple(p[r]["id"] if r in p else "-" for r in ROLES))
     print("  3. 工程表（brain-kit Dashboard）は相棒の skill の「工程表」節。README の「工程表」")
+    print("  4. 初日の練習（任意）: ./install.sh --practice（ローカル限定・本物には触らない。--practice-cleanup で消せる）")
 
 
 # ------------------------------------------------------------------ update

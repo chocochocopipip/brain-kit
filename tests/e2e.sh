@@ -2932,6 +2932,360 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "一括起動: uninstall が 0" test $? -eq 0
 check "一括起動: uninstall で削除" test ! -e "$H/.claude/brain-kit/bin/start-all"
 
+# ------------------------------------------------------------------ 初日の練習（本物のプロジェクトには触らない）
+section "任意のローカル練習"
+H="$TMP/practice-home"
+mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --no-worktrees --yes </dev/null >"$H.log" 2>&1
+check "練習: 新規導入が 0" test $? -eq 0
+check "練習: --yes 導入では自動実行しない" test ! -e "$H/brain-kit-practice"
+check "練習: 任意の案内を表示" grep -q '初日の練習（任意）: ./install.sh --practice' "$H.log"
+before="$(snap "$H")"; c0="$(commits "$H")"
+new "$H" --practice </dev/null >"$H.practice" 2>&1
+check "練習: 非対話で完走" test $? -eq 0
+check "練習: brain と ~/.claude はバイト不変" test "$before" = "$(snap "$H")"
+check "練習: brain のコミット数は不変" test "$c0" = "$(commits "$H")"
+python3 - "$H" "$KIT" <<'PY'
+# 練習の検証。本物のプロジェクトには触らない。
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+h, kit = map(Path, sys.argv[1:])
+sys.dont_write_bytecode = True
+r = h / "brain-kit-practice"
+load = lambda p: json.loads(p.read_text())
+assert load(r / "state.json")["step"] == 6
+assert load(r / "issues/1.json")["state"] == "closed"
+pr = load(r / "prs/1.json")
+assert pr["state"] == "merged"
+board = load(r / "board.json")
+assert {s["key"]: s["count"] for s in board["stages"]} == dict(filed=0, decide=0, dev=0, review=0, release=0, prod=1)
+assert set(board) == {"collected_at", "repos", "stages", "items", "owner_auto", "prod_since", "errors"}
+assert board["repos"] == ["practice"] and board["errors"] == []
+assert board["items"][0]["kind"] == "pr"
+for role in ("dev", "review", "release"):
+    assert (r / "records" / (role + ".md")).is_file()
+    label = load(h / "brain/.brain-kit/config.json")["personas"][role]["label"]
+    assert label in (r / "issues/1.json").read_text() + (r / "prs/1.json").read_text()
+fixed = subprocess.check_output(["git", "-C", str(r / "remote.git"), "show", "main:greet.sh"], text=True)
+assert subprocess.check_output(["sh", "-c", fixed, "practice", "練習"], text=True).strip() == "こんにちは、練習"
+assert subprocess.check_output(["git", "-C", str(r / "remote.git"), "log", "-1", "--format=%an <%ae>"], text=True).strip() == "practice <practice@example.invalid>"
+# 練習の盤面を、実際の collect.py に同じ入力を渡した結果と突き合わせる。
+def module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+practice = module("practice", kit / "lib/practice.py")
+collect = module("collect", kit / "claude/brain-kit/dashboard/collect.py")
+board_root = h / "board-practice"
+board_root.mkdir()
+session = practice.Practice(board_root, h / "brain")
+for labels in ([], ["question"], ["needs-triage", "agent-ready"], ["agent-ready"], ["agent-working"],
+               [session.p["dev"]["label"]], [session.p["release"]["label"], "needs-triage"]):
+    for state in ("open", "merged"):
+        issue = dict(number=1, title="練習", url="practice", labels=labels, updatedAt="練習", state="open")
+        pr_item = dict(issue, state=state, mergedAt="練習" if state == "merged" else None)
+        session.save("issues", issue)
+        session.save("prs", pr_item)
+        session.board()
+        def fake_read(args, **kwargs):
+            item = issue if args[0] == "issue" else pr_item
+            wanted = args[args.index("--state") + 1]
+            return [dict(item, labels=[{"name": x} for x in labels])] if item["state"] == wanted else []
+        collect.gh = fake_read
+        out = board_root / "expected.json"
+        old = sys.argv
+        sys.argv = ["collect", "--brain", str(h / "brain"), "--repos", "practice", "--out", str(out)]
+        collect.main()
+        sys.argv = old
+        actual, expected = load(board_root / "board.json"), load(out)
+        assert actual["stages"] == expected["stages"]
+        assert [(i["kind"], i["stage"]) for i in actual["items"]] == [(i["kind"], i["stage"]) for i in expected["items"]]
+PY
+check "練習: 修正・完了状態・記録・設定ラベル・盤面の規則" test $? -eq 0
+main0="$(git -C "$H/brain-kit-practice/remote.git" rev-parse main)"
+new "$H" --practice </dev/null >"$H.again" 2>&1
+check "練習: 完了後の再実行が 0" test $? -eq 0
+check "練習: 再実行で main は不変" test "$main0" = "$(git -C "$H/brain-kit-practice/remote.git" rev-parse main)"
+new "$H" --practice-status >"$H.status" 2>&1
+check "練習: status が 0" test $? -eq 0
+check "練習: status に完了した段" grep -q '6/6' "$H.status"
+
+# 練習の安全境界。本物を模したディレクトリは変えない。
+python3 - "$H" "$KIT" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+h, kit = map(Path, sys.argv[1:])
+env = dict(os.environ, HOME=str(h))
+def run(*args, ok=False):
+    result = subprocess.run(["bash", str(kit / "install.sh")] + list(args), env=env,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert (result.returncode == 0) == ok, result.stdout
+    return result.stdout
+foreign = h / "foreign"
+foreign.mkdir()
+(foreign / "keep").write_text("練習で消さない。本物の代わり。")
+for action in ("--practice", "--practice-cleanup"):
+    run(action, "--practice-dir", str(foreign), "--yes")
+    assert list(foreign.iterdir()) == [foreign / "keep"]
+    assert (foreign / "keep").read_text() == "練習で消さない。本物の代わり。"
+(foreign / ".brain-kit-practice").write_text('{"kind":"different"}')
+run("--practice-cleanup", "--practice-dir", str(foreign), "--yes")
+(foreign / ".brain-kit-practice").write_text('{')
+run("--practice", "--practice-dir", str(foreign))
+empty = h / "empty"
+empty.mkdir()
+run("--practice", "--practice-dir", str(empty))
+assert not list(empty.iterdir())
+run("--practice", "--practice-dir", str(h / "absent-parent/practice"))
+assert not (h / "absent-parent").exists()
+for path in (h, h.parent, h / "brain", h / "brain/nested", h / ".claude/nested"):
+    run("--practice", "--practice-dir", str(path))
+# 別の brain を指しても既定の ~/brain は守る（git でない ~/brain でも。git の検査に頼らない）
+h2 = h / "plain-home"
+(h2 / "brain").mkdir(parents=True)
+(h2 / "other-brain").mkdir()
+env2 = dict(env, HOME=str(h2))
+for action in ("start", "cleanup"):
+    if action == "cleanup":
+        (h2 / "brain/nested").mkdir()
+        (h2 / "brain/nested/.brain-kit-practice").write_text('{"kind": "brain-kit-practice"}')
+    result = subprocess.run([sys.executable, str(kit / "lib/practice.py"), action, "--dir", str(h2 / "brain/nested"),
+                             "--brain", str(h2 / "other-brain"), "--yes", "--auto"], env=env2,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert result.returncode == 1 and "保護" in result.stdout, result.stdout
+assert sorted(x.name for x in (h2 / "brain/nested").iterdir()) == [".brain-kit-practice"]
+assert not (h / "brain/nested").exists() and not (h / ".claude/nested").exists()
+repo = h / "real-repo"
+repo.mkdir()
+subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+run("--practice", "--practice-dir", str(repo / "nested/practice"))
+assert not (repo / "nested").exists()
+link = h / "linked-practice"
+link.symlink_to(h / "brain-kit-practice", target_is_directory=True)
+run("--practice-cleanup", "--practice-dir", str(link), "--yes")
+run("--practice", "--practice-dir", str(link))
+assert link.is_symlink()
+# 練習内の symlink を削除しても、その先は消さない。
+(h / "brain-kit-practice/outside").symlink_to(foreign, target_is_directory=True)
+run("--practice")
+assert "--yes" in run("--practice-cleanup")
+# --dry-run は何も消さない（--yes と一緒でも）・何も作らない
+before_dry = sorted(str(x) for x in (h / "brain-kit-practice").rglob("*"))
+assert "何も消していない" in run("--practice-cleanup", "--dry-run", "--yes", ok=True)
+assert sorted(str(x) for x in (h / "brain-kit-practice").rglob("*")) == before_dry
+assert "何も作っていない" in run("--practice", "--dry-run", "--practice-dir", str(h / "dry-practice"), ok=True)
+assert not (h / "dry-practice").exists()
+assert (h / "brain-kit-practice").exists()
+run("--practice-cleanup", "--yes", ok=True)
+assert not (h / "brain-kit-practice").exists() and (foreign / "keep").exists()
+assert "練習用プロジェクトは無い" in run("--practice-cleanup", "--yes", ok=True)
+assert "練習用プロジェクトは無い" in run("--practice-status", ok=True)
+PY
+check "練習: 所有印・保護場所・既存 git・リンク・削除の確認" test $? -eq 0
+
+# 練習の対話中断と再開、別 brain の設定・既定へのフォールバック。
+python3 - "$H" "$KIT" <<'PYTEST'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+h, kit = map(Path, sys.argv[1:])
+root, brain = h / "practice interactive", h / "read-only-brain"
+brain.mkdir()
+(brain / ".brain-kit").mkdir()
+config = brain / ".brain-kit/config.json"
+config.write_text(json.dumps({"personas": {r: {"name": r, "id": r, "label": "practice-" + r}
+                                         for r in ("partner", "dev", "review", "release")}}))
+before = config.read_bytes()
+env = dict(os.environ, HOME=str(h), BRAIN_DIR=str(brain))
+command = [sys.executable, str(kit / "lib/practice.py"), "start", "--dir", str(root)]
+master, slave = os.openpty()
+try:
+    process = subprocess.Popen(command, env=env, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    os.write(master, b"q\n")
+    out, _ = process.communicate(timeout=20)
+    assert process.returncode == 0 and "Enter で次へ／q で中断" in out, out
+    assert json.loads((root / "state.json").read_text())["step"] == -1
+    assert not (root / "remote.git").exists()
+    result = subprocess.run(command + ["--auto", "--until", "2"], env=env, stdin=slave,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout
+finally:
+    os.close(master)
+    os.close(slave)
+assert json.loads((root / "state.json").read_text())["step"] == 2
+assert "practice-review" in json.loads((root / "prs/1.json").read_text())["labels"]
+assert "practice-dev" in json.loads((root / "issues/1.json").read_text())["labels"]
+assert config.read_bytes() == before
+# 明示の --brain は環境変数より優先し、読めなければ役名と id を使う。
+config.write_text("{")
+for suffix, brain_path in (("broken", brain), ("missing", h / "missing-brain")):
+    target = h / ("practice-" + suffix)
+    result = subprocess.run(["bash", str(kit / "install.sh"), "--practice", "--practice-dir", str(target),
+                             "--brain", str(brain_path)], env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert result.returncode == 0, result.stdout
+    assert "【開発: 開発（/dev）】" in result.stdout
+    assert json.loads((target / "state.json").read_text())["step"] == 6
+assert config.read_text() == "{"
+PYTEST
+check "練習: 対話の q・再開・--auto・別 brain・設定が読めない場合" test $? -eq 0
+
+# 各ガードだけで止まる入力にする。外すとマージできてしまうことも mutation で確認する。
+python3 - "$H" "$KIT" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+h, kit = map(Path, sys.argv[1:])
+env = dict(os.environ, HOME=str(h))
+source = (kit / "lib/practice.py").read_text()
+h = h.resolve()   # macOS の TMPDIR（/var → /private/var）でも、練習が使う実パスで設定を書く
+def git(root, *args):
+    return subprocess.check_output(["git", "-C", str(root)] + list(args), env=env, text=True).strip()
+def run(script, root, *args):
+    return subprocess.run([sys.executable, str(script), "start", "--dir", str(root)] + list(args),
+                          env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+INSTR = '        if not instructions or not instructions[-1]["body"].startswith(to_release + "入れてよい"):\n'
+HEAD = '        if ok_head != head:\n'
+SCRIPT = '        if (path / "test.sh").read_text(encoding="utf-8") != TEST or greet not in (BUG, FIX):\n'
+def drop_comment(root, pr, pred):
+    pr["comments"] = [c for c in pr["comments"] if not pred(c["body"])]
+def add_comment(root, pr, body):
+    pr["comments"].append({"by": "練習", "body": body, "at": "練習"})
+def push_extra(root, pr):
+    (root / "dev-wt/extra.md").write_text("練習の追加変更。本物には触らない。")
+    git(root / "dev-wt", "add", "extra.md")
+    git(root / "dev-wt", "commit", "-m", "練習: OK 後の追加")
+    git(root / "dev-wt", "push", str(root / "remote.git"), pr["branch"])
+def rewrite_push(root, pr):
+    # 外の bare（本物の代わり）へ push を向け直す設定を、練習の作業ツリーに置く
+    subprocess.check_call(["git", "clone", "-q", "--bare", str(root / "remote.git"), str(root.parent / (root.name + "-outside.git"))], env=env)
+    git(root / "work", "config", "url." + str(root.parent / (root.name + "-outside.git")) + ".pushInsteadOf", str(root / "remote.git"))
+def outside_worktree(root, pr):
+    # 作業ツリーを外（本物の代わり）へ向け直す設定を置く。再開しても外のファイルは変えない
+    out = root.parent / (root.name + "-outside-wt")
+    out.mkdir()
+    for f in ("greet.sh", "test.sh"):   # main と同じ中身（外が「本物」で、merge が上書きできる状態）
+        (out / f).write_bytes((root / "work" / f).read_bytes())
+        os.chmod(str(out / f), 0o755)
+    git(root / "work", "config", "core.worktree", str(out))
+def edit_test(root, pr):
+    with open(str(root / "review-wt/test.sh"), "a") as f:
+        f.write("touch ../escaped\n")
+# 名前: (入力の作り方, 止まるときの文言, mutation で外す行と置き換え)
+GUARDS = {
+    "instruction": (lambda r, pr: drop_comment(r, pr, lambda b: "へ：入れてよい" in b), "指示コメントが無い",
+                    (INSTR, "        if False:\n")),
+    "withdrawn": (lambda r, pr: add_comment(r, pr, "Soraへ：待って（練習）"), "指示コメントが無い",
+                  (INSTR, '        if not [c for c in pr["comments"] if c["body"].startswith(to_release + "入れてよい")]:\n')),
+    "verdict-ng": (lambda r, pr: add_comment(r, pr, "判定: NG\n1. 練習の指摘"), "OK の head と現在の PR head が違う",
+                   ('        ok_head = last.splitlines()[1][5:] if last.startswith("判定: OK\\nhead ") else None\n',
+                    '        ok_head = head\n')),
+    "head": (push_extra, "OK の head と現在の PR head が違う", (HEAD, "        if False:\n")),
+    "rewrite": (rewrite_push, "URL の書き換え設定がある",
+                ('            if rewrites:\n', '            if False:\n')),
+    "worktree": (outside_worktree, "git の作業ツリーが練習の外",
+                 ('                    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo.resolve():\n',
+                  '                    if False:\n')),
+    "script": (edit_test, "練習のスクリプトが書き換えられている", (SCRIPT, "        if False:\n")),
+}
+for guard, (setup, message, (old, repl)) in sorted(GUARDS.items()):
+    for mutation in (False, True):
+        root = h / ("practice-" + guard + ("-mutation" if mutation else ""))
+        script = kit / "lib/practice.py"
+        if mutation:
+            assert source.count(old) == 1, guard
+            script = h / ("practice-mutated-" + guard + ".py")
+            script.write_text(source.replace(old, repl))
+        first = run(script, root, "--until", "4")
+        assert first.returncode == 0, first.stdout
+        before = git(root / "remote.git", "rev-parse", "main")
+        pr_path = root / "prs/1.json"
+        pr = json.loads(pr_path.read_text())
+        setup(root, pr)
+        pr_path.write_text(json.dumps(pr, ensure_ascii=False))
+        result = run(script, root)
+        after = git(root / "remote.git", "rev-parse", "main")
+        if mutation:
+            # ガードを外すと先へ進んでしまう（script は外へ書く・それ以外はマージされる）
+            if guard == "script":
+                assert (root / "escaped").exists(), result.stdout
+            elif guard == "worktree":
+                out = root.parent / (root.name + "-outside-wt")
+                assert '"$1"' in (out / "greet.sh").read_text(), result.stdout   # 外の greet.sh が merge で書き換わる
+            elif guard == "rewrite":
+                outside = root.parent / (root.name + "-outside.git")
+                assert git(outside, "rev-parse", "main") != before, result.stdout
+            else:
+                assert result.returncode == 0 and before != after, (guard, result.stdout)
+        else:
+            assert result.returncode == 1 and before == after, (guard, result.stdout)
+            assert message in result.stdout, (guard, result.stdout)
+            assert not (root / "escaped").exists()
+            if guard == "worktree":
+                assert '"$1"' not in (root.parent / (root.name + "-outside-wt") / "greet.sh").read_text()
+            if guard == "rewrite":
+                assert git(root.parent / (root.name + "-outside.git"), "rev-parse", "main") == before
+            assert json.loads((root / "state.json").read_text())["step"] == 4
+# マージ済みと書いた直後に落ちても、再実行で後始末だけ続く（ラベルが外れていても止まらない）
+root = h / "practice-resume-release"
+assert run(kit / "lib/practice.py", root, "--until", "4").returncode == 0
+crash = h / "practice-crash.py"
+crash.write_text(source.replace("        self.save(\"prs\", pr)\n        self.finish_release(pr)\n",
+                                "        self.save(\"prs\", pr)\n        raise RuntimeError(\"練習の故障の注入\")\n"))
+assert crash.read_text() != source
+first = run(crash, root)
+assert first.returncode == 1 and "故障の注入" in first.stdout, first.stdout
+assert json.loads((root / "prs/1.json").read_text())["state"] == "merged"
+assert json.loads((root / "state.json").read_text())["step"] == 4
+merged = git(root / "remote.git", "rev-parse", "main")
+again = run(kit / "lib/practice.py", root)
+assert again.returncode == 0, again.stdout
+assert json.loads((root / "state.json").read_text())["step"] == 6
+assert json.loads((root / "issues/1.json").read_text())["state"] == "closed"
+assert git(root / "remote.git", "rev-parse", "main") == merged
+assert "入った practice#1" in (root / "records/release.md").read_text()
+# squash の前に落ち、そのあと関係ないコミットで main が進んでも「入った」と言わない（ガードを外すと言ってしまう）
+SQUASH = ('        if after == before or self.git(self.work, "rev-parse", "main^") != before or \\\n'
+          '                self.git(self.work, "rev-parse", "main^{tree}") != self.git(self.work, "rev-parse", head + "^{tree}"):\n')
+assert source.count(SQUASH) == 1
+for mutation in (False, True):
+    root = h / ("practice-unrelated" + ("-mutation" if mutation else ""))
+    script = kit / "lib/practice.py"
+    if mutation:
+        script = h / "practice-mutated-squash.py"
+        script.write_text(source.replace(SQUASH, "        if after == before:\n"))
+    assert run(script, root, "--until", "4").returncode == 0
+    crash = h / ("practice-crash-before-squash%s.py" % ("-m" if mutation else ""))
+    old = '            self.git(self.work, "merge", "--squash", head)\n'
+    crash.write_text(script.read_text().replace(old, '            raise RuntimeError("練習の故障の注入")\n'))
+    assert run(crash, root).returncode == 1
+    (root / "work/note.md").write_text("関係ない変更。練習。")
+    git(root / "work", "add", "note.md")
+    git(root / "work", "commit", "-m", "練習: 関係ないコミット")
+    before = git(root / "remote.git", "rev-parse", "main")
+    result = run(script, root)
+    issue = json.loads((root / "issues/1.json").read_text())
+    if mutation:
+        assert result.returncode == 0 and issue["state"] == "closed", result.stdout
+    else:
+        assert result.returncode == 1 and "squash ではない" in result.stdout, result.stdout
+        assert issue["state"] == "open" and json.loads((root / "prs/1.json").read_text())["state"] == "open"
+        assert git(root / "remote.git", "rev-parse", "main") == before
+PY
+check "練習: 指示欠落・取り消し・NG・OK 後の head 変更・書き換えたスクリプトで停止（各ガードの mutation も検証）" test $? -eq 0
+
 # ------------------------------------------------------------------ npm の tarball から入れる
 section "npm の tarball から新規"
 if [ -n "$NPM" ]; then
