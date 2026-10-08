@@ -1949,9 +1949,16 @@ def plan_uninstall(args):
     # 書かれた形（symlink の別名）のディレクトリと実体のディレクトリの両方から探す。
     # 同じ実体を同じディレクトリから見たら飛ばす。先頭 1 MiB だけ読む
     queue = []
+    needed_dirs = set()   # 残すものに辿り着くのに要るディレクトリ（symlink の指す先も）。空になっても消さない
 
     def found(items, why):
         for written, targets in items:
+            # 書かれたパスを先頭から 1 段ずつ実体にして、途中のディレクトリを覚える（link/../bin なら link の指す先も）
+            prefix = os.sep
+            for part in written.split(os.sep)[1:-1]:
+                prefix = os.path.join(prefix, part)
+                if os.path.isdir(prefix):
+                    needed_dirs.add(os.path.realpath(prefix))
             for target in targets:
                 mark(target, why)
                 dirs = {os.path.dirname(written), os.path.dirname(os.path.realpath(written)),
@@ -1965,10 +1972,16 @@ def plan_uninstall(args):
     while queue:
         user, dirs = queue.pop(0)
         real = os.path.realpath(user)
-        dirs = {d for d in dirs if (real, d) not in seen}
+        # 同じディレクトリかは実体で比べる（hooks/. と hooks/./. を別にしない）。探すときは書かれた形を使う
+        fresh = {}
+        for d in sorted(dirs):
+            key = (real, os.path.realpath(d))
+            if key not in seen and key[1] not in {os.path.realpath(x) for x in fresh}:
+                fresh[d] = key
+        dirs = set(fresh)
         if not dirs or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
             continue
-        seen.update((real, d) for d in dirs)
+        seen.update(fresh.values())
         # UTF-8 でなくても ASCII のパスは拾えるように、読めない文字だけ置き換える
         try:
             with open(user, "rb") as f:
@@ -1981,6 +1994,7 @@ def plan_uninstall(args):
     return dict(claude=claude, kit_state=kit_state, claude_manifest=claude_manifest, brain=brain, cfg=cfg,
                 settings_path=settings_path, conflicts=conflicts, safe=safe, remove=remove, keep=keep,
                 unsafe=unsafe, other=other, directories=directories, expected=expected, used=used, cur=cur,
+                needed_dirs=needed_dirs,
                 settings_raw=settings_raw, settings_writable=settings_writable,
                 settings_remove=settings_remove, settings_keep=settings_keep)
 
@@ -1989,7 +2003,7 @@ def plan_signature(p):
     """確認の前と後で比べるもの。消すもの（と中身の sha）・残すもの・settings の元のバイトと外す項目"""
     return (sorted(p["remove"]), sorted(p["expected"].items()), sorted(p["keep"]), sorted(p["used"]),
             sorted(p["unsafe"]), sorted(p["other"]), p["settings_raw"], p["settings_writable"],
-            p["settings_remove"], p["settings_keep"])
+            p["settings_remove"], p["settings_keep"], sorted(p["needed_dirs"]))
 
 
 def cmd_uninstall(args):
@@ -2091,7 +2105,8 @@ def cmd_uninstall(args):
         directories.add(kit_state)
     stops = {claude} | {os.path.join(claude, p) for p in ("skills", "hooks", "agents")}
     for directory in sorted(directories, key=len, reverse=True):
-        while directory not in stops and safe(directory):
+        # 残すフックがたどるディレクトリ（symlink の指す先も）は、空になっても消さない
+        while directory not in stops and safe(directory) and os.path.realpath(directory) not in P["needed_dirs"]:
             try:
                 os.rmdir(directory)
             except OSError:

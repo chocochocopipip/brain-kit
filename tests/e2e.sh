@@ -1941,7 +1941,31 @@ new "$H" --uninstall --yes >"$H.un" 2>&1
 check "自分を別名で呼ぶ: uninstall が 0" test $? -eq 0
 check "別名のディレクトリから相対で使う brain-digest.js は消さない" test -f "$H/.claude/hooks/brain-digest.js"
 check "symlink と .. で指す heavy-lock は消さない" test -x "$H/.claude/brain-kit/bin/heavy-lock"
+check "symlink と .. のパスが、外したあとも書かれた形のまま辿れる（link の指す先を消さない）" test -x "$H/.claude/link/../bin/heavy-lock"
 check "自分を別名で呼ぶ: 呼ばれない skill は消す" test ! -e "$H/.claude/skills/aoi/SKILL.md"
+# 相対の自己参照（./self.sh）と 2 つのファイルの相対の循環でも、同じファイルを読み続けずに終わる
+H="$TMP/uninstall-cycle"; mkdir -p "$H"
+new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
+printf '#!/bin/sh\n# usage: ./self.sh\nsh ./b.sh\n' >"$H/.claude/hooks/self.sh"
+printf '#!/bin/sh\nsh ./self.sh\nsh ../hooks/./self.sh\n' >"$H/.claude/hooks/b.sh"
+python3 - "$H/.claude/settings.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["hooks"].setdefault("Notification", []).append({"hooks": [{"type": "command", "command": "sh ~/.claude/hooks/self.sh"}]})
+open(p, "w").write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+PY2
+python3 - "$KIT" "$H" <<'PY2'
+import subprocess, sys
+kit, h = sys.argv[1], sys.argv[2]
+try:
+    r = subprocess.run(["bash", kit + "/install.sh", "--uninstall", "--dry-run"], env={"HOME": h, "PATH": __import__("os").environ["PATH"]},
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    sys.exit(r.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+PY2
+check "相対の自己参照と循環でも dry-run が 60 秒以内に 0 で終わる" test $? -eq 0
 # 計画のときには無かった持ち主のスクリプトが、確認を待つ間に作られ、kit のファイルを呼ぶ → 止まる
 H="$TMP/uninstall-appear"; mkdir -p "$H"
 new "$H" --partner Aoi --dev Ren --review Mio --release Sora --user Ken --no-worktrees --yes >"$H.log" 2>&1
