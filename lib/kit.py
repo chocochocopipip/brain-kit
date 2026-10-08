@@ -1946,9 +1946,15 @@ def cmd_uninstall(args):
             queue.append(path)
     seen = set()
 
+    limit = 1024 * 1024
+
     def fingerprint(path):
+        """中身の sha（1 MiB まで）と、実体・大きさ・更新時刻。大きなファイルを丸ごと読まない"""
         try:
-            return (os.path.realpath(path), sha(open_bytes(path)))
+            st = os.stat(path)
+            with open(path, "rb") as f:
+                head = f.read(limit)
+            return (os.path.realpath(path), st.st_size, st.st_mtime_ns, sha(head))
         except (IOError, OSError):
             return None
     while queue:
@@ -1956,11 +1962,13 @@ def cmd_uninstall(args):
         if user in seen or user.endswith((".log", ".jsonl")):   # 動いているセッションが書き足すログは辿らない
             continue
         seen.add(user)
+        # 先頭の 1 MiB を読む。UTF-8 でなくても ASCII のパスは拾えるように、読めない文字だけ置き換える
         try:
-            big = os.path.getsize(user) > 1024 * 1024
-        except OSError:
-            big = True
-        text = "" if big else (read_text(user) or "")
+            with open(user, "rb") as f:
+                text = f.read(limit).decode("utf-8", "replace")
+        except (IOError, OSError) as e:
+            die("残すフックが使う %s を読めない（%s）。何が要るか調べられないので何も変えない。"
+                "読めるようにするか、そのフックを外してから --uninstall を実行する" % (tilde(user), e.strerror or e), 1)
         looked[("file", user)] = fingerprint(user)
         for path in named_files(text, os.path.dirname(user)):
             if path != user:
