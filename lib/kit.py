@@ -75,6 +75,32 @@ def record_lang(*records):
     return "ja"
 
 
+def regular_json(path):
+    """言語の記録を探すための読み。FIFO などで待たない（非ブロッキングで開き、普通のファイルだけ 1 MiB まで）。
+    読めなければ None。rollback などの前に読むので、壊れた・特殊な記録で止めない。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return json.loads(os.read(fd, 1024 * 1024).decode("utf-8"))
+    except Exception:  # noqa: BLE001  読めない記録は次の記録へ
+        return None
+    finally:
+        os.close(fd)
+
+
+def startup_lang(config):
+    """表示の言語：brain の記録、無ければこの機の記録（要るときだけ読む）、無ければ日本語。"""
+    record = regular_json(config)
+    value = record.get("lang") if isinstance(record, dict) else None
+    if isinstance(value, str) and value in LANG_NAMES:
+        return value
+    return record_lang(regular_json(CLAUDE_MANIFEST))
+
+
 def content_lang(cfg):
     """brain に書く中身の言語（表示の --lang とは別）。"""
     return record_lang(cfg)
@@ -2823,8 +2849,7 @@ def main(argv):
     ap.add_argument("--edited", choices=["new", "keep"], default=None)
     ap.add_argument("--yes", "-y", action="store_true")
     args = ap.parse_args(argv)
-    set_lang(args.lang or record_lang(load_json(config_path(os.path.abspath(os.path.expanduser(args.brain)))),
-                                      load_json(CLAUDE_MANIFEST)))
+    set_lang(args.lang or startup_lang(config_path(os.path.abspath(os.path.expanduser(args.brain)))))
     if args.cmd in ("install", "update", "resolve", "uninstall", "rollback"):
         lock_home()   # fd はプロセスが終わるまで開いたまま（終了でロックが外れる）
     if args.cmd == "install":

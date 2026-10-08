@@ -298,6 +298,20 @@ printf '[1]\n' >"$HM/brain/.brain-kit/config.json"
 new "$HM" --rollback --dry-run >"$HM.rollback" 2>&1
 check "Malformed config: rollback --dry-run still runs" test $? -eq 0
 cp "$HM.config" "$HM/brain/.brain-kit/config.json"
+# 言語の記録が FIFO でも、起動で待たない（言語を探す読みは非ブロッキング。brain の記録・機械側の記録のどちらでも）
+check "FIFO language records: startup does not wait" python3 - "$TMP/lang-fifo-start" "$KIT" <<'PY'
+import os, pathlib, subprocess, sys
+h, kit = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+for rel in ("brain/.brain-kit/config.json", ".claude/brain-kit/manifest.json"):
+    p = h / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(str(p))
+    # 退避が無いので「戻せる更新が無い」で止まる。言語の記録で待たずにそこまで届くこと
+    r = subprocess.run(["bash", str(kit / "install.sh"), "--rollback", "--dry-run"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dict(os.environ, HOME=str(h)), timeout=30)
+    assert r.returncode == 1 and "戻せる更新が無い".encode() in r.stdout, (rel, r.stdout[-400:])
+    p.unlink()
+PY
 # 新しい brain でも、--lang が無ければこの機の記録（English）で作る（install.sh の非対話も kit.py の直接も）
 for how in sh py; do
   HD="$TMP/lang-machine-$how"
