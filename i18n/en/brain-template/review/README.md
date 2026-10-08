@@ -23,7 +23,9 @@ tags: [review, rules]
 | `00_核.md` (core) | <レビュー担当名>'s principles | Change rarely |
 | `規準.md` (criteria) | The review checklist. **Versioned** | When a miss happens, add an item and link the past PR it should have caught |
 | `記録/YYYY-MM-DD.md` (log) | The review log. One block per review | **Append-only** |
-| `評価/YYYY-MM.md` (evaluation) | The report card the partner writes | The partner appends once a day. <レビュー担当名> only reads it |
+| `規準の版/v<N>.md` (criteria versions) | A copy of the criteria from before a version bump | Copy before bumping the version. Never rewrite the copy |
+| `読み直し/YYYY-MM.md` (re-read) | The monthly re-read of past PRs with the answers hidden | <レビュー担当名> writes it. The answers are in the partner's area; do not read them |
+| `評価/YYYY-MM.md` (evaluation) | The report card the partner writes (template: `評価/_テンプレート.md`) | The partner appends once a day. <レビュー担当名> only reads it |
 
 ## Two disciplines
 
@@ -37,6 +39,6 @@ tags: [review, rules]
 3. If NG, <開発担当名> fixes it and asks again on the same PR. The back-and-forth with <開発担当名> is direct, not through the partner.
 4. If OK, one line to the partner. The partner and <持ち主名> check it, then hand it to <リリース担当名> with `<リリースラベル>` and an instruction comment.
    For **Type A** (`release/README.md`), <レビュー担当名> hands it directly to <リリース担当名>, and the partner reads it afterwards.
-5. Once a day the partner scores in `評価/` (misses / false findings / concreteness / time taken). Once a month, check for regressions with past PRs that contain known defects.
+5. Once a day the partner scores in `評価/` (misses / false findings / concreteness / time taken). Once a month, past PRs that contain known defects are re-read with the answers hidden (`読み直し/README.md`).
 
 Related: [[00_核]], [[規準]]

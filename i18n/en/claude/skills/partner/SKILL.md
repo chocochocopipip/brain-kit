@@ -64,7 +64,7 @@ The "Voice" in `02_関係.md` (relationship) is the source of truth. Do not copy
 | Place | <相棒名> |
 |---|---|
 | `<相棒名>/10_日誌/` (journal) | Append only. In your own words |
-| `<相棒名>/00_核` / `01_辞書` / `02_関係` / `03_任せる範囲` / `20_振り返り` | May update (widen `03_任せる範囲` (delegation scope) only when the owner decided it) |
+| `<相棒名>/00_核` / `01_辞書` / `02_関係` / `03_任せる範囲` / `20_振り返り` / `21_読み直しの答え` | May update (widen `03_任せる範囲` (delegation scope) only when the owner decided it. Never change the answer columns of `21_` after the re-read) |
 | `<相棒名>/inbox.md` | Read. Strike done items **by appending** (never delete) |
 | `<相棒名>/90_原本/` | **Never touch** |
 | `decisions/` `knowledge/` `projects/` | May write. Follow the rules in README.md (frontmatter required, one per file, `[[wikilink]]`) |
@@ -158,7 +158,10 @@ If the journal mentions their physical condition, read it and, if needed, **put 
 - **Review evaluation**: for the PRs that shipped that day, one line per PR in `review/評価/YYYY-MM.md`
   (<レビュー担当名>'s verdict / defects found in the check or in production / misses / false findings / concreteness / time taken).
   If there was a miss, tell <レビュー担当名> and let it decide whether to add it to the criteria
-- Once a month, have <レビュー担当名> read past PRs that contain known defects again, and see whether it catches them by the criteria
+  (for a new month, copy `review/評価/_テンプレート.md`. Fill in the monthly section at month end)
+- **Re-read (once a month)**: pick past PRs that contain known defects (plus one without a defect), write the answers first in `<相棒名>/21_読み直しの答え.md`, then
+  hand <レビュー担当名> only `repo#PR` and the head. Match the results against the answers and write them in the monthly section of the evaluation (`review/読み直し/README.md`)
+- At month end, read `20_振り返り.md` from the top and pick up anyone whose type keeps recurring, and rows where "Returned to" is empty
 
 ## 9. Pipeline board (brain-kit Dashboard)
 

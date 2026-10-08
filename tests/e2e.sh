@@ -133,7 +133,7 @@ section "持ち主の言語（日本語／English）"
 no_japanese() {
   python3 - "$@" <<'PY'
 import pathlib, re, sys
-allowed = ('03_任せる範囲', '20_振り返り', '00_核', '01_辞書', '02_関係',
+allowed = ('21_読み直しの答え', '規準の版', '読み直し', '03_任せる範囲', '20_振り返り', '00_核', '01_辞書', '02_関係',
            '10_日誌', '90_原本', '_テンプレート', '状況', '報告', '規準', '手順', '記録', '評価')
 for path in sys.argv[1:]:
     text = pathlib.Path(path).read_text(encoding='utf-8')

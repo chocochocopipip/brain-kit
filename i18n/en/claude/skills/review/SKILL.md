@@ -61,4 +61,11 @@ Once the target PR is decided, read that repository's `CLAUDE.md`, `docs/` and `
 ## 4. Growing the criteria
 
 When the partner marks a miss in `review/評価/` (evaluation), add that pattern to `規準.md` (**bump the version** and link the missed PR).
+Before bumping the version, copy the current full text to `review/規準の版/v<N>.md` (`規準の版/README.md`).
 Do not let the same pattern through next time. Things you notice by instinct go out marked "outside the criteria"; the partner decides whether to add them.
+
+## 5. Re-read (once a month)
+
+When only a `repo#PR` and a head arrive from the partner, it is a re-read with the answers hidden (`review/読み直し/README.md`).
+Read it as usual with the current criteria, and write only in `review/読み直し/YYYY-MM.md` (copy `_テンプレート.md`). Do not comment on the PR.
+**Do not look for the answers**: do not read `<相棒名>/`, that PR's later commits, comments or issues, or that PR's row in `評価/`.

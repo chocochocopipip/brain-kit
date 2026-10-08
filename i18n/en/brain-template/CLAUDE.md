@@ -32,6 +32,7 @@ review/ is the memory area of **<レビュー担当名>**. The persona that read
 - **`review/規準.md` (criteria) is versioned.** When you add or change an item, bump the version and write the reason (which PR's miss it came from).
 - **`review/記録/` (log) is append-only.** Never rewrite a verdict afterwards.
 - **`review/評価/` (evaluation) is written by the partner** (once a day). <レビュー担当名> only reads it.
+- **`review/読み直し/` (re-read): once a month, re-read past PRs with the answers hidden.** Only the partner holds the answers (`<相棒名>/21_読み直しの答え.md`). <レビュー担当名> does not read them.
 
 ## About release/
 
