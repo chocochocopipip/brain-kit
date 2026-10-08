@@ -1234,6 +1234,9 @@ def update_manifests(items, cfg, manifests):
             files[key] = ent
     for where in ("brain", "claude"):
         manifests[where]["version"] = VERSION
+    package = load_json(os.path.join(KIT, "package.json"))
+    if isinstance(package, dict) and isinstance(package.get("version"), str):
+        manifests["claude"]["package_version"] = package["version"]
 
 
 def write_state(cfg, manifests, backup):
@@ -2404,6 +2407,16 @@ def cmd_doctor(args):
         ep = st.get("enabledPlugins", {})
         row("  settings: plugin pr-review-toolkit", any(k.startswith("pr-review-toolkit") for k in ep))
         row("  settings: plugin codex", any(k.startswith("codex") for k in ep), "任意（--codex）", None if any(k.startswith("codex") for k in ep) else "無い")
+
+    notice = "brain-kit-update-check.py"
+    notice_hook = os.path.isfile(os.path.join(CLAUDE, "hooks", notice)) and any(
+        notice in (h.get("command") or "")
+        for g in (st or {}).get("hooks", {}).get("SessionStart", []) for h in g.get("hooks", []))
+    notice_off = os.path.exists(os.path.join(KIT_STATE, "no-update-check"))
+    cached = load_json(os.path.join(KIT_STATE, "update-check.json"))
+    latest = cached.get("latest") if isinstance(cached, dict) else None
+    row("  更新のお知らせ", True, "npm 公開版: %s（前回の確認）" % latest if latest else "",
+        "止めてある" if notice_off else "有効" if notice_hook else "フック無し")
 
     rows.append(("[CLI]", "", ""))
 
